@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
+	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/proxy"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 	"github.com/maci0/muninn-sidecar/internal/store"
@@ -34,23 +35,24 @@ var (
 // first positional argument (the agent name); everything after the agent
 // name is passed through to the child process unmodified.
 type opts struct {
-	vault  string // --vault
-	mcpURL string // --mcp-url
-	token  string // --token
-	debug  bool   // --debug / -d
-	quiet  bool   // --quiet / -q
-	dryRun bool   // --dry-run / -n
-	asJSON bool   // --json / -j (for list output)
-	force  bool   // --force / -f (skip health check)
+	vault    string
+	mcpURL   string
+	token    string
+	debug    bool
+	quiet    bool
+	dryRun   bool
+	asJSON   bool
+	force    bool
+	noInject bool
 }
 
 // parseAction signals a special action from parseFlags instead of os.Exit.
 type parseAction int
 
 const (
-	actionNone    parseAction = iota
-	actionHelp                // --help / -h
-	actionVersion             // --version / -v
+	actionNone parseAction = iota
+	actionHelp
+	actionVersion
 )
 
 const (
@@ -64,7 +66,7 @@ func main() {
 // run is the real entry point; returns the exit code.
 func run() int {
 	if len(os.Args) < 2 {
-		logf("missing command. Run 'msc --help' for usage.")
+		logerr("missing command. Run 'msc --help' for usage.")
 		return exitUsage
 	}
 
@@ -72,7 +74,7 @@ func run() int {
 	o := &opts{}
 	remaining, action, err := parseFlags(os.Args[1:], o)
 	if err != nil {
-		logf("%v", err)
+		logerr("%v", err)
 		return exitUsage
 	}
 
@@ -81,12 +83,12 @@ func run() int {
 		usage(os.Stdout)
 		return 0
 	case actionVersion:
-		printVersion()
+		printVersion(o)
 		return 0
 	}
 
 	if len(remaining) == 0 {
-		logf("missing command. Run 'msc --help' for usage.")
+		logerr("missing command. Run 'msc --help' for usage.")
 		return exitUsage
 	}
 
@@ -98,19 +100,19 @@ func run() int {
 		usage(os.Stdout)
 		return 0
 	case "version":
-		printVersion()
+		printVersion(o)
 		return 0
 	case "list":
 		return cmdList(o)
 	case "status":
 		return cmdStatus(o)
 	case "completion":
-		if len(agentArgs) == 0 {
-			logf("usage: msc completion <bash|zsh|fish>")
-			logf("  e.g. msc completion zsh >> ~/.zshrc")
-			return exitUsage
-		}
-		return cmdCompletion(agentArgs[0])
+	if len(agentArgs) == 0 {
+		logerr("usage: msc completion <bash|zsh|fish>")
+		logerr("  e.g. source <(msc completion zsh)")
+		return exitUsage
+	}
+	return cmdCompletion(agentArgs[0])
 	}
 
 	// Look up agent.
@@ -119,16 +121,12 @@ func run() int {
 		names := agents.ListSorted()
 		allNames := append(names, "list", "status", "version", "help", "completion")
 		if suggestion := closestMatch(cmd, allNames); suggestion != "" {
-			logf("unknown command: %s. Did you mean %q?", cmd, suggestion)
+			logerr("unknown command: %s. Did you mean %q?", cmd, suggestion)
 		} else {
-			logf("unknown command: %s", cmd)
+			logerr("unknown command: %s", cmd)
 		}
 		logf("known agents: %s", strings.Join(names, ", "))
 		return exitUsage
-	}
-
-	if o.asJSON {
-		logf("warning: --json is only used with 'msc --json list'")
 	}
 
 	// Configure logging. Default to WARN so normal usage is clean; the
@@ -141,22 +139,7 @@ func run() int {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
 	// Resolve MuninnDB connection (flags > env > defaults).
-	mcpURL := o.mcpURL
-	if mcpURL == "" {
-		mcpURL = store.DefaultMCPURL()
-	}
-	token := o.token
-	if token == "" {
-		token = store.DefaultToken()
-	}
-	vault := o.vault
-	if vault == "" {
-		if v := os.Getenv("MSC_VAULT"); v != "" {
-			vault = v
-		} else {
-			vault = "sidecar"
-		}
-	}
+	mcpURL, token, vault := resolveConfig(o)
 
 	sessionStats := &stats.Stats{}
 	muninn := store.New(mcpURL, token, vault, sessionStats)
@@ -169,7 +152,7 @@ func run() int {
 	if !o.force {
 		healthErr = muninn.HealthCheck()
 		if healthErr != nil && !o.dryRun {
-			logf("MuninnDB at %s is unreachable: %v", mcpURL, healthErr)
+			logerr("MuninnDB at %s is unreachable: %v", mcpURL, healthErr)
 			logf("captures will be lost. Use --force to launch anyway.")
 			return 1
 		}
@@ -199,7 +182,23 @@ func run() int {
 		} else {
 			fmt.Fprintln(os.Stdout, " (unreachable)")
 		}
+		if !o.noInject {
+			fmt.Fprintf(os.Stdout, "Inject:   enabled (vault=%s)\n", vault)
+		} else {
+			fmt.Fprintln(os.Stdout, "Inject:   disabled")
+		}
 		return 0
+	}
+
+	// Create injector unless --no-inject is set.
+	var injector *inject.Injector
+	if !o.noInject {
+		injector = inject.New(inject.Config{
+			MCPURL: mcpURL,
+			Token:  token,
+			Vault:  vault,
+			Stats:  sessionStats,
+		})
 	}
 
 	// Start proxy on random port.
@@ -209,15 +208,17 @@ func run() int {
 		AgentName:    cmd,
 		Store:        muninn,
 		CapturePaths: agent.CapturePaths,
+		ExcludePaths: agent.ExcludePaths,
+		Injector:     injector,
 	})
 	if err != nil {
-		logf("failed to create proxy: %v", err)
+		logerr("failed to create proxy: %v", err)
 		return 1
 	}
 
 	addr, err := p.Start()
 	if err != nil {
-		logf("failed to start proxy: %v", err)
+		logerr("failed to start proxy: %v", err)
 		return 1
 	}
 
@@ -284,7 +285,7 @@ func run() int {
 	if result.err != nil {
 		var pathErr *exec.Error
 		if errors.As(result.err, &pathErr) {
-			logf("%s not found in PATH", cmd)
+			logerr("%s not found in PATH", cmd)
 		} else {
 			slog.Debug("agent exited with error", "err", result.err)
 		}
@@ -293,82 +294,145 @@ func run() int {
 }
 
 // parseFlags extracts msc's global flags from args and returns the remaining
-// positional arguments. Parsing stops at the first non-flag argument, so
-// everything after the agent name passes through to the child unmodified.
-// This mimics the behavior of env(1) and similar wrapper tools.
+// positional arguments. Parsing stops at the first non-flag argument (unless
+// it is an internal command like 'list' or 'status', in which case flag parsing
+// continues). This mimics the behavior of env(1) and similar wrapper tools.
 //
 // Returns a parseAction if a special flag (--help, --version) was encountered,
 // or an error for invalid input. This avoids os.Exit inside the parser,
 // keeping run() as the single exit point.
 func parseFlags(args []string, o *opts) (remaining []string, action parseAction, err error) {
 	i := 0
+	isInternalCmd := false
+
 	for i < len(args) {
 		arg := args[i]
 
-		// Stop at first non-flag (the agent/command name).
 		if !strings.HasPrefix(arg, "-") {
-			break
+			// If it's an internal command, record it and continue parsing flags.
+			if len(remaining) == 0 && agents.ReservedCommands[arg] {
+				isInternalCmd = true
+				remaining = append(remaining, arg)
+				i++
+				continue
+			}
+
+			// If it's not an internal command, OR we already saw a non-flag,
+			// we stop parsing flags ONLY IF we aren't currently processing flags for an internal command.
+			if !isInternalCmd {
+				break
+			} else {
+				remaining = append(remaining, arg)
+				i++
+				continue
+			}
 		}
 
-		// Handle -- as explicit end of flags.
 		if arg == "--" {
 			i++
 			break
 		}
 
-		switch arg {
+		// Handle --flag=value syntax.
+		key := arg
+		var val string
+		hasVal := false
+		if k, v, ok := strings.Cut(arg, "="); ok {
+			key = k
+			val = v
+			hasVal = true
+		}
+
+		switch key {
 		case "-h", "--help":
 			return nil, actionHelp, nil
 		case "-v", "--version":
 			return nil, actionVersion, nil
 		case "-d", "--debug":
 			o.debug = true
+			i++
+			continue
 		case "-q", "--quiet":
 			o.quiet = true
+			i++
+			continue
 		case "-n", "--dry-run":
 			o.dryRun = true
+			i++
+			continue
 		case "-j", "--json":
 			o.asJSON = true
+			i++
+			continue
 		case "-f", "--force":
 			o.force = true
-		case "--vault":
 			i++
-			if i >= len(args) {
-				return nil, actionNone, fmt.Errorf("--vault requires a value")
-			}
-			o.vault = args[i]
-		case "--mcp-url":
+			continue
+		case "--no-inject":
+			o.noInject = true
 			i++
-			if i >= len(args) {
-				return nil, actionNone, fmt.Errorf("--mcp-url requires a value")
-			}
-			o.mcpURL = args[i]
-		case "--token":
-			i++
-			if i >= len(args) {
-				return nil, actionNone, fmt.Errorf("--token requires a value")
-			}
-			o.token = args[i]
-		default:
-			// Handle --flag=value syntax.
-			if k, v, ok := strings.Cut(arg, "="); ok {
-				switch k {
-				case "--vault":
-					o.vault = v
-				case "--mcp-url":
-					o.mcpURL = v
-				case "--token":
-					o.token = v
-				default:
-					return nil, actionNone, fmt.Errorf("unknown flag: %s\nrun 'msc --help' for usage", arg)
+			continue
+		case "--vault", "--mcp-url", "--token":
+			v := val
+			if !hasVal {
+				i++
+				if i >= len(args) {
+					return nil, actionNone, fmt.Errorf("%s requires a value", key)
 				}
-			} else {
-				return nil, actionNone, fmt.Errorf("unknown flag: %s\nrun 'msc --help' for usage", arg)
+				v = args[i]
+			}
+			switch key {
+			case "--vault":
+				o.vault = v
+			case "--mcp-url":
+				o.mcpURL = v
+			case "--token":
+				o.token = v
+			}
+			i++
+			continue
+		default:
+			return nil, actionNone, fmt.Errorf("unknown flag: %s\nrun 'msc --help' for usage", arg)
+		}
+	}
+
+	if i < len(args) {
+		remaining = append(remaining, args[i:]...)
+	}
+
+	return remaining, actionNone, nil
+}
+
+// resolveConfig resolves MuninnDB connection parameters from flags, env, and defaults.
+func resolveConfig(o *opts) (mcpURL, token, vault string) {
+	mcpURL = o.mcpURL
+	if mcpURL == "" {
+		mcpURL = store.DefaultMCPURL()
+	}
+	token = o.token
+	if token == "" {
+		token = store.DefaultToken()
+	}
+	vault = o.vault
+	if vault == "" {
+		if v := os.Getenv("MSC_VAULT"); v != "" {
+			vault = v
+		} else {
+			// Default to the name of the current working directory.
+			cwd, err := os.Getwd()
+			if err == nil {
+				// Get the last element of the path.
+				parts := strings.Split(strings.TrimRight(cwd, "/\\"), "/")
+				if len(parts) > 0 && parts[len(parts)-1] != "" {
+					vault = parts[len(parts)-1]
+				}
+			}
+			if vault == "" {
+				vault = "sidecar"
 			}
 		}
-		i++
 	}
-	return args[i:], actionNone, nil
+	return
 }
 
 func cmdList(o *opts) int {
@@ -407,22 +471,7 @@ func cmdList(o *opts) int {
 
 // cmdStatus checks MuninnDB connectivity without launching an agent.
 func cmdStatus(o *opts) int {
-	mcpURL := o.mcpURL
-	if mcpURL == "" {
-		mcpURL = store.DefaultMCPURL()
-	}
-	token := o.token
-	if token == "" {
-		token = store.DefaultToken()
-	}
-	vault := o.vault
-	if vault == "" {
-		if v := os.Getenv("MSC_VAULT"); v != "" {
-			vault = v
-		} else {
-			vault = "sidecar"
-		}
-	}
+	mcpURL, token, vault := resolveConfig(o)
 
 	s := store.New(mcpURL, token, vault, nil)
 	err := s.HealthCheck()
@@ -471,7 +520,7 @@ func cmdCompletion(shell string) int {
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "-h --help -v --version -d --debug -q --quiet -n --dry-run -j --json -f --force --vault --mcp-url --token" -- "$cur"))
+        COMPREPLY=($(compgen -W "-h --help -v --version -d --debug -q --quiet -n --dry-run -j --json -f --force --no-inject --vault --mcp-url --token" -- "$cur"))
         return
     fi
 
@@ -496,6 +545,7 @@ _msc() {
         {-n,--dry-run}'[Show what would happen]'
         {-j,--json}'[Output as JSON]'
         {-f,--force}'[Skip health check]'
+        '--no-inject[Disable memory injection]'
         '--vault[MuninnDB vault name]:vault:'
         '--mcp-url[MuninnDB MCP endpoint]:url:'
         '--token[MuninnDB bearer token]:token:'
@@ -519,6 +569,7 @@ complete -c msc -l quiet -s q -d "Suppress msc output"
 complete -c msc -l dry-run -s n -d "Show what would happen"
 complete -c msc -l json -s j -d "Output as JSON"
 complete -c msc -l force -s f -d "Skip health check"
+complete -c msc -l no-inject -d "Disable memory injection"
 complete -c msc -l vault -r -d "MuninnDB vault name"
 complete -c msc -l mcp-url -r -d "MuninnDB MCP endpoint"
 complete -c msc -l token -r -d "MuninnDB bearer token"
@@ -532,13 +583,26 @@ complete -c msc -l token -r -d "MuninnDB bearer token"
 		fmt.Println(`complete -c msc -a completion -d "Generate shell completions"`)
 
 	default:
-		logf("unsupported shell: %s (use bash, zsh, or fish)", shell)
+		logerr("unsupported shell: %s (use bash, zsh, or fish)", shell)
 		return exitUsage
 	}
 	return 0
 }
 
-func printVersion() {
+func printVersion(o *opts) {
+	if o.asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(map[string]string{
+			"version": version,
+			"commit":  commit,
+			"date":    date,
+			"go":      runtime.Version(),
+			"os":      runtime.GOOS,
+			"arch":    runtime.GOARCH,
+		})
+		return
+	}
 	fmt.Printf("msc %s (%s %s) %s %s/%s\n",
 		version, commit, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
@@ -590,6 +654,11 @@ func logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "msc: "+format+"\n", args...)
 }
 
+// logerr prints a human-friendly error to stderr with the msc: error: prefix.
+func logerr(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "msc: error: "+format+"\n", args...)
+}
+
 func usage(w io.Writer) {
 	names := agents.ListSorted()
 
@@ -626,7 +695,8 @@ Flags:
   -n, --dry-run      Show resolved config without launching
   -j, --json         Machine-readable output (for list, status)
   -f, --force        Launch even if MuninnDB is unreachable (captures lost)
-      --vault NAME   MuninnDB vault name (default: sidecar)
+      --no-inject    Disable memory injection (enabled by default)
+      --vault NAME   MuninnDB vault name (default: current directory name, fallback: sidecar)
       --mcp-url URL  MuninnDB MCP endpoint (default: http://127.0.0.1:8750/mcp)
       --token TOKEN  MuninnDB bearer token (default: ~/.muninn/mcp.token)
 
@@ -640,7 +710,7 @@ Examples:
   msc --json list               Machine-readable agent list
   msc status                    Check if MuninnDB is reachable
   msc -- claude --weird-flag    Use -- to pass flags starting with -
-  msc completion zsh >> ~/.zshrc Install zsh completions
+  msc completion zsh > ~/.zsh_functions/_msc  Save zsh completions
 
 Environment (flags take precedence):
   MUNINN_MCP_URL   MuninnDB MCP endpoint

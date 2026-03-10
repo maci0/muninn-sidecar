@@ -65,6 +65,14 @@ msc --json status
 # List supported agents
 msc list
 msc --json list
+
+# Install shell completions
+msc completion zsh >> ~/.zshrc
+msc completion bash >> ~/.bashrc
+msc completion fish > ~/.config/fish/completions/msc.fish
+
+# Disable memory injection
+msc --no-inject claude
 ```
 
 Flags must come before the agent name. Everything after it passes through to the agent unmodified. Use `--` to separate if needed:
@@ -82,6 +90,10 @@ msc -- claude --weird-flag
 5. All traffic is forwarded transparently (no extra headers, no modified User-Agent)
 6. Requests matching the agent's `CapturePaths` (e.g. `/v1/messages`, `GenerateContent`) are captured
 7. Captured exchanges are sent to MuninnDB asynchronously via MCP JSON-RPC
+
+### Memory injection
+
+By default, `msc` enriches outgoing LLM requests with relevant memories recalled from MuninnDB. The user's message is used as a search query, and matching memories are injected as system-level context (format-appropriate for Anthropic, OpenAI, and Gemini APIs). Injected context is stripped before storing captured exchanges to prevent recursive reinforcement. Use `--no-inject` to disable this.
 
 ### Streaming
 
@@ -113,6 +125,7 @@ Command-line flags take precedence over environment variables.
 -n, --dry-run      Show resolved config without launching
 -j, --json         Machine-readable output (for list, status)
 -f, --force        Launch even if MuninnDB is unreachable
+    --no-inject    Disable memory injection (enabled by default)
     --vault NAME   MuninnDB vault name
     --mcp-url URL  MuninnDB MCP endpoint
     --token TOKEN  MuninnDB bearer token

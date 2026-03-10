@@ -4,190 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/maci0/muninn-sidecar/internal/apiformat"
 )
-
-func TestDetectFormat(t *testing.T) {
-	tests := []struct {
-		name string
-		json string
-		want string
-	}{
-		{
-			name: "anthropic with system string",
-			json: `{"model":"claude-3","system":"You are helpful","messages":[]}`,
-			want: "anthropic",
-		},
-		{
-			name: "anthropic with content blocks",
-			json: `{"model":"claude-3","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
-			want: "anthropic",
-		},
-		{
-			name: "openai",
-			json: `{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`,
-			want: "openai",
-		},
-		{
-			name: "gemini",
-			json: `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`,
-			want: "gemini",
-		},
-		{
-			name: "unknown",
-			json: `{"prompt":"hello","max_tokens":100}`,
-			want: "",
-		},
-		{
-			name: "empty object",
-			json: `{}`,
-			want: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var doc map[string]any
-			json.Unmarshal([]byte(tt.json), &doc)
-			if got := detectFormat(doc); got != tt.want {
-				t.Errorf("detectFormat() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestExtractUserQuery(t *testing.T) {
-	tests := []struct {
-		name   string
-		json   string
-		format string
-		want   string
-	}{
-		{
-			name:   "anthropic string content",
-			json:   `{"messages":[{"role":"user","content":"hello world"}]}`,
-			format: "anthropic",
-			want:   "hello world",
-		},
-		{
-			name:   "anthropic array content",
-			json:   `{"messages":[{"role":"user","content":[{"type":"text","text":"part1"},{"type":"text","text":"part2"}]}]}`,
-			format: "anthropic",
-			want:   "part1 part2",
-		},
-		{
-			name:   "anthropic last user message",
-			json:   `{"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"reply"},{"role":"user","content":"second"}]}`,
-			format: "anthropic",
-			want:   "second",
-		},
-		{
-			name:   "anthropic empty messages",
-			json:   `{"messages":[]}`,
-			format: "anthropic",
-			want:   "",
-		},
-		{
-			name:   "openai string content",
-			json:   `{"messages":[{"role":"user","content":"hello openai"}]}`,
-			format: "openai",
-			want:   "hello openai",
-		},
-		{
-			name:   "openai array content",
-			json:   `{"messages":[{"role":"user","content":[{"type":"text","text":"multi"},{"type":"text","text":"part"}]}]}`,
-			format: "openai",
-			want:   "multi part",
-		},
-		{
-			name:   "openai no user messages",
-			json:   `{"messages":[{"role":"system","content":"you are helpful"}]}`,
-			format: "openai",
-			want:   "",
-		},
-		{
-			name:   "gemini",
-			json:   `{"contents":[{"role":"user","parts":[{"text":"hello gemini"}]}]}`,
-			format: "gemini",
-			want:   "hello gemini",
-		},
-		{
-			name:   "gemini last user",
-			json:   `{"contents":[{"role":"user","parts":[{"text":"first"}]},{"role":"model","parts":[{"text":"reply"}]},{"role":"user","parts":[{"text":"second"}]}]}`,
-			format: "gemini",
-			want:   "second",
-		},
-		{
-			name:   "gemini empty",
-			json:   `{"contents":[]}`,
-			format: "gemini",
-			want:   "",
-		},
-		{
-			name:   "unknown format",
-			json:   `{}`,
-			format: "",
-			want:   "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var doc map[string]any
-			json.Unmarshal([]byte(tt.json), &doc)
-			if got := extractUserQuery(doc, tt.format); got != tt.want {
-				t.Errorf("extractUserQuery() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestTruncateQuery(t *testing.T) {
-	tests := []struct {
-		name     string
-		query    string
-		maxChars int
-		wantLen  bool // true = check length, false = check exact
-		want     string
-	}{
-		{
-			name:     "short string unchanged",
-			query:    "hello",
-			maxChars: 100,
-			want:     "hello",
-		},
-		{
-			name:     "exact length unchanged",
-			query:    "hello",
-			maxChars: 5,
-			want:     "hello",
-		},
-		{
-			name:     "word boundary truncation",
-			query:    "hello beautiful world today",
-			maxChars: 20,
-			wantLen:  true,
-		},
-		{
-			name:     "hard truncation when no space",
-			query:    "abcdefghijklmnopqrstuvwxyz",
-			maxChars: 10,
-			want:     "abcdefghij",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := truncateQuery(tt.query, tt.maxChars)
-			if tt.wantLen {
-				if len(got) > tt.maxChars {
-					t.Errorf("truncateQuery() len = %d, want <= %d", len(got), tt.maxChars)
-				}
-			} else if got != tt.want {
-				t.Errorf("truncateQuery() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
 
 func TestFormatContextBlock(t *testing.T) {
 	t.Run("multiple memories within budget", func(t *testing.T) {
@@ -241,7 +60,7 @@ func TestInjectContextAnthropic(t *testing.T) {
 		var doc map[string]any
 		json.Unmarshal([]byte(`{"model":"claude-3","messages":[]}`), &doc)
 
-		result, err := injectContext(doc, "anthropic", "test context")
+		result, err := InjectContext(doc, apiformat.Anthropic, "test context")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -262,7 +81,7 @@ func TestInjectContextAnthropic(t *testing.T) {
 		var doc map[string]any
 		json.Unmarshal([]byte(`{"model":"claude-3","system":"You are helpful","messages":[]}`), &doc)
 
-		result, err := injectContext(doc, "anthropic", "test context")
+		result, err := InjectContext(doc, apiformat.Anthropic, "test context")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -273,11 +92,9 @@ func TestInjectContextAnthropic(t *testing.T) {
 		if len(sys) != 2 {
 			t.Fatalf("expected 2 system blocks, got %d", len(sys))
 		}
-		// First block should be original text.
 		if sys[0].(map[string]any)["text"] != "You are helpful" {
 			t.Error("first block should be original system text")
 		}
-		// Second block should be injected context.
 		if sys[1].(map[string]any)["text"] != "test context" {
 			t.Error("second block should be injected context")
 		}
@@ -287,7 +104,7 @@ func TestInjectContextAnthropic(t *testing.T) {
 		var doc map[string]any
 		json.Unmarshal([]byte(`{"model":"claude-3","system":[{"type":"text","text":"existing"}],"messages":[]}`), &doc)
 
-		result, err := injectContext(doc, "anthropic", "test context")
+		result, err := InjectContext(doc, apiformat.Anthropic, "test context")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -309,7 +126,7 @@ func TestInjectContextOpenAI(t *testing.T) {
 			{"role":"user","content":"hello"}
 		]}`), &doc)
 
-		result, err := injectContext(doc, "openai", "test context")
+		result, err := InjectContext(doc, apiformat.OpenAI, "test context")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -320,7 +137,6 @@ func TestInjectContextOpenAI(t *testing.T) {
 		if len(msgs) != 3 {
 			t.Fatalf("expected 3 messages, got %d", len(msgs))
 		}
-		// Original system first, then injected system, then user.
 		if msgs[0].(map[string]any)["content"] != "You are helpful" {
 			t.Error("first should be original system")
 		}
@@ -338,7 +154,7 @@ func TestInjectContextOpenAI(t *testing.T) {
 			{"role":"user","content":"hello"}
 		]}`), &doc)
 
-		result, err := injectContext(doc, "openai", "test context")
+		result, err := InjectContext(doc, apiformat.OpenAI, "test context")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -349,7 +165,6 @@ func TestInjectContextOpenAI(t *testing.T) {
 		if len(msgs) != 2 {
 			t.Fatalf("expected 2 messages, got %d", len(msgs))
 		}
-		// Injected system first, then user.
 		if msgs[0].(map[string]any)["content"] != "test context" {
 			t.Error("first should be injected context")
 		}
@@ -361,7 +176,7 @@ func TestInjectContextGemini(t *testing.T) {
 		var doc map[string]any
 		json.Unmarshal([]byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`), &doc)
 
-		result, err := injectContext(doc, "gemini", "test context")
+		result, err := InjectContext(doc, apiformat.Gemini, "test context")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -382,7 +197,7 @@ func TestInjectContextGemini(t *testing.T) {
 		var doc map[string]any
 		json.Unmarshal([]byte(`{"contents":[],"systemInstruction":{"parts":[{"text":"existing"}]}}`), &doc)
 
-		result, err := injectContext(doc, "gemini", "test context")
+		result, err := InjectContext(doc, apiformat.Gemini, "test context")
 		if err != nil {
 			t.Fatal(err)
 		}

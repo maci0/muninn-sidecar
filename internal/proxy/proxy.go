@@ -19,12 +19,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
 
 // maxStreamBuf caps the incremental SSE line buffer to prevent OOM.
 // Partial lines exceeding this limit are silently dropped.
 const maxStreamBuf = 1 << 20 // 1 MiB
+
+// maxTextAccum caps accumulated assistant text from SSE deltas.
+const maxTextAccum = 16 << 10 // 16 KiB
 
 // Proxy is a transparent reverse proxy that sits between a coding agent and
 // its LLM API upstream. All traffic is forwarded, but only requests matching
@@ -33,15 +38,18 @@ const maxStreamBuf = 1 << 20 // 1 MiB
 // ANTHROPIC_BASE_URL) to point here.
 //
 // Streaming (SSE) responses are handled specially: the body is wrapped so
-// chunks flow through to the agent in real-time while the last SSE data line
-// is tracked incrementally. On EOF the final data line is stored.
+// chunks flow through to the agent in real-time while text deltas are accumulated
+// from the stream to build a synthetic Anthropic-format response, falling back
+// to the last data line only if no text is found.
 type Proxy struct {
 	listenAddr     string                 // resolved after Start() when port is :0
 	upstream       *url.URL               // real LLM API (e.g. https://api.anthropic.com)
 	agentName      string                 // "claude", "gemini", etc. — used for tagging
 	store          *store.MuninnStore     // async MuninnDB writer
 	capturePaths   []string               // path substrings to capture; empty = capture all
+	excludePaths   []string               // path substrings to exclude from capture (checked first)
 	filterPatterns []string               // tool name patterns to strip from stored bodies
+	injector       *inject.Injector       // optional memory injector (nil = disabled)
 	server         *http.Server           // underlying HTTP server
 	reverseP       *httputil.ReverseProxy // stdlib reverse proxy with our hooks
 }
@@ -53,7 +61,9 @@ type Config struct {
 	AgentName      string             // agent name for tagging in MuninnDB
 	Store          *store.MuninnStore // MuninnDB writer
 	CapturePaths   []string           // path substrings to capture; empty = capture all
+	ExcludePaths   []string           // path substrings to exclude from capture (checked first)
 	FilterPatterns []string           // tool name patterns to strip; nil = defaultFilterPatterns
+	Injector       *inject.Injector   // optional memory injector; nil = disabled
 }
 
 // New creates a Proxy. Use ListenAddr "127.0.0.1:0" in Config to bind to a
@@ -76,7 +86,9 @@ func New(cfg Config) (*Proxy, error) {
 		agentName:      cfg.AgentName,
 		store:          cfg.Store,
 		capturePaths:   cfg.CapturePaths,
+		excludePaths:   cfg.ExcludePaths,
 		filterPatterns: filterPatterns,
+		injector:       cfg.Injector,
 	}
 
 	transport := &http.Transport{
@@ -156,14 +168,26 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				slog.Warn("failed to read request body for capture", "path", r.URL.Path, "err", err)
 			}
-			r.Body = io.NopCloser(bytes.NewReader(reqBody))
 		}
+
+		// Enrich with recalled memories if injector is enabled.
+		forwardBody := reqBody
+		if p.injector != nil && len(reqBody) > 0 {
+			enriched, _, err := p.injector.Enrich(r.Context(), reqBody)
+			if err == nil && len(enriched) > 0 {
+				forwardBody = enriched
+			}
+		}
+
+		// Set the forward body for the upstream request.
+		r.Body = io.NopCloser(bytes.NewReader(forwardBody))
+		r.ContentLength = int64(len(forwardBody))
 
 		ctx := &captureCtx{
 			start:          start,
 			method:         r.Method,
 			path:           r.URL.Path,
-			reqBody:        reqBody,
+			reqBody:        reqBody, // original body for capture (not enriched)
 			agent:          p.agentName,
 			filterPatterns: p.filterPatterns,
 		}
@@ -174,15 +198,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // shouldCapture returns true if the request path matches one of the
-// configured CapturePaths (case-insensitive). An empty CapturePaths list
-// means capture all. Case-insensitivity is needed because Gemini API key
-// mode uses lowercase paths (generateContent) while OAuth mode uses
+// configured CapturePaths (case-insensitive) and none of the ExcludePaths.
+// Exclusions are checked first. An empty CapturePaths list means capture
+// all (minus exclusions). Case-insensitivity is needed because Gemini API
+// key mode uses lowercase paths (generateContent) while OAuth mode uses
 // camelCase (streamGenerateContent).
 func (p *Proxy) shouldCapture(path string) bool {
+	lowerPath := strings.ToLower(path)
+	for _, ex := range p.excludePaths {
+		if strings.Contains(lowerPath, strings.ToLower(ex)) {
+			return false
+		}
+	}
 	if len(p.capturePaths) == 0 {
 		return true
 	}
-	lowerPath := strings.ToLower(path)
 	for _, sub := range p.capturePaths {
 		if strings.Contains(lowerPath, strings.ToLower(sub)) {
 			return true
@@ -278,9 +308,9 @@ func buildExchange(ctx *captureCtx, statusCode int, respBody json.RawMessage) *s
 		Agent:      ctx.agent,
 		Method:     ctx.method,
 		Path:       ctx.path,
-		ReqBody:    filterMCPTools(sanitizeJSON(ctx.reqBody), ctx.filterPatterns),
+		ReqBody:    cleanRequest(ctx.reqBody, ctx.filterPatterns),
 		StatusCode: statusCode,
-		RespBody:   filterMCPTools(respBody, ctx.filterPatterns),
+		RespBody:   cleanResponse(respBody, ctx.filterPatterns),
 		DurationMs: time.Since(ctx.start).Milliseconds(),
 	}
 	extractModelAndTokens(ex)
@@ -288,9 +318,9 @@ func buildExchange(ctx *captureCtx, statusCode int, respBody json.RawMessage) *s
 }
 
 // streamCapture wraps a streaming response body (SSE or ndjson). Data flows
-// through to the agent via Read() while the last SSE "data:" line is tracked
-// incrementally without buffering the entire stream. On EOF the last data
-// line is stored as the response summary.
+// through to the agent via Read() while text deltas are accumulated from the
+// stream to build a synthetic Anthropic-format response, falling back to the
+// last data line only if no text is found.
 //
 // sync.Once ensures the store call happens exactly once even if Read returns
 // EOF multiple times (which http.Response.Body contracts allow).
@@ -306,6 +336,10 @@ type streamCapture struct {
 	lineBuf  []byte // partial line carried across Read calls
 	lastData string // last complete "data: ..." value seen
 	totalLen int    // total bytes seen (for fallback summary)
+
+	// Accumulated assistant text from SSE content deltas.
+	textAccum strings.Builder // capped at maxTextAccum
+	usageJSON string          // last data line containing usage metadata
 }
 
 func (sc *streamCapture) Read(p []byte) (int, error) {
@@ -355,15 +389,34 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 			d := line[len("data: "):]
 			if d != "[DONE]" {
 				sc.lastData = d
+
+				// Accumulate text deltas from content events.
+				if delta := extractStreamDelta([]byte(d)); delta != "" && sc.textAccum.Len() < maxTextAccum {
+					remaining := maxTextAccum - sc.textAccum.Len()
+					if len(delta) > remaining {
+						delta = delta[:remaining]
+					}
+					sc.textAccum.WriteString(delta)
+				}
+
+				// Track usage metadata separately.
+				if strings.Contains(d, `"usage"`) || strings.Contains(d, `"usageMetadata"`) {
+					sc.usageJSON = d
+				}
 			}
 		}
 	}
 }
 
-// buildRespBody returns the response body for storage. If we captured a
-// "data:" line, use that (the last event typically has usage/stop_reason).
-// Otherwise, note the stream size.
+// buildRespBody returns the response body for storage. When assistant text
+// was accumulated from SSE deltas, it builds a synthetic Anthropic-format
+// response that ExtractAssistantMessage already understands. Usage metadata
+// is merged from the last usage-bearing SSE event. Falls back to raw lastData
+// when no text deltas were captured.
 func (sc *streamCapture) buildRespBody() json.RawMessage {
+	if sc.textAccum.Len() > 0 {
+		return sc.buildSyntheticResp()
+	}
 	if sc.lastData != "" && json.Valid([]byte(sc.lastData)) {
 		return json.RawMessage(sc.lastData)
 	}
@@ -376,6 +429,99 @@ func (sc *streamCapture) buildRespBody() json.RawMessage {
 		"_bytes":  sc.totalLen,
 	})
 	return b
+}
+
+// buildSyntheticResp constructs an Anthropic-format response body from
+// accumulated text deltas and usage metadata.
+func (sc *streamCapture) buildSyntheticResp() json.RawMessage {
+	resp := map[string]any{
+		"content": []map[string]string{
+			{"type": "text", "text": sc.textAccum.String()},
+		},
+	}
+
+	// Merge usage from the dedicated usage event or lastData.
+	usageSrc := sc.usageJSON
+	if usageSrc == "" {
+		usageSrc = sc.lastData
+	}
+	if usageSrc != "" {
+		var event map[string]any
+		if json.Unmarshal([]byte(usageSrc), &event) == nil {
+			if u, ok := event["usage"]; ok {
+				resp["usage"] = u
+			}
+			if u, ok := event["usageMetadata"]; ok {
+				resp["usageMetadata"] = u
+			}
+		}
+	}
+
+	b, _ := json.Marshal(resp)
+	return json.RawMessage(b)
+}
+
+// extractStreamDelta extracts text content from a single SSE data JSON line.
+// Supports Anthropic, OpenAI (chat + responses), and Gemini delta formats.
+// Returns "" on parse error or when the event contains no text delta.
+func extractStreamDelta(data []byte) string {
+	// Quick reject: must look like a JSON object.
+	if len(data) == 0 || data[0] != '{' {
+		return ""
+	}
+
+	var doc map[string]any
+	if json.Unmarshal(data, &doc) != nil {
+		return ""
+	}
+
+	// Anthropic: {"type":"content_block_delta","delta":{"type":"text_delta","text":"chunk"}}
+	if doc["type"] == "content_block_delta" {
+		if delta, ok := apiformat.GetMap(doc, "delta"); ok {
+			if text, ok := apiformat.GetString(delta, "text"); ok {
+				return text
+			}
+		}
+		return ""
+	}
+
+	// OpenAI responses API: {"type":"response.output_text.delta","delta":"chunk"}
+	if doc["type"] == "response.output_text.delta" {
+		if text, ok := apiformat.GetString(doc, "delta"); ok {
+			return text
+		}
+		return ""
+	}
+
+	// OpenAI chat: {"choices":[{"delta":{"content":"chunk"}}]}
+	if choices, ok := apiformat.GetArray(doc, "choices"); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			if delta, ok := apiformat.GetMap(choice, "delta"); ok {
+				if text, ok := apiformat.GetString(delta, "content"); ok {
+					return text
+				}
+			}
+		}
+		return ""
+	}
+
+	// Gemini: {"candidates":[{"content":{"parts":[{"text":"chunk"}]}}]}
+	if candidates, ok := apiformat.GetArray(doc, "candidates"); ok && len(candidates) > 0 {
+		if cand, ok := candidates[0].(map[string]any); ok {
+			if content, ok := apiformat.GetMap(cand, "content"); ok {
+				if parts, ok := apiformat.GetArray(content, "parts"); ok && len(parts) > 0 {
+					if part, ok := parts[0].(map[string]any); ok {
+						if text, ok := apiformat.GetString(part, "text"); ok {
+							return text
+						}
+					}
+				}
+			}
+		}
+		return ""
+	}
+
+	return ""
 }
 
 // extractModelAndTokens pulls the model name and token usage from the
@@ -459,6 +605,7 @@ func sanitizeJSON(data []byte) json.RawMessage {
 	return json.RawMessage(b)
 }
 
+// singleJoiningSlash joins two path segments ensuring exactly one slash between them.
 func singleJoiningSlash(a, b string) string {
 	aslash := strings.HasSuffix(a, "/")
 	bslash := strings.HasPrefix(b, "/")

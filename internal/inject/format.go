@@ -7,195 +7,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/maci0/muninn-sidecar/internal/apiformat"
 )
 
 // contextPrefix is the marker used to identify injected context blocks.
-// stripInjectedContext in the proxy package uses this to remove injected
-// content before capturing exchanges, preventing recursive reinforcement.
+// proxy/filter.go's injectedContextPrefix must match this prefix for
+// stripInjectedContext to remove injected content before capturing
+// exchanges, preventing recursive reinforcement.
 const contextPrefix = "<retrieved-context source=\"muninn\">"
 const contextSuffix = "</retrieved-context>"
-
-// detectFormat identifies the API format of a request body.
-// Returns "anthropic", "openai", "gemini", or "" for unknown.
-func detectFormat(doc map[string]any) string {
-	// Gemini: has "contents" array (check first since it's the most distinctive)
-	if _, ok := doc["contents"]; ok {
-		return "gemini"
-	}
-	// Gemini Cloud Code: wraps standard payload in a "request" field
-	if req, ok := doc["request"].(map[string]any); ok {
-		if _, ok := req["contents"]; ok {
-			return "gemini-cloudcode"
-		}
-	}
-	// Anthropic: has "system" field or content blocks with "type"
-	if _, ok := doc["system"]; ok {
-		return "anthropic"
-	}
-	// Check for Anthropic content block pattern in messages
-	if messages, ok := doc["messages"].([]any); ok && len(messages) > 0 {
-		for _, msg := range messages {
-			m, ok := msg.(map[string]any)
-			if !ok {
-				continue
-			}
-			if content, ok := m["content"].([]any); ok {
-				for _, block := range content {
-					if b, ok := block.(map[string]any); ok {
-						if _, hasType := b["type"]; hasType {
-							return "anthropic"
-						}
-					}
-				}
-			}
-		}
-	}
-	// OpenAI: has "messages" array (generic fallback)
-	if _, ok := doc["messages"]; ok {
-		return "openai"
-	}
-	return ""
-}
-
-// extractUserQuery walks the messages/contents backward to find the last
-// user message and returns its text content.
-func extractUserQuery(doc map[string]any, format string) string {
-	switch format {
-	case "anthropic":
-		return extractAnthropicUserQuery(doc)
-	case "openai":
-		return extractOpenAIUserQuery(doc)
-	case "gemini":
-		return extractGeminiUserQuery(doc)
-	case "gemini-cloudcode":
-		if req, ok := doc["request"].(map[string]any); ok {
-			return extractGeminiUserQuery(req)
-		}
-	}
-	return ""
-}
-
-func extractAnthropicUserQuery(doc map[string]any) string {
-	messages, ok := doc["messages"].([]any)
-	if !ok {
-		return ""
-	}
-	// Walk backward for last user message.
-	for i := len(messages) - 1; i >= 0; i-- {
-		m, ok := messages[i].(map[string]any)
-		if !ok {
-			continue
-		}
-		if m["role"] != "user" {
-			continue
-		}
-		// Content can be string or array of blocks.
-		if s, ok := m["content"].(string); ok {
-			return s
-		}
-		if blocks, ok := m["content"].([]any); ok {
-			var parts []string
-			for _, block := range blocks {
-				b, ok := block.(map[string]any)
-				if !ok {
-					continue
-				}
-				if b["type"] == "text" {
-					if t, ok := b["text"].(string); ok {
-						parts = append(parts, t)
-					}
-				}
-			}
-			return strings.Join(parts, " ")
-		}
-	}
-	return ""
-}
-
-func extractOpenAIUserQuery(doc map[string]any) string {
-	messages, ok := doc["messages"].([]any)
-	if !ok {
-		return ""
-	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		m, ok := messages[i].(map[string]any)
-		if !ok {
-			continue
-		}
-		if m["role"] != "user" {
-			continue
-		}
-		// Content can be string or array.
-		if s, ok := m["content"].(string); ok {
-			return s
-		}
-		if parts, ok := m["content"].([]any); ok {
-			var texts []string
-			for _, part := range parts {
-				p, ok := part.(map[string]any)
-				if !ok {
-					continue
-				}
-				if p["type"] == "text" {
-					if t, ok := p["text"].(string); ok {
-						texts = append(texts, t)
-					}
-				}
-			}
-			return strings.Join(texts, " ")
-		}
-	}
-	return ""
-}
-
-func extractGeminiUserQuery(doc map[string]any) string {
-	contents, ok := doc["contents"].([]any)
-	if !ok {
-		return ""
-	}
-	for i := len(contents) - 1; i >= 0; i-- {
-		c, ok := contents[i].(map[string]any)
-		if !ok {
-			continue
-		}
-		if c["role"] != "user" {
-			continue
-		}
-		parts, ok := c["parts"].([]any)
-		if !ok {
-			continue
-		}
-		var texts []string
-		for _, part := range parts {
-			p, ok := part.(map[string]any)
-			if !ok {
-				continue
-			}
-			if t, ok := p["text"].(string); ok {
-				texts = append(texts, t)
-			}
-		}
-		return strings.Join(texts, " ")
-	}
-	return ""
-}
-
-// truncateQuery truncates a query string to maxChars, breaking at a word
-// boundary when possible.
-func truncateQuery(query string, maxChars int) string {
-	if len(query) <= maxChars {
-		return query
-	}
-	// Try to break at a space within the last 20% of the budget.
-	cutoff := maxChars
-	minCut := maxChars - maxChars/5
-	for i := cutoff - 1; i >= minCut; i-- {
-		if query[i] == ' ' {
-			return query[:i]
-		}
-	}
-	return query[:maxChars]
-}
 
 // memory represents a recalled memory from MuninnDB.
 type memory struct {
@@ -240,17 +61,17 @@ func formatContextBlock(memories []memory, budget int) (string, int) {
 	return sb.String(), tokens
 }
 
-// injectContext injects a context block into the request document based on
+// InjectContext injects a context block into the request document based on
 // the API format. Returns the modified JSON body.
-func injectContext(doc map[string]any, format, block string) ([]byte, error) {
+func InjectContext(doc map[string]any, format, block string) ([]byte, error) {
 	switch format {
-	case "anthropic":
+	case apiformat.Anthropic:
 		injectAnthropicContext(doc, block)
-	case "openai":
+	case apiformat.OpenAI:
 		injectOpenAIContext(doc, block)
-	case "gemini":
+	case apiformat.Gemini:
 		injectGeminiContext(doc, block)
-	case "gemini-cloudcode":
+	case apiformat.GeminiCloudCode:
 		req, ok := doc["request"].(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("gemini-cloudcode missing request field")
@@ -262,8 +83,8 @@ func injectContext(doc map[string]any, format, block string) ([]byte, error) {
 	return json.Marshal(doc)
 }
 
-// injectAnthropicContext appends a text block with cache_control to the
-// system array. Converts string system to array if needed, creates if absent.
+// injectAnthropicContext appends a text block to the system array.
+// Converts string system to array if needed, creates if absent.
 func injectAnthropicContext(doc map[string]any, block string) {
 	contextBlock := map[string]any{
 		"type": "text",

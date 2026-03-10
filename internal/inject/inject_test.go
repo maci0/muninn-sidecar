@@ -2,6 +2,7 @@ package inject
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,6 +36,55 @@ func fakeRecallResponse(memories []memory) []byte {
 	return resp
 }
 
+// fakeWhereLeftOffEmpty returns an empty where_left_off response.
+func fakeWhereLeftOffEmpty() []byte {
+	inner, _ := json.Marshal(map[string]any{"memories": []any{}})
+	resp, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": string(inner)},
+			},
+		},
+		"id": 1,
+	})
+	return resp
+}
+
+// newRecallServer creates a test server that handles both where_left_off
+// (returning empty) and recall (returning the given handler).
+func newRecallServer(handler http.HandlerFunc) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		json.Unmarshal(body, &rpc)
+		if rpc.Params.Name == "muninn_where_left_off" {
+			w.Write(fakeWhereLeftOffEmpty())
+			return
+		}
+		if rpc.Params.Name == "muninn_guide" {
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": ""},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+		// Re-create request body for downstream handler.
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		handler(w, r)
+	}))
+}
+
 func newFakeServer(handler http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(handler)
 }
@@ -43,7 +93,7 @@ func TestEnrichAnthropic(t *testing.T) {
 	mems := []memory{
 		{ID: "m1", Concept: "user preference", Content: "User prefers Go", Score: 0.85},
 	}
-	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(fakeRecallResponse(mems))
 	})
 	defer srv.Close()
@@ -101,7 +151,7 @@ func TestEnrichOpenAI(t *testing.T) {
 	mems := []memory{
 		{ID: "m1", Concept: "context", Content: "Important context", Score: 0.9},
 	}
-	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(fakeRecallResponse(mems))
 	})
 	defer srv.Close()
@@ -135,7 +185,7 @@ func TestEnrichGemini(t *testing.T) {
 	mems := []memory{
 		{ID: "m1", Concept: "ctx", Content: "Gemini context", Score: 0.8},
 	}
-	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(fakeRecallResponse(mems))
 	})
 	defer srv.Close()
@@ -161,7 +211,7 @@ func TestEnrichGemini(t *testing.T) {
 }
 
 func TestEnrichTimeout(t *testing.T) {
-	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 		w.Write(fakeRecallResponse([]memory{{ID: "m1", Concept: "late", Content: "too late", Score: 0.9}}))
 	})
@@ -184,7 +234,7 @@ func TestEnrichTimeout(t *testing.T) {
 }
 
 func TestEnrichEmptyResults(t *testing.T) {
-	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(fakeRecallResponse(nil))
 	})
 	defer srv.Close()
@@ -202,7 +252,7 @@ func TestEnrichEmptyResults(t *testing.T) {
 }
 
 func TestEnrichServerError(t *testing.T) {
-	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		w.Write([]byte("internal error"))
 	})
@@ -233,67 +283,6 @@ func TestEnrichUnrecognizedFormat(t *testing.T) {
 	}
 }
 
-func TestTurnTracking(t *testing.T) {
-	callCount := 0
-	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		mems := []memory{
-			{ID: "m1", Concept: "ctx", Content: "repeated memory", Score: 0.9},
-		}
-		w.Write(fakeRecallResponse(mems))
-	})
-	defer srv.Close()
-
-	st := &stats.Stats{}
-	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Stats: st})
-
-	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-
-	// Turn 1: should inject.
-	result1, tokens1, _ := inj.Enrich(t.Context(), body)
-	if tokens1 == 0 {
-		t.Fatal("turn 1: expected injection")
-	}
-	if !strings.Contains(string(result1), "repeated memory") {
-		t.Error("turn 1: should contain memory")
-	}
-
-	// Turn 2: same memory should be suppressed (2-turn cooldown).
-	result2, tokens2, _ := inj.Enrich(t.Context(), body)
-	if tokens2 != 0 {
-		t.Error("turn 2: expected suppression (2-turn cooldown)")
-	}
-	if string(result2) != string(body) {
-		t.Error("turn 2: should return original body")
-	}
-
-	// Turn 3: still within cooldown (turn 1 wrote to slot, turn 2 had no injection
-	// so no new slot was written — but the injector only records on actual injection).
-	// Actually, since turn 2 had no injection, recordInjected was not called.
-	// So turnIdx is still at 1 (from turn 1's injection). When turn 3 calls
-	// filterRecent, it checks slots turnIdx (1) and turnIdx-1 (0), which still has m1.
-	// So turn 3 should also be suppressed.
-	result3, tokens3, _ := inj.Enrich(t.Context(), body)
-	if tokens3 != 0 {
-		t.Error("turn 3: expected suppression (still in cooldown window)")
-	}
-	if string(result3) != string(body) {
-		t.Error("turn 3: should return original body")
-	}
-
-	// Manually advance turns by injecting different memories to push m1 out.
-	inj.recordInjected([]string{"other1"})
-	inj.recordInjected([]string{"other2"})
-
-	// Now m1 should be allowed back.
-	result4, tokens4, _ := inj.Enrich(t.Context(), body)
-	if tokens4 == 0 {
-		t.Error("after cooldown: expected injection")
-	}
-	if !strings.Contains(string(result4), "repeated memory") {
-		t.Error("after cooldown: should contain memory again")
-	}
-}
 
 func TestTokenBudget(t *testing.T) {
 	mems := []memory{
@@ -301,7 +290,7 @@ func TestTokenBudget(t *testing.T) {
 		{ID: "m2", Concept: "medium score", Content: strings.Repeat("B", 500), Score: 0.85},
 		{ID: "m3", Concept: "low score", Content: strings.Repeat("C", 500), Score: 0.75},
 	}
-	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(fakeRecallResponse(mems))
 	})
 	defer srv.Close()
@@ -332,6 +321,527 @@ func TestEnrichInvalidJSON(t *testing.T) {
 	}
 	if string(result) != string(body) {
 		t.Error("expected original body for invalid JSON")
+	}
+}
+
+func TestWhereLeftOffInjection(t *testing.T) {
+	callCount := 0
+	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		json.Unmarshal(body, &rpc)
+
+		if rpc.Params.Name == "muninn_where_left_off" {
+			inner, _ := json.Marshal(map[string]any{
+				"memories": []map[string]any{
+					{"concept": "working on auth module", "summary": "Implementing OAuth flow"},
+				},
+			})
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": string(inner)},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+
+		// recall response
+		mems := []memory{
+			{ID: "m1", Concept: "auth pattern", Content: "Use JWT tokens", Score: 0.85},
+		}
+		w.Write(fakeRecallResponse(mems))
+	})
+	defer srv.Close()
+
+	st := &stats.Stats{}
+	inj := New(Config{
+		MCPURL:  srv.URL,
+		Vault:   "default",
+		Budget:  2048,
+		Timeout: 2 * time.Second,
+		Stats:   st,
+	})
+
+	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
+
+	// First call should include where_left_off context.
+	enriched, tokens, err := inj.Enrich(t.Context(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens <= 0 {
+		t.Error("expected positive token count")
+	}
+
+	resultStr := string(enriched)
+	if !strings.Contains(resultStr, "session-context") {
+		t.Error("first enrichment should contain session-context from where_left_off")
+	}
+	if !strings.Contains(resultStr, "auth module") {
+		t.Error("first enrichment should contain where_left_off memory concept")
+	}
+
+	// Second call should NOT contain session-context (only injected once).
+	enriched2, _, _ := inj.Enrich(t.Context(), body)
+	if strings.Contains(string(enriched2), "session-context") {
+		t.Error("second enrichment should NOT contain session-context")
+	}
+}
+
+func TestWhereLeftOffEmpty(t *testing.T) {
+	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		json.Unmarshal(body, &rpc)
+
+		if rpc.Params.Name == "muninn_where_left_off" {
+			inner, _ := json.Marshal(map[string]any{"memories": []any{}})
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": string(inner)},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+		
+		if rpc.Params.Name == "muninn_guide" {
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": ""},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+
+		w.Write(fakeRecallResponse(nil))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
+
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
+	result, tokens, _ := inj.Enrich(t.Context(), body)
+
+	if tokens != 0 {
+		t.Error("expected 0 tokens when both where_left_off and recall are empty")
+	}
+	if string(result) != string(body) {
+		t.Error("expected original body when nothing to inject")
+	}
+}
+
+func TestParseWhereLeftOff(t *testing.T) {
+	t.Run("with memories", func(t *testing.T) {
+		inner, _ := json.Marshal(map[string]any{
+			"memories": []map[string]any{
+				{"concept": "auth work", "summary": "OAuth implementation"},
+				{"concept": "db migration", "summary": "Adding new tables"},
+			},
+		})
+		resp, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"result": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": string(inner)},
+				},
+			},
+			"id": 1,
+		})
+		result := parseWhereLeftOff(resp)
+		if !strings.Contains(result, "session-context") {
+			t.Error("should contain session-context tag")
+		}
+		if !strings.Contains(result, "auth work") {
+			t.Error("should contain first concept")
+		}
+		if !strings.Contains(result, "db migration") {
+			t.Error("should contain second concept")
+		}
+	})
+
+	t.Run("empty memories", func(t *testing.T) {
+		inner, _ := json.Marshal(map[string]any{"memories": []any{}})
+		resp, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"result": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": string(inner)},
+				},
+			},
+			"id": 1,
+		})
+		result := parseWhereLeftOff(resp)
+		if result != "" {
+			t.Errorf("expected empty string for empty memories, got %q", result)
+		}
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		result := parseWhereLeftOff([]byte("not json"))
+		if result != "" {
+			t.Error("expected empty string for invalid JSON")
+		}
+	})
+}
+
+func TestWhereLeftOffWithOpenAI(t *testing.T) {
+	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		json.Unmarshal(body, &rpc)
+
+		if rpc.Params.Name == "muninn_where_left_off" {
+			inner, _ := json.Marshal(map[string]any{
+				"memories": []map[string]any{
+					{"concept": "debugging API", "summary": "Working on rate limiter"},
+				},
+			})
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": string(inner)},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+
+		mems := []memory{
+			{ID: "m1", Concept: "API pattern", Content: "Use middleware", Score: 0.85},
+		}
+		w.Write(fakeRecallResponse(mems))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
+
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"system","content":"You are helpful"},{"role":"user","content":"hello"}]}`)
+	enriched, tokens, err := inj.Enrich(t.Context(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens <= 0 {
+		t.Error("expected positive token count")
+	}
+
+	var doc map[string]any
+	json.Unmarshal(enriched, &doc)
+	msgs := doc["messages"].([]any)
+
+	// Should have system + injected-system + user = 3 messages.
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	}
+
+	// The injected message should contain both session-context and recall.
+	injMsg := msgs[1].(map[string]any)["content"].(string)
+	if !strings.Contains(injMsg, "session-context") {
+		t.Error("OpenAI injection should contain session-context")
+	}
+	if !strings.Contains(injMsg, "Use middleware") {
+		t.Error("OpenAI injection should contain recalled memory")
+	}
+}
+
+func TestWhereLeftOffWithGemini(t *testing.T) {
+	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		json.Unmarshal(body, &rpc)
+
+		if rpc.Params.Name == "muninn_where_left_off" {
+			inner, _ := json.Marshal(map[string]any{
+				"memories": []map[string]any{
+					{"concept": "Kubernetes setup", "summary": "Deploying pods"},
+				},
+			})
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": string(inner)},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+
+		mems := []memory{
+			{ID: "m1", Concept: "k8s", Content: "Use deployments", Score: 0.8},
+		}
+		w.Write(fakeRecallResponse(mems))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
+
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+	enriched, tokens, err := inj.Enrich(t.Context(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens <= 0 {
+		t.Error("expected positive token count")
+	}
+
+	var doc map[string]any
+	json.Unmarshal(enriched, &doc)
+	si := doc["systemInstruction"].(map[string]any)
+	parts := si["parts"].([]any)
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(parts))
+	}
+	text := parts[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "session-context") {
+		t.Error("Gemini injection should contain session-context")
+	}
+	if !strings.Contains(text, "Use deployments") {
+		t.Error("Gemini injection should contain recalled memory")
+	}
+}
+
+func TestConcurrentEnrichment(t *testing.T) {
+	mems := []memory{
+		{ID: "m1", Concept: "concurrent", Content: "test content", Score: 0.9},
+	}
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(fakeRecallResponse(mems))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
+
+	// First call triggers where_left_off via sessionOnce; subsequent calls should not.
+	done := make(chan struct{}, 10)
+	for i := range 10 {
+		go func(idx int) {
+			defer func() { done <- struct{}{} }()
+			body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"concurrent test"}]}`)
+			result, _, err := inj.Enrich(t.Context(), body)
+			if err != nil {
+				t.Errorf("goroutine %d: unexpected error: %v", idx, err)
+				return
+			}
+			if len(result) == 0 {
+				t.Errorf("goroutine %d: got empty result", idx)
+			}
+		}(i)
+	}
+	for range 10 {
+		<-done
+	}
+}
+
+func TestMalformedRecallResponse(t *testing.T) {
+	t.Run("empty content text", func(t *testing.T) {
+		srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": ""},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+		})
+		defer srv.Close()
+
+		inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
+		body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
+		result, tokens, _ := inj.Enrich(t.Context(), body)
+		if tokens != 0 {
+			t.Error("expected 0 tokens for empty recall content")
+		}
+		if string(result) != string(body) {
+			t.Error("expected original body")
+		}
+	})
+
+	t.Run("non-text content type", func(t *testing.T) {
+		srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "image", "data": "base64stuff"},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+		})
+		defer srv.Close()
+
+		inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
+		body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
+		result, tokens, _ := inj.Enrich(t.Context(), body)
+		if tokens != 0 {
+			t.Error("expected 0 tokens for non-text content")
+		}
+		if string(result) != string(body) {
+			t.Error("expected original body")
+		}
+	})
+
+	t.Run("garbled JSON in text field", func(t *testing.T) {
+		srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": "{broken json!!!"},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+		})
+		defer srv.Close()
+
+		inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
+		body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
+		result, tokens, _ := inj.Enrich(t.Context(), body)
+		if tokens != 0 {
+			t.Error("expected 0 tokens for garbled recall response")
+		}
+		if string(result) != string(body) {
+			t.Error("expected original body for garbled response")
+		}
+	})
+}
+
+func TestSessionContextOnlyInjection(t *testing.T) {
+	// Recall returns nothing, but where_left_off has context.
+	// The session context alone should be injected.
+	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		json.Unmarshal(body, &rpc)
+
+		if rpc.Params.Name == "muninn_where_left_off" {
+			inner, _ := json.Marshal(map[string]any{
+				"memories": []map[string]any{
+					{"concept": "session context only", "summary": "Previous work"},
+				},
+			})
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": string(inner)},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+
+		// Empty recall.
+		w.Write(fakeRecallResponse(nil))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
+
+	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
+	enriched, tokens, err := inj.Enrich(t.Context(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens <= 0 {
+		t.Fatal("expected positive token count for session-context-only injection")
+	}
+
+	resultStr := string(enriched)
+	if !strings.Contains(resultStr, "session-context") {
+		t.Error("should contain session-context block")
+	}
+	if !strings.Contains(resultStr, "session context only") {
+		t.Error("should contain the where_left_off concept")
+	}
+}
+
+func TestWhereLeftOffRawText(t *testing.T) {
+	// where_left_off returns non-JSON text (raw summary).
+	resp, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "Previously working on auth module refactor"},
+			},
+		},
+		"id": 1,
+	})
+
+	result := parseWhereLeftOff(resp)
+	if !strings.Contains(result, "session-context") {
+		t.Error("raw text should produce session-context block")
+	}
+	if !strings.Contains(result, "auth module refactor") {
+		t.Error("should contain the raw text")
+	}
+}
+
+func TestWhereLeftOffNullText(t *testing.T) {
+	// Edge case: text is "null" or "[]".
+	for _, text := range []string{"null", "[]", ""} {
+		resp, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"result": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": text},
+				},
+			},
+			"id": 1,
+		})
+		result := parseWhereLeftOff(resp)
+		if result != "" {
+			t.Errorf("expected empty for text=%q, got %q", text, result)
+		}
 	}
 }
 

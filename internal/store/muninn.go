@@ -5,7 +5,9 @@ package store
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,8 +16,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
+
+// dedupRingSize is the number of slots in the dedup ring buffer.
+// Each slot holds one hash; the ring advances each flush cycle (~2s).
+const dedupRingSize = 8
+
+// formattedMemory holds a pre-formatted exchange ready for MuninnDB.
+type formattedMemory struct {
+	concept string
+	content string
+	tags    []string
+}
 
 // MuninnStore delivers captured API exchanges to MuninnDB via MCP JSON-RPC.
 // Writes are async: Store() enqueues to a buffered channel, and a background
@@ -147,10 +161,18 @@ func healthURLFromMCP(mcpURL string) (string, error) {
 // up to 10 and flushing every 2 seconds. This amortizes MCP call overhead
 // while keeping latency bounded. It exits when the queue channel is closed
 // (via Drain), flushing any remaining items first.
+//
+// Each exchange is formatted and deduplicated before batching. The dedup
+// ring buffer (8 slots, advanced each flush cycle) prevents duplicate
+// concepts from being stored when the same user message generates multiple
+// API calls in a tool-use chain. This runs in a single goroutine, so no
+// locking is needed for the ring buffer.
 func (s *MuninnStore) worker() {
 	defer close(s.done)
 
-	var batch []*CapturedExchange
+	var batch []formattedMemory
+	var dedupRing [dedupRingSize]uint64
+	ringIdx := 0
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -159,48 +181,114 @@ func (s *MuninnStore) worker() {
 		case ex, ok := <-s.queue:
 			if !ok {
 				if len(batch) > 0 {
-					s.flush(batch)
+					s.flushFormatted(batch)
 				}
 				return
 			}
-			batch = append(batch, ex)
+			if fm := s.formatAndDedup(ex, &dedupRing, &ringIdx); fm != nil {
+				batch = append(batch, *fm)
+			}
 			if len(batch) >= 10 {
-				s.flush(batch)
+				s.flushFormatted(batch)
 				batch = nil
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
-				s.flush(batch)
+				s.flushFormatted(batch)
 				batch = nil
 			}
+			// Advance ring slot each flush cycle to expire old hashes.
+			ringIdx = (ringIdx + 1) % dedupRingSize
+			dedupRing[ringIdx] = 0
 		}
 	}
 }
 
-// flush sends a batch to MuninnDB: single items use muninn_remember,
-// multiple items use muninn_remember_batch.
-func (s *MuninnStore) flush(batch []*CapturedExchange) {
+// formatAndDedup formats an exchange, strips system-reminders, skips empty
+// captures, appends metadata tags to the content footer, and deduplicates by concept hash. Returns nil if the exchange
+// should be dropped. The dedup ring buffer and index are modified in place.
+func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]uint64, ringIdx *int) *formattedMemory {
+	userMsg := apiformat.StripSystemReminders(apiformat.ExtractUserMessage(ex.ReqBody))
+	assistantMsg := apiformat.ExtractAssistantMessage(ex.RespBody)
+
+	// Build concept.
+	var concept string
+	if userMsg != "" {
+		concept = apiformat.TruncateText(userMsg, 120)
+	} else {
+		concept = fmt.Sprintf("[%s] %s %s -> %d (%dms)",
+			ex.Agent, ex.Method, ex.Path, ex.StatusCode, ex.DurationMs)
+	}
+
+	// Build content.
+	var sb strings.Builder
+	if userMsg != "" {
+		sb.WriteString("User:\n")
+		sb.WriteString(apiformat.TruncateText(userMsg, 4000))
+		sb.WriteString("\n\n")
+	}
+	if assistantMsg != "" {
+		sb.WriteString("Assistant:\n")
+		sb.WriteString(apiformat.TruncateText(assistantMsg, 4000))
+	}
+
+	// Skip empty captures: if both user and assistant are empty after
+	// stripping, this exchange has no meaningful conversation content.
+	if userMsg == "" && assistantMsg == "" {
+		slog.Debug("skipping empty exchange", "path", ex.Path)
+		if s.stats != nil {
+			s.stats.Deduped.Add(1)
+		}
+		return nil
+	}
+
+	content := sb.String()
+
+	// Dedup by concept hash (FNV-1a). Skip if seen in the ring buffer.
+	h := fnv.New64a()
+	h.Write([]byte(concept))
+	hash := h.Sum64()
+
+	for i := range ring {
+		if ring[i] == hash {
+			slog.Debug("dedup: skipping duplicate concept", "concept", apiformat.TruncateText(concept, 60))
+			if s.stats != nil {
+				s.stats.Deduped.Add(1)
+			}
+			return nil
+		}
+	}
+	ring[*ringIdx] = hash
+
+	return &formattedMemory{
+		concept: concept,
+		content: content,
+		tags:    buildTags(ex),
+	}
+}
+
+// flushFormatted sends a batch of pre-formatted memories to MuninnDB:
+// single items use muninn_remember, multiple use muninn_remember_batch.
+func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 	var err error
 	n := int64(len(batch))
 
 	if len(batch) == 1 {
-		ex := batch[0]
-		concept, content := formatExchange(ex)
+		fm := batch[0]
 		err = s.callTool("muninn_remember", map[string]any{
 			"vault":   s.vault,
-			"concept": concept,
-			"content": content,
-			"tags":    buildTags(ex),
+			"concept": fm.concept,
+			"content": fm.content,
+			"tags":    fm.tags,
 			"type":    "observation",
 		})
 	} else {
 		memories := make([]map[string]any, 0, len(batch))
-		for _, ex := range batch {
-			concept, content := formatExchange(ex)
+		for _, fm := range batch {
 			memories = append(memories, map[string]any{
-				"concept": concept,
-				"content": content,
-				"tags":    buildTags(ex),
+				"concept": fm.concept,
+				"content": fm.content,
+				"tags":    fm.tags,
 				"type":    "observation",
 			})
 		}
@@ -219,11 +307,16 @@ func (s *MuninnStore) flush(batch []*CapturedExchange) {
 	}
 }
 
-// maxRetries is the number of attempts for transient MuninnDB failures.
-const maxRetries = 3
+// maxAttempts is the number of attempts for transient MuninnDB failures.
+const maxAttempts = 3
+
+// clientError is a non-retryable error for 4xx responses from MuninnDB.
+type clientError struct{ status int }
+
+func (e *clientError) Error() string { return fmt.Sprintf("client error: HTTP %d", e.status) }
 
 // callTool builds a JSON-RPC 2.0 tools/call envelope and sends it to MuninnDB.
-// Retries up to maxRetries times with exponential backoff for transient failures
+// Attempts the call up to maxAttempts times with exponential backoff for transient failures
 // (network errors, 5xx). Client errors (4xx) are not retried.
 func (s *MuninnStore) callTool(name string, args map[string]any) error {
 	payload := map[string]any{
@@ -243,7 +336,7 @@ func (s *MuninnStore) callTool(name string, args map[string]any) error {
 	}
 
 	var lastErr error
-	for attempt := range maxRetries {
+	for attempt := range maxAttempts {
 		if attempt > 0 {
 			backoff := time.Duration(1<<attempt) * time.Second // 2s, 4s
 			slog.Debug("retrying MCP call", "attempt", attempt+1, "backoff", backoff, "tool", name)
@@ -254,9 +347,14 @@ func (s *MuninnStore) callTool(name string, args map[string]any) error {
 		if lastErr == nil {
 			return nil
 		}
+		// Don't retry client errors (4xx) — they won't succeed on retry.
+		var ce *clientError
+		if errors.As(lastErr, &ce) {
+			return lastErr
+		}
 	}
 
-	slog.Error("MCP call failed after retries", "tool", name, "attempts", maxRetries, "err", lastErr)
+	slog.Error("MCP call failed after retries", "tool", name, "attempts", maxAttempts, "err", lastErr)
 	return lastErr
 }
 
@@ -285,39 +383,46 @@ func (s *MuninnStore) doRequest(body []byte) error {
 		return fmt.Errorf("server error: HTTP %d", resp.StatusCode)
 	}
 	if resp.StatusCode >= 400 {
-		// Client error — don't retry, but warn.
 		slog.Warn("muninn returned client error", "status", resp.StatusCode)
+		return &clientError{status: resp.StatusCode}
 	}
 
 	return nil
 }
 
-// formatExchange builds the concept (short label used as MuninnDB's primary
-// search key) and content (full structured body) for one captured exchange.
+// formatExchange is a legacy formatter used only in tests.
 func formatExchange(ex *CapturedExchange) (concept, content string) {
-	concept = fmt.Sprintf("[%s] %s %s -> %d (%dms)",
-		ex.Agent, ex.Method, ex.Path, ex.StatusCode, ex.DurationMs)
+	userMsg := apiformat.ExtractUserMessage(ex.ReqBody)
+	assistantMsg := apiformat.ExtractAssistantMessage(ex.RespBody)
+
+	// Concept: truncated user message for search, with agent prefix.
+	if userMsg != "" {
+		concept = apiformat.TruncateText(userMsg, 120)
+	} else {
+		// Fallback to HTTP metadata if we can't extract content.
+		concept = fmt.Sprintf("[%s] %s %s -> %d (%dms)",
+			ex.Agent, ex.Method, ex.Path, ex.StatusCode, ex.DurationMs)
+	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Agent: %s\n", ex.Agent))
-	sb.WriteString(fmt.Sprintf("Time: %s\n", ex.Timestamp.Format(time.RFC3339)))
-	sb.WriteString(fmt.Sprintf("Request: %s %s\n", ex.Method, ex.Path))
-	sb.WriteString(fmt.Sprintf("Status: %d | Duration: %dms\n", ex.StatusCode, ex.DurationMs))
 
-	if ex.Model != "" {
-		sb.WriteString(fmt.Sprintf("Model: %s\n", ex.Model))
-	}
-	if ex.TokensIn > 0 || ex.TokensOut > 0 {
-		sb.WriteString(fmt.Sprintf("Tokens: %d in / %d out\n", ex.TokensIn, ex.TokensOut))
-	}
-	if ex.CacheWrite > 0 || ex.CacheRead > 0 {
-		sb.WriteString(fmt.Sprintf("Cache: %d write / %d read\n", ex.CacheWrite, ex.CacheRead))
+	if userMsg != "" {
+		sb.WriteString("User:\n")
+		sb.WriteString(apiformat.TruncateText(userMsg, 4000))
+		sb.WriteString("\n\n")
 	}
 
-	sb.WriteString("\n--- Request Body ---\n")
-	sb.WriteString(truncateJSON(ex.ReqBody, 4096))
-	sb.WriteString("\n\n--- Response Body ---\n")
-	sb.WriteString(truncateJSON(ex.RespBody, 4096))
+	if assistantMsg != "" {
+		sb.WriteString("Assistant:\n")
+		sb.WriteString(apiformat.TruncateText(assistantMsg, 4000))
+	}
+
+	// Fallback: if neither was extracted, include truncated raw bodies.
+	if userMsg == "" && assistantMsg == "" {
+		sb.WriteString(truncateJSON(ex.ReqBody, 2048))
+		sb.WriteString("\n\n")
+		sb.WriteString(truncateJSON(ex.RespBody, 2048))
+	}
 
 	return concept, sb.String()
 }

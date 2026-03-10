@@ -24,7 +24,7 @@ func TestFilterAnthropicToolUse(t *testing.T) {
 		]
 	}`)
 
-	result := filterMCPTools(body, []string{"muninn"})
+	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -66,7 +66,7 @@ func TestFilterOpenAIToolCalls(t *testing.T) {
 		]
 	}`)
 
-	result := filterMCPTools(body, []string{"muninn"})
+	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -106,7 +106,7 @@ func TestFilterPreservesNonMuninnTools(t *testing.T) {
 		]
 	}`)
 
-	result := filterMCPTools(body, []string{"muninn"})
+	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	json.Unmarshal(result, &doc)
@@ -143,7 +143,7 @@ func TestFilterNoMatchReturnsOriginal(t *testing.T) {
 		]
 	}`)
 
-	result := filterMCPTools(body, []string{"muninn"})
+	result := cleanResponse(body, []string{"muninn"})
 
 	// Should be byte-identical since nothing matched.
 	if string(result) != string(body) {
@@ -153,7 +153,7 @@ func TestFilterNoMatchReturnsOriginal(t *testing.T) {
 
 func TestFilterInvalidJSON(t *testing.T) {
 	body := json.RawMessage(`not json at all`)
-	result := filterMCPTools(body, []string{"muninn"})
+	result := cleanResponse(body, []string{"muninn"})
 
 	if string(result) != string(body) {
 		t.Fatal("expected invalid JSON to pass through unchanged")
@@ -162,13 +162,13 @@ func TestFilterInvalidJSON(t *testing.T) {
 
 func TestFilterEmptyPatterns(t *testing.T) {
 	body := json.RawMessage(`{"messages":[]}`)
-	result := filterMCPTools(body, nil)
+	result := cleanResponse(body, nil)
 
 	if string(result) != string(body) {
 		t.Fatal("expected nil patterns to skip filtering")
 	}
 
-	result = filterMCPTools(body, []string{})
+	result = cleanResponse(body, []string{})
 	if string(result) != string(body) {
 		t.Fatal("expected empty patterns to skip filtering")
 	}
@@ -186,7 +186,7 @@ func TestFilterToolDefinitions(t *testing.T) {
 		"messages": [{"role": "user", "content": "hello"}]
 	}`)
 
-	result := filterMCPTools(body, []string{"muninn"})
+	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	json.Unmarshal(result, &doc)
@@ -218,7 +218,7 @@ func TestFilterAnthropicResponse(t *testing.T) {
 		"usage": {"input_tokens": 100, "output_tokens": 50}
 	}`)
 
-	result := filterMCPTools(body, []string{"muninn"})
+	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	json.Unmarshal(result, &doc)
@@ -237,6 +237,126 @@ func TestFilterAnthropicResponse(t *testing.T) {
 	}
 }
 
+// --- stripInjectedContext tests ---
+
+func TestStripInjectedContextAnthropicArray(t *testing.T) {
+	body := json.RawMessage(`{
+		"model":"claude-3",
+		"system":[
+			{"type":"text","text":"You are helpful"},
+			{"type":"text","text":"<retrieved-context source=\"muninn\">\n[test] (relevance: 0.90)\nsome memory\n</retrieved-context>","cache_control":{"type":"ephemeral"}}
+		],
+		"messages":[{"role":"user","content":"hello"}]
+	}`)
+
+	result := cleanRequest(body, nil)
+
+	var doc map[string]any
+	json.Unmarshal(result, &doc)
+
+	sys := doc["system"].([]any)
+	if len(sys) != 1 {
+		t.Fatalf("expected 1 system block after stripping, got %d", len(sys))
+	}
+	if sys[0].(map[string]any)["text"] != "You are helpful" {
+		t.Error("should keep original system text")
+	}
+}
+
+func TestStripInjectedContextAnthropicString(t *testing.T) {
+	body := json.RawMessage(`{
+		"model":"claude-3",
+		"system":"<retrieved-context source=\"muninn\">\nsome memory\n</retrieved-context>",
+		"messages":[{"role":"user","content":"hello"}]
+	}`)
+
+	result := cleanRequest(body, nil)
+
+	var doc map[string]any
+	json.Unmarshal(result, &doc)
+
+	if _, exists := doc["system"]; exists {
+		t.Error("system field should be removed when it's entirely injected context")
+	}
+}
+
+func TestStripInjectedContextOpenAI(t *testing.T) {
+	body := json.RawMessage(`{
+		"model":"gpt-4",
+		"messages":[
+			{"role":"system","content":"You are helpful"},
+			{"role":"system","content":"<retrieved-context source=\"muninn\">\nsome memory\n</retrieved-context>"},
+			{"role":"user","content":"hello"}
+		]
+	}`)
+
+	result := cleanRequest(body, nil)
+
+	var doc map[string]any
+	json.Unmarshal(result, &doc)
+
+	msgs := doc["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages after stripping, got %d", len(msgs))
+	}
+	if msgs[0].(map[string]any)["content"] != "You are helpful" {
+		t.Error("should keep original system message")
+	}
+	if msgs[1].(map[string]any)["content"] != "hello" {
+		t.Error("should keep user message")
+	}
+}
+
+func TestStripInjectedContextGemini(t *testing.T) {
+	body := json.RawMessage(`{
+		"contents":[{"role":"user","parts":[{"text":"hello"}]}],
+		"systemInstruction":{
+			"parts":[
+				{"text":"existing instruction"},
+				{"text":"<retrieved-context source=\"muninn\">\nsome memory\n</retrieved-context>"}
+			]
+		}
+	}`)
+
+	result := cleanRequest(body, nil)
+
+	var doc map[string]any
+	json.Unmarshal(result, &doc)
+
+	si := doc["systemInstruction"].(map[string]any)
+	parts := si["parts"].([]any)
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part after stripping, got %d", len(parts))
+	}
+	if parts[0].(map[string]any)["text"] != "existing instruction" {
+		t.Error("should keep original instruction")
+	}
+}
+
+func TestStripInjectedContextNoMarkers(t *testing.T) {
+	body := json.RawMessage(`{
+		"model":"gpt-4",
+		"messages":[
+			{"role":"system","content":"You are helpful"},
+			{"role":"user","content":"hello"}
+		]
+	}`)
+
+	result := cleanRequest(body, nil)
+
+	if string(result) != string(body) {
+		t.Error("should return original body when no markers found")
+	}
+}
+
+func TestStripInjectedContextInvalidJSON(t *testing.T) {
+	body := json.RawMessage(`not json`)
+	result := cleanRequest(body, nil)
+	if string(result) != `"not json"` {
+		t.Errorf("expected sanitized string, got %s", string(result))
+	}
+}
+
 func TestFilterCaseInsensitive(t *testing.T) {
 	body := json.RawMessage(`{
 		"messages": [
@@ -249,7 +369,7 @@ func TestFilterCaseInsensitive(t *testing.T) {
 		]
 	}`)
 
-	result := filterMCPTools(body, []string{"muninn"})
+	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	json.Unmarshal(result, &doc)

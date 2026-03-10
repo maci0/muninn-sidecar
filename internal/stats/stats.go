@@ -12,14 +12,17 @@ import (
 
 // Stats tracks session-level counters for proxy and store activity.
 type Stats struct {
-	Captured    atomic.Int64 // exchanges successfully queued
-	Dropped     atomic.Int64 // exchanges dropped (queue full)
-	Flushed     atomic.Int64 // exchanges delivered to MuninnDB
-	FlushErrors atomic.Int64 // delivery failures (after retries)
-	TokensIn    atomic.Int64 // total input/prompt tokens
-	TokensOut   atomic.Int64 // total output/completion tokens
-	CacheWrite  atomic.Int64 // Anthropic cache_creation_input_tokens
-	CacheRead   atomic.Int64 // Anthropic cache_read_input_tokens
+	Captured       atomic.Int64 // exchanges successfully queued
+	Dropped        atomic.Int64 // exchanges dropped (queue full)
+	Deduped        atomic.Int64 // exchanges skipped (duplicate concept)
+	Flushed        atomic.Int64 // exchanges delivered to MuninnDB
+	FlushErrors    atomic.Int64 // delivery failures (after retries)
+	TokensIn       atomic.Int64 // total input/prompt tokens
+	TokensOut      atomic.Int64 // total output/completion tokens
+	CacheWrite     atomic.Int64 // Anthropic cache_creation_input_tokens
+	CacheRead      atomic.Int64 // Anthropic cache_read_input_tokens
+	Injections     atomic.Int64 // requests enriched with recalled memories
+	InjectedTokens atomic.Int64 // approximate tokens injected across all enrichments
 
 	models sync.Map // model name → *atomic.Int64
 }
@@ -60,6 +63,7 @@ type ModelCount struct {
 func (s *Stats) Summary() string {
 	captured := s.Captured.Load()
 	dropped := s.Dropped.Load()
+	deduped := s.Deduped.Load()
 	flushed := s.Flushed.Load()
 	errors := s.FlushErrors.Load()
 
@@ -71,15 +75,18 @@ func (s *Stats) Summary() string {
 
 	// Line 1: exchange counts.
 	sb.WriteString(fmt.Sprintf("session: %d captured", flushed))
+	if deduped > 0 {
+		sb.WriteString(fmt.Sprintf(", %d deduped", deduped))
+	}
 	if dropped > 0 {
 		sb.WriteString(fmt.Sprintf(", %d dropped", dropped))
 	}
 	if errors > 0 {
 		sb.WriteString(fmt.Sprintf(", %d errors", errors))
 	}
-	if captured != flushed {
+	if captured != flushed+deduped {
 		// Some are still in queue (shouldn't happen after drain, but be safe).
-		sb.WriteString(fmt.Sprintf(" (%d queued)", captured-flushed))
+		sb.WriteString(fmt.Sprintf(" (%d queued)", captured-flushed-deduped))
 	}
 
 	// Line 2: token totals (only if we saw any).
@@ -96,7 +103,15 @@ func (s *Stats) Summary() string {
 		}
 	}
 
-	// Line 3: model breakdown (only if we tracked any).
+	// Line 3: injection stats (only if any injections happened).
+	injections := s.Injections.Load()
+	injTokens := s.InjectedTokens.Load()
+	if injections > 0 {
+		sb.WriteString(fmt.Sprintf("\ninject: %d enriched, %s tokens injected",
+			injections, formatCount(injTokens)))
+	}
+
+	// Line 4: model breakdown (only if we tracked any).
 	models := s.Models()
 	if len(models) > 0 {
 		sb.WriteString("\nmodels: ")

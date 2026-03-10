@@ -8,9 +8,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -18,7 +20,7 @@ import (
 type Config struct {
 	MCPURL    string        // MuninnDB MCP endpoint
 	Token     string        // Bearer token for auth
-	Vault     string        // vault to recall from (default: "default")
+	Vault     string        // vault to recall from (default: "sidecar")
 	Budget    int           // max approximate tokens to inject (default: 2048)
 	Threshold float64       // min relevance score (default: 0.4)
 	Timeout   time.Duration // recall timeout (default: 200ms)
@@ -36,16 +38,16 @@ type Injector struct {
 	stats     *stats.Stats
 	client    *http.Client
 
-	// Turn tracking: ring buffer of 5 turns, 2-turn cooldown.
-	mu       sync.Mutex
-	turnRing [5]map[string]bool
-	turnIdx  int
+	// Session-start: call where_left_off and guide once on first enrichment.
+	sessionOnce sync.Once
+	sessionCtx  string // cached where_left_off context block, empty if none
+	sessionMu   sync.Mutex
 }
 
 // New creates an Injector with the given configuration.
 func New(cfg Config) *Injector {
 	if cfg.Vault == "" {
-		cfg.Vault = "default"
+		cfg.Vault = "sidecar"
 	}
 	if cfg.Budget <= 0 {
 		cfg.Budget = 2048
@@ -72,13 +74,53 @@ func New(cfg Config) *Injector {
 // Enrich parses a request body, recalls relevant memories, and injects them
 // as system-level context. Returns the enriched body, estimated injected token
 // count, and any error. On any failure, returns the original body unchanged.
+//
+// On the first call (session start), it also calls muninn_where_left_off and
+// muninn_guide to provide continuity from the previous session and global guidelines.
 func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, error) {
+	// On first call, fetch where_left_off context and guide concurrently (best-effort).
+	inj.sessionOnce.Do(func() {
+		var wg sync.WaitGroup
+		var wlo, guide string
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			ctxW, cancelW := context.WithTimeout(ctx, inj.timeout)
+			defer cancelW()
+			wlo = inj.fetchWhereLeftOff(ctxW)
+		}()
+
+		go func() {
+			defer wg.Done()
+			ctxG, cancelG := context.WithTimeout(ctx, inj.timeout)
+			defer cancelG()
+			guide = inj.fetchGuide(ctxG)
+		}()
+
+		wg.Wait()
+
+		var sb strings.Builder
+		if wlo != "" {
+			sb.WriteString(wlo)
+		}
+		if guide != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(guide)
+		}
+		inj.sessionMu.Lock()
+		inj.sessionCtx = sb.String()
+		inj.sessionMu.Unlock()
+	})
+
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return body, 0, nil // not JSON, pass through
 	}
 
-	format := detectFormat(doc)
+	format := apiformat.DetectFormat(doc)
 	if format == "" {
 		keys := make([]string, 0, len(doc))
 		for k := range doc {
@@ -88,15 +130,16 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		return body, 0, nil // unknown format, pass through
 	}
 
-	query := extractUserQuery(doc, format)
+	// Extract the last 3 turns of conversation to provide a rich semantic query.
+	query := apiformat.ExtractRecentContext(doc, format, 3)
 	if query == "" {
 		slog.Debug("inject: no user query found", "format", format)
-		return body, 0, nil // no user message to search with
+		return body, 0, nil // no message to search with
 	}
 
 	slog.Debug("inject: recalling", "format", format, "query_len", len(query))
 
-	query = truncateQuery(query, 2000)
+	query = apiformat.TruncateQuery(query, 2000)
 
 	// Recall from MuninnDB with timeout.
 	recallCtx, cancel := context.WithTimeout(ctx, inj.timeout)
@@ -110,36 +153,39 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 
 	slog.Debug("inject: recall returned", "count", len(memories))
 
-	if len(memories) == 0 {
-		return body, 0, nil
-	}
+	inj.sessionMu.Lock()
+	hasSessionCtx := inj.sessionCtx != ""
+	inj.sessionMu.Unlock()
 
-	// Filter out recently injected memories (2-turn cooldown).
-	memories = inj.filterRecent(memories)
-	if len(memories) == 0 {
-		slog.Debug("inject: all memories filtered by dedup")
+	if len(memories) == 0 && !hasSessionCtx {
 		return body, 0, nil
 	}
 
 	// Format context block within token budget.
 	block, tokens := formatContextBlock(memories, inj.budget)
+
+	// Prepend where_left_off context on first enrichment.
+	inj.sessionMu.Lock()
+	sessCtx := inj.sessionCtx
+	inj.sessionCtx = "" // only inject once
+	inj.sessionMu.Unlock()
+
+	if sessCtx != "" {
+		block = sessCtx + "\n" + block
+		tokens += len(sessCtx) / 4
+	}
+
+	block = strings.TrimSpace(block)
 	if block == "" {
 		return body, 0, nil
 	}
 
 	// Inject into the document.
-	enriched, err := injectContext(doc, format, block)
+	enriched, err := InjectContext(doc, format, block)
 	if err != nil {
 		slog.Debug("inject context failed", "err", err)
 		return body, 0, nil
 	}
-
-	// Record injected IDs for turn tracking.
-	var ids []string
-	for _, m := range memories {
-		ids = append(ids, m.ID)
-	}
-	inj.recordInjected(ids)
 
 	// Update stats.
 	if inj.stats != nil {
@@ -150,31 +196,26 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 	return enriched, tokens, nil
 }
 
-// recall calls MuninnDB's muninn_recall tool via JSON-RPC.
-func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error) {
+// doMCPCall makes a JSON-RPC 2.0 tool call to the MuninnDB MCP server.
+func (inj *Injector) doMCPCall(ctx context.Context, toolName string, args map[string]any) ([]byte, error) {
 	payload := map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name": "muninn_recall",
-			"arguments": map[string]any{
-				"vault":     inj.vault,
-				"context":   []string{query},
-				"limit":     10,
-				"threshold": inj.threshold,
-			},
+			"name":      toolName,
+			"arguments": args,
 		},
 		"id": time.Now().UnixNano(),
 	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal recall request: %w", err)
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", inj.mcpURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create recall request: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if inj.token != "" {
@@ -183,17 +224,150 @@ func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error)
 
 	resp, err := inj.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("recall request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read recall response: %w", err)
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("recall returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	return respBody, nil
+}
+
+// fetchWhereLeftOff calls MuninnDB's muninn_where_left_off tool to get
+// context from the previous session. Returns a formatted string for
+// injection, or "" on failure or empty results.
+func (inj *Injector) fetchWhereLeftOff(ctx context.Context) string {
+	respBody, err := inj.doMCPCall(ctx, "muninn_where_left_off", map[string]any{
+		"vault": inj.vault,
+		"limit": 5,
+	})
+	if err != nil {
+		slog.Debug("where_left_off: call failed", "err", err)
+		return ""
+	}
+
+	return parseWhereLeftOff(respBody)
+}
+
+// fetchGuide calls MuninnDB's muninn_guide tool to get global guidelines.
+func (inj *Injector) fetchGuide(ctx context.Context) string {
+	respBody, err := inj.doMCPCall(ctx, "muninn_guide", map[string]any{
+		"vault": inj.vault,
+	})
+	if err != nil {
+		slog.Debug("guide: call failed", "err", err)
+		return ""
+	}
+
+	return parseGuide(respBody)
+}
+
+// parseGuide extracts the guide text from the JSON-RPC response.
+func parseGuide(body []byte) string {
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return ""
+	}
+
+	for _, content := range rpcResp.Result.Content {
+		if content.Type != "text" || content.Text == "" {
+			continue
+		}
+		
+		// Typically guide just returns a string wrapped in text.
+		text := strings.TrimSpace(content.Text)
+		if text != "" {
+			return "<global-guide source=\"muninn\">\n" + text + "\n</global-guide>"
+		}
+	}
+	return ""
+}
+
+// parseWhereLeftOff extracts a summary from the where_left_off JSON-RPC response.
+func parseWhereLeftOff(body []byte) string {
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return ""
+	}
+
+	for _, content := range rpcResp.Result.Content {
+		if content.Type != "text" || content.Text == "" {
+			continue
+		}
+
+		// Parse the inner result to extract memory summaries.
+		var wloResult struct {
+			Memories []struct {
+				Concept string `json:"concept"`
+				Summary string `json:"summary"`
+			} `json:"memories"`
+		}
+		if err := json.Unmarshal([]byte(content.Text), &wloResult); err != nil {
+			// If not JSON, use the raw text if it's meaningful.
+			text := strings.TrimSpace(content.Text)
+			if text != "" && text != "[]" && text != "null" {
+				return "<session-context source=\"muninn\">\nPrevious session context:\n" + apiformat.TruncateText(text, 2000) + "\n</session-context>"
+			}
+			return ""
+		}
+
+		if len(wloResult.Memories) == 0 {
+			return ""
+		}
+
+		var sb strings.Builder
+		sb.WriteString("<session-context source=\"muninn\">\nPrevious session context:\n")
+		for _, m := range wloResult.Memories {
+			label := m.Concept
+			if label == "" {
+				label = m.Summary
+			}
+			if label != "" {
+				sb.WriteString("- ")
+				sb.WriteString(apiformat.TruncateText(label, 200))
+				sb.WriteString("\n")
+			}
+		}
+		sb.WriteString("</session-context>")
+		return sb.String()
+	}
+
+	return ""
+}
+
+// recall calls MuninnDB's muninn_recall tool via JSON-RPC.
+func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error) {
+	respBody, err := inj.doMCPCall(ctx, "muninn_recall", map[string]any{
+		"vault":     inj.vault,
+		"context":   []string{query},
+		"limit":     10,
+		"threshold": inj.threshold,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("recall request failed: %w", err)
 	}
 
 	return parseRecallResponse(respBody)
@@ -283,41 +457,3 @@ func parseRecallResponse(body []byte) ([]memory, error) {
 }
 
 // filterRecent removes memories that were injected in the last 2 turns.
-func (inj *Injector) filterRecent(mems []memory) []memory {
-	inj.mu.Lock()
-	defer inj.mu.Unlock()
-
-	var filtered []memory
-	for _, m := range mems {
-		if inj.seenRecently(m.ID) {
-			continue
-		}
-		filtered = append(filtered, m)
-	}
-	return filtered
-}
-
-// seenRecently checks if an ID was injected in the last 2 turn slots.
-// Must be called with mu held.
-func (inj *Injector) seenRecently(id string) bool {
-	// Check current slot and previous slot (2-turn cooldown).
-	for offset := 0; offset < 2; offset++ {
-		idx := (inj.turnIdx - offset + len(inj.turnRing)) % len(inj.turnRing)
-		if inj.turnRing[idx] != nil && inj.turnRing[idx][id] {
-			return true
-		}
-	}
-	return false
-}
-
-// recordInjected advances the turn counter and records IDs in the new slot.
-func (inj *Injector) recordInjected(ids []string) {
-	inj.mu.Lock()
-	defer inj.mu.Unlock()
-
-	inj.turnIdx = (inj.turnIdx + 1) % len(inj.turnRing)
-	inj.turnRing[inj.turnIdx] = make(map[string]bool, len(ids))
-	for _, id := range ids {
-		inj.turnRing[inj.turnIdx][id] = true
-	}
-}

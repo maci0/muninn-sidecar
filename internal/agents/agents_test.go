@@ -149,7 +149,7 @@ func TestListSorted(t *testing.T) {
 
 func TestRegistryNoReservedNames(t *testing.T) {
 	for name := range Registry {
-		if reservedNames[name] {
+		if ReservedCommands[name] {
 			t.Fatalf("agent name %q is a reserved command name", name)
 		}
 	}

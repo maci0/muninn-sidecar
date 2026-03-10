@@ -10,11 +10,11 @@ import (
 	"strings"
 )
 
-// reservedNames are command names that cannot be used as agent names.
+// ReservedCommands are command names that cannot be used as agent names.
 // init() validates this at startup to prevent silent shadowing.
-var reservedNames = map[string]bool{
+var ReservedCommands = map[string]bool{
 	"help": true, "list": true, "version": true,
-	"completion": true,
+	"status": true, "completion": true,
 }
 
 // mscSentinel is set in the child's environment so Resolve() can detect
@@ -23,7 +23,7 @@ const mscSentinel = "MSC_UPSTREAM"
 
 func init() {
 	for name := range Registry {
-		if reservedNames[name] {
+		if ReservedCommands[name] {
 			panic(fmt.Sprintf("agent name %q collides with reserved command", name))
 		}
 	}
@@ -47,6 +47,7 @@ type Agent struct {
 	AltDefaultCond string   // if this env var is set, use AltDefaultURL instead
 	AltDefaultURL  string   // alternative upstream for a different auth mode
 	CapturePaths   []string // path substrings that identify LLM traffic to capture
+	ExcludePaths   []string // path substrings that exclude from capture (checked first)
 }
 
 // Registry maps short names to their agent definitions. Add new agents here.
@@ -58,6 +59,18 @@ var Registry = map[string]Agent{
 		DetectEnv:    []string{"ANTHROPIC_BASE_URL"},
 		DefaultURL:   "https://api.anthropic.com",
 		CapturePaths: []string{"/v1/messages"},
+		ExcludePaths: []string{"/count_tokens"},
+	},
+	"antigravity": {
+		Command:      "antigravity",
+		EnvKey:       "CODE_ASSIST_ENDPOINT",
+		ExtraEnvKeys: []string{"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
+		DetectEnv:    []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
+		DefaultURL:   "https://cloudcode-pa.googleapis.com",
+		// API key auth uses the standard Gemini API instead of Code Assist.
+		AltDefaultCond: "GEMINI_API_KEY",
+		AltDefaultURL:  "https://generativelanguage.googleapis.com",
+		CapturePaths:   []string{"GenerateContent", "CountTokens"},
 	},
 	"gemini": {
 		Command:      "gemini",
@@ -75,21 +88,21 @@ var Registry = map[string]Agent{
 		EnvKey:       "OPENAI_BASE_URL",
 		DetectEnv:    []string{"OPENAI_BASE_URL", "OPENAI_API_BASE"},
 		DefaultURL:   "https://api.openai.com",
-		CapturePaths: []string{"/v1/chat/completions", "/v1/completions", "/v1/responses"},
+		CapturePaths: []string{"/v1/chat/completions", "/v1/completions", "/responses"},
 	},
 	"opencode": {
 		Command:      "opencode",
 		EnvKey:       "OPENAI_BASE_URL",
 		DetectEnv:    []string{"OPENAI_BASE_URL", "OPENAI_API_BASE"},
 		DefaultURL:   "https://api.openai.com",
-		CapturePaths: []string{"/v1/chat/completions", "/v1/completions", "/v1/responses"},
+		CapturePaths: []string{"/v1/chat/completions", "/v1/completions", "/responses"},
 	},
 	"aider": {
 		Command:      "aider",
 		EnvKey:       "OPENAI_API_BASE",
 		DetectEnv:    []string{"OPENAI_API_BASE", "OPENAI_BASE_URL"},
 		DefaultURL:   "https://api.openai.com",
-		CapturePaths: []string{"/v1/chat/completions", "/v1/completions", "/v1/responses"},
+		CapturePaths: []string{"/v1/chat/completions", "/v1/completions", "/responses"},
 	},
 }
 
@@ -150,7 +163,7 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 }
 
 // Exec resolves the agent binary via PATH, builds the modified environment,
-// and exec's the child. stdin/stdout/stderr are inherited so the user
+// and runs the child process. stdin/stdout/stderr are inherited so the user
 // interacts with the agent normally. Returns the child's exit error, if any.
 func (a Agent) Exec(proxyURL, upstream string, args []string) error {
 	binary, err := exec.LookPath(a.Command)

@@ -5,6 +5,162 @@ import (
 	"strings"
 )
 
+// hasInjectedMarker checks if a text block contains a muninn injected context marker.
+// This is used to detect and strip injected memory context blocks before storing captured
+// exchanges. Must stay in sync with inject/format.go's prefixes.
+func hasInjectedMarker(text string) bool {
+	t := strings.TrimSpace(text)
+	return strings.HasPrefix(t, "<retrieved-context") ||
+		strings.HasPrefix(t, "<session-context") ||
+		strings.HasPrefix(t, "<global-guide") ||
+		strings.Contains(t, "source=\"muninn\"")
+}
+
+// cleanRequest removes injected context and muninn tool calls from a request body.
+// Parses and serializes JSON at most once.
+func cleanRequest(body []byte, patterns []string) json.RawMessage {
+	msg := sanitizeJSON(body)
+	if len(msg) == 0 || string(msg) == "null" {
+		return msg
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(msg, &doc); err != nil {
+		return msg
+	}
+
+	changed1 := stripInjectedContextDoc(doc)
+	changed2 := false
+	if len(patterns) > 0 {
+		changed2 = filterMCPToolsDoc(doc, patterns)
+	}
+
+	if !changed1 && !changed2 {
+		return msg
+	}
+
+	result, err := json.Marshal(doc)
+	if err != nil {
+		return msg
+	}
+	return json.RawMessage(result)
+}
+
+// cleanResponse removes muninn tool calls from a response body.
+func cleanResponse(body json.RawMessage, patterns []string) json.RawMessage {
+	if len(patterns) == 0 || len(body) == 0 {
+		return body
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return body
+	}
+
+	if !filterMCPToolsDoc(doc, patterns) {
+		return body
+	}
+
+	result, err := json.Marshal(doc)
+	if err != nil {
+		return body
+	}
+	return json.RawMessage(result)
+}
+
+// stripInjectedContextDoc removes injected memory context blocks from a parsed JSON doc.
+// Returns true if any modifications were made.
+//
+// Handles all API formats:
+//   - Anthropic: removes system[] blocks containing Muninn injected context markers
+//   - OpenAI: removes system-role messages containing Muninn injected context markers
+//   - Gemini: removes systemInstruction.parts containing Muninn injected context markers
+//   - Gemini Cloud Code: removes systemInstruction.parts containing Muninn injected context markers
+func stripInjectedContextDoc(doc map[string]any) bool {
+	changed := false
+
+	// Anthropic: system field (string or array).
+	if sys, ok := doc["system"]; ok {
+		switch v := sys.(type) {
+		case string:
+			if hasInjectedMarker(v) {
+				delete(doc, "system")
+				changed = true
+			}
+		case []any:
+			kept, removed := filterArray(v, func(b map[string]any) bool {
+				text, _ := b["text"].(string)
+				return !hasInjectedMarker(text)
+			})
+			if removed {
+				changed = true
+				if len(kept) == 0 {
+					delete(doc, "system")
+				} else {
+					doc["system"] = kept
+				}
+			}
+		}
+	}
+
+	// OpenAI: messages array — remove system role messages with marker.
+	if messages, ok := doc["messages"].([]any); ok {
+		kept, removed := filterArray(messages, func(m map[string]any) bool {
+			if m["role"] == "system" {
+				content, _ := m["content"].(string)
+				if hasInjectedMarker(content) {
+					return false
+				}
+			}
+			return true
+		})
+		if removed {
+			changed = true
+			doc["messages"] = kept
+		}
+	}
+
+	// Gemini Cloud Code: request.systemInstruction.parts — remove parts with marker.
+	if req, ok := doc["request"].(map[string]any); ok {
+		if si, ok := req["systemInstruction"].(map[string]any); ok {
+			if parts, ok := si["parts"].([]any); ok {
+				kept, removed := filterArray(parts, func(p map[string]any) bool {
+					text, _ := p["text"].(string)
+					return !hasInjectedMarker(text)
+				})
+				if removed {
+					changed = true
+					if len(kept) == 0 {
+						delete(req, "systemInstruction")
+					} else {
+						si["parts"] = kept
+					}
+				}
+			}
+		}
+	}
+
+	// Gemini: systemInstruction.parts — remove parts with marker.
+	if si, ok := doc["systemInstruction"].(map[string]any); ok {
+		if parts, ok := si["parts"].([]any); ok {
+			kept, removed := filterArray(parts, func(p map[string]any) bool {
+				text, _ := p["text"].(string)
+				return !hasInjectedMarker(text)
+			})
+			if removed {
+				changed = true
+				if len(kept) == 0 {
+					delete(doc, "systemInstruction")
+				} else {
+					si["parts"] = kept
+				}
+			}
+		}
+	}
+
+	return changed
+}
+
 // defaultFilterPatterns matches tool names containing these substrings
 // (case-insensitive). Matched tool_use/tool_result blocks are stripped
 // from captured request/response bodies before MuninnDB storage. This
@@ -13,10 +169,8 @@ import (
 // MuninnDB tool calls — which would compound on every recall cycle.
 var defaultFilterPatterns = []string{"muninn"}
 
-// filterMCPTools strips tool-call content matching any of the given
-// patterns from a messages-based request or response body. Handles
-// both Anthropic and OpenAI message formats. Returns the original body
-// unchanged if parsing fails or nothing matches.
+// filterMCPToolsDoc strips tool-call content matching any of the given
+// patterns from a parsed JSON doc. Returns true if modifications were made.
 //
 // Anthropic format:
 //
@@ -32,16 +186,7 @@ var defaultFilterPatterns = []string{"muninn"}
 //
 //	content[].{type:"tool_use", name:...}   (Anthropic response)
 //	choices[].message.tool_calls             (OpenAI response)
-func filterMCPTools(body json.RawMessage, patterns []string) json.RawMessage {
-	if len(patterns) == 0 || len(body) == 0 {
-		return body
-	}
-
-	var doc map[string]any
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return body
-	}
-
+func filterMCPToolsDoc(doc map[string]any, patterns []string) bool {
 	changed := false
 
 	// Request bodies: filter the messages array (conversation history).
@@ -90,15 +235,7 @@ func filterMCPTools(body json.RawMessage, patterns []string) json.RawMessage {
 		}
 	}
 
-	if !changed {
-		return body
-	}
-
-	result, err := json.Marshal(doc)
-	if err != nil {
-		return body
-	}
-	return json.RawMessage(result)
+	return changed
 }
 
 // filterMessages processes a conversation messages array, removing
@@ -230,27 +367,21 @@ func filterContentBlocks(content []any, patterns []string, removedIDs map[string
 		return content, removedIDs
 	}
 
-	kept := make([]any, 0, len(content))
-	for _, block := range content {
-		b, ok := block.(map[string]any)
-		if !ok {
-			kept = append(kept, block)
-			continue
-		}
+	kept, _ := filterArray(content, func(b map[string]any) bool {
 		// Remove matched tool_use blocks.
 		if b["type"] == "tool_use" {
 			if id, _ := b["id"].(string); removedIDs[id] {
-				continue
+				return false
 			}
 		}
 		// Remove tool_result blocks paired with removed tool_use.
 		if b["type"] == "tool_result" {
 			if id, _ := b["tool_use_id"].(string); removedIDs[id] {
-				continue
+				return false
 			}
 		}
-		kept = append(kept, block)
-	}
+		return true
+	})
 	return kept, removedIDs
 }
 
@@ -262,24 +393,18 @@ func filterOpenAIToolCalls(msg map[string]any, patterns []string) bool {
 		return false
 	}
 
-	kept := make([]any, 0, len(toolCalls))
-	for _, tc := range toolCalls {
-		t, ok := tc.(map[string]any)
-		if !ok {
-			kept = append(kept, tc)
-			continue
-		}
+	kept, removed := filterArray(toolCalls, func(t map[string]any) bool {
 		fn, _ := t["function"].(map[string]any)
 		if fn != nil {
 			name, _ := fn["name"].(string)
 			if matchesAnyPattern(name, patterns) {
-				continue
+				return false
 			}
 		}
-		kept = append(kept, tc)
-	}
+		return true
+	})
 
-	if len(kept) == len(toolCalls) {
+	if !removed {
 		return false
 	}
 	if len(kept) == 0 {
@@ -290,17 +415,30 @@ func filterOpenAIToolCalls(msg map[string]any, patterns []string) bool {
 	return true
 }
 
+// filterArray creates a new array containing only items that pass the keep predicate.
+// Returns the filtered array and a boolean indicating if any items were removed.
+func filterArray(arr []any, keep func(item map[string]any) bool) ([]any, bool) {
+	kept := make([]any, 0, len(arr))
+	removed := false
+	for _, item := range arr {
+		m, ok := item.(map[string]any)
+		if !ok {
+			kept = append(kept, item)
+			continue
+		}
+		if keep(m) {
+			kept = append(kept, item)
+		} else {
+			removed = true
+		}
+	}
+	return kept, removed
+}
 // filterToolDefs removes tool definitions whose names match patterns
 // from the tools array. These are large JSON schema objects that add
 // noise without meaningful content.
 func filterToolDefs(tools []any, patterns []string) []any {
-	kept := make([]any, 0, len(tools))
-	for _, tool := range tools {
-		t, ok := tool.(map[string]any)
-		if !ok {
-			kept = append(kept, tool)
-			continue
-		}
+	kept, _ := filterArray(tools, func(t map[string]any) bool {
 		name, _ := t["name"].(string)
 		// OpenAI nests under function.name.
 		if name == "" {
@@ -308,11 +446,8 @@ func filterToolDefs(tools []any, patterns []string) []any {
 				name, _ = fn["name"].(string)
 			}
 		}
-		if matchesAnyPattern(name, patterns) {
-			continue
-		}
-		kept = append(kept, tool)
-	}
+		return !matchesAnyPattern(name, patterns)
+	})
 	return kept
 }
 

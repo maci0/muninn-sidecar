@@ -113,6 +113,54 @@ func TestModelsSortedByCount(t *testing.T) {
 	}
 }
 
+func TestSummaryWithInjections(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(5)
+	s.Flushed.Store(5)
+	s.Injections.Store(8)
+	s.InjectedTokens.Store(6400)
+
+	got := s.Summary()
+	if !strings.Contains(got, "8 enriched") {
+		t.Fatalf("expected '8 enriched' in summary: %q", got)
+	}
+	if !strings.Contains(got, "6400 tokens injected") {
+		t.Fatalf("expected '6400 tokens injected' in summary: %q", got)
+	}
+}
+
+func TestSummaryInjectionTokensFormatted(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(1)
+	s.Flushed.Store(1)
+	s.Injections.Store(3)
+	s.InjectedTokens.Store(15000)
+
+	got := s.Summary()
+	if !strings.Contains(got, "15.0K tokens injected") {
+		t.Fatalf("expected '15.0K tokens injected' in summary: %q", got)
+	}
+}
+
+func TestSummaryWithDeduped(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(10)
+	s.Deduped.Store(3)
+	s.Flushed.Store(7)
+
+	got := s.Summary()
+	if !strings.Contains(got, "7 captured") {
+		t.Fatalf("expected '7 captured' in summary: %q", got)
+	}
+	if !strings.Contains(got, "3 deduped") {
+		t.Fatalf("expected '3 deduped' in summary: %q", got)
+	}
+	// Should not show "queued" since captured == flushed + deduped.
+	if strings.Contains(got, "queued") {
+		t.Fatalf("unexpected 'queued' in summary: %q", got)
+	}
+}
+
 func TestFormatCount(t *testing.T) {
 	tests := []struct {
 		n    int64
