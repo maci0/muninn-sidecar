@@ -22,20 +22,20 @@ Muninn Sidecar solves this by creating a persistent, semantic memory layer that 
 
 ## How It Works
 
-```
-┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
-│  AI Agent    │────>│  msc (proxy)     │────>│  LLM API     │
-│  (claude,    │<────│                  │<────│  (Anthropic,  │
-│   gemini,    │     │  ┌──────────┐   │     │   Google,     │
-│   codex...)  │     │  │ inject   │   │     │   OpenAI)     │
-│              │     │  │ (recall) │   │     │              │
-│              │     │  └──────────┘   │     └──────────────┘
-│              │     │  ┌──────────┐   │
-│              │     │  │ store    │   │     ┌──────────────┐
-│              │     │  │ (async)  │───│────>│  MuninnDB    │
-│              │     │  └──────────┘   │     │  (MCP/HTTP)  │
-│              │     └──────────────────┘     └──────────────┘
-└─────────────┘
+```mermaid
+flowchart LR
+    Agent["AI Agent\n(claude, gemini, codex...)"] <--> Proxy["msc (proxy)"]
+
+    subgraph Proxy
+        direction TB
+        Inject["inject (recall)"]
+        Store["store (async)"]
+    end
+
+    Proxy <--> Upstream["LLM API\n(Anthropic, Google, OpenAI)"]
+
+    Inject --> DB[/"MuninnDB (MCP/HTTP)"/]
+    Store --> DB
 ```
 
 ### Request Flow
@@ -142,9 +142,11 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach:
 |---|---|---|---|
 | Claude Code | `claude` | `ANTHROPIC_BASE_URL` | `api.anthropic.com` |
 | Gemini CLI | `gemini` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
-| Antigravity | `antigravity` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
+| Antigravity* | `antigravity` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 | Codex | `codex` | `OPENAI_BASE_URL` | `api.openai.com` |
 | OpenCode | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
 | Aider | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
+
+*\* Antigravity support is currently broken. It is hidden behind the `MSC_EXPERIMENTAL_ANTIGRAVITY=1` environment variable feature gate.*
 
 Adding a new agent requires only adding an entry to the `Registry` map in `internal/agents/agents.go`.

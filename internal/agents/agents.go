@@ -22,6 +22,19 @@ var ReservedCommands = map[string]bool{
 const mscSentinel = "MSC_UPSTREAM"
 
 func init() {
+	if os.Getenv("MSC_EXPERIMENTAL_ANTIGRAVITY") == "1" {
+		Registry["antigravity"] = Agent{
+			Command:      "antigravity",
+			EnvKey:       "CODE_ASSIST_ENDPOINT",
+			ExtraEnvKeys: []string{"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
+			DetectEnv:    []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
+			DefaultURL:   "https://cloudcode-pa.googleapis.com",
+			AltDefaultCond: "GEMINI_API_KEY",
+			AltDefaultURL:  "https://generativelanguage.googleapis.com",
+			WaitArgs:       []string{"--wait"},
+			CapturePaths:   []string{"GenerateContent", "CountTokens", "LanguageServerService"},
+		}
+	}
 	for name := range Registry {
 		if ReservedCommands[name] {
 			panic(fmt.Sprintf("agent name %q collides with reserved command", name))
@@ -61,18 +74,6 @@ var Registry = map[string]Agent{
 		DefaultURL:   "https://api.anthropic.com",
 		CapturePaths: []string{"/v1/messages"},
 		ExcludePaths: []string{"/count_tokens"},
-	},
-	"antigravity": {
-		Command:      "antigravity",
-		EnvKey:       "CODE_ASSIST_ENDPOINT",
-		ExtraEnvKeys: []string{"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
-		DetectEnv:    []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
-		DefaultURL:   "https://cloudcode-pa.googleapis.com",
-		// API key auth uses the standard Gemini API instead of Code Assist.
-		AltDefaultCond: "GEMINI_API_KEY",
-		AltDefaultURL:  "https://generativelanguage.googleapis.com",
-		WaitArgs:       []string{"--wait"},
-		CapturePaths:   []string{"GenerateContent", "CountTokens", "LanguageServerService"},
 	},
 	"gemini": {
 		Command:      "gemini",

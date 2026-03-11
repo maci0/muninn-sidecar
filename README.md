@@ -2,10 +2,11 @@
 
 A transparent reverse proxy that captures LLM API traffic from coding agents into [MuninnDB](https://github.com/scrypster/muninn).
 
-```
-Agent SDK  →  msc (local proxy)  →  LLM API upstream
-                    ↓
-                 MuninnDB
+```mermaid
+flowchart LR
+    A[Agent SDK] --> B[msc local proxy]
+    B --> C[LLM API upstream]
+    B --> D[(MuninnDB)]
 ```
 
 `msc` overrides the agent's API base URL environment variable to route traffic through a local proxy. All traffic is forwarded transparently — only LLM completion endpoints are captured and stored as memories in MuninnDB.
@@ -16,12 +17,14 @@ Agent SDK  →  msc (local proxy)  →  LLM API upstream
 |-------|---------|-----------------|
 | `claude` | `ANTHROPIC_BASE_URL` | `api.anthropic.com` |
 | `gemini` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
-| `antigravity` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
+| `antigravity`*| `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 | `codex` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
 
-## Install
+*\* Antigravity support is currently broken. It is hidden behind the `MSC_EXPERIMENTAL_ANTIGRAVITY=1` environment variable feature gate.*
+
+### How it works
 
 ```bash
 go install github.com/maci0/muninn-sidecar/cmd/msc@latest
