@@ -1,6 +1,6 @@
 # msc — muninn sidecar
 
-A transparent reverse proxy that captures LLM API traffic from coding agents into [MuninnDB](https://github.com/scrypster/muninn).
+A transparent reverse proxy that gives any stateless AI coding agent **long-term memory** by automatically capturing conversations and injecting relevant context from [MuninnDB](https://github.com/scrypster/muninn).
 
 ```mermaid
 flowchart LR
@@ -9,7 +9,12 @@ flowchart LR
     B --> D[(MuninnDB)]
 ```
 
-`msc` overrides the agent's API base URL environment variable to route traffic through a local proxy. All traffic is forwarded transparently — only LLM completion endpoints are captured and stored as memories in MuninnDB.
+`msc` overrides the agent's API base URL environment variable to route traffic through a local proxy. All traffic is forwarded transparently, giving you two key features with zero configuration required in the agent itself:
+
+1. **Auto-Memorization**: LLM completion endpoints are captured and stored as semantic memories in MuninnDB.
+2. **Auto-Injection**: Before forwarding a request, `msc` automatically recalls relevant past memories based on the conversation and injects them seamlessly into the system prompt.
+
+This allows agents to magically "remember" project context, conventions, and past debugging sessions across restarts, and even across different agents (e.g., sharing context between Claude and Gemini).
 
 ## Supported agents
 
