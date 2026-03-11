@@ -186,6 +186,10 @@ var defaultFilterPatterns = []string{"muninn"}
 //
 //	content[].{type:"tool_use", name:...}   (Anthropic response)
 //	choices[].message.tool_calls             (OpenAI response)
+//
+// Tool definitions are also filtered:
+//
+//	tools[].name or tools[].function.name    (request-level tool schemas)
 func filterMCPToolsDoc(doc map[string]any, patterns []string) bool {
 	changed := false
 
@@ -434,6 +438,7 @@ func filterArray(arr []any, keep func(item map[string]any) bool) ([]any, bool) {
 	}
 	return kept, removed
 }
+
 // filterToolDefs removes tool definitions whose names match patterns
 // from the tools array. These are large JSON schema objects that add
 // noise without meaningful content.
@@ -452,11 +457,11 @@ func filterToolDefs(tools []any, patterns []string) []any {
 }
 
 // matchesAnyPattern returns true if name contains any pattern
-// (case-insensitive substring match).
+// (case-insensitive substring match). Patterns must be pre-lowercased.
 func matchesAnyPattern(name string, patterns []string) bool {
 	lower := strings.ToLower(name)
 	for _, p := range patterns {
-		if strings.Contains(lower, strings.ToLower(p)) {
+		if strings.Contains(lower, p) {
 			return true
 		}
 	}

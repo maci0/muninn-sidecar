@@ -85,9 +85,9 @@ func New(cfg Config) (*Proxy, error) {
 		upstream:       upstream,
 		agentName:      cfg.AgentName,
 		store:          cfg.Store,
-		capturePaths:   cfg.CapturePaths,
-		excludePaths:   cfg.ExcludePaths,
-		filterPatterns: filterPatterns,
+		capturePaths:   toLowerSlice(cfg.CapturePaths),
+		excludePaths:   toLowerSlice(cfg.ExcludePaths),
+		filterPatterns: toLowerSlice(filterPatterns),
 		injector:       cfg.Injector,
 	}
 
@@ -206,7 +206,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (p *Proxy) shouldCapture(path string) bool {
 	lowerPath := strings.ToLower(path)
 	for _, ex := range p.excludePaths {
-		if strings.Contains(lowerPath, strings.ToLower(ex)) {
+		if strings.Contains(lowerPath, ex) {
 			return false
 		}
 	}
@@ -214,7 +214,7 @@ func (p *Proxy) shouldCapture(path string) bool {
 		return true
 	}
 	for _, sub := range p.capturePaths {
-		if strings.Contains(lowerPath, strings.ToLower(sub)) {
+		if strings.Contains(lowerPath, sub) {
 			return true
 		}
 	}
@@ -348,13 +348,26 @@ func (sc *streamCapture) Read(p []byte) (int, error) {
 		sc.processChunk(p[:n])
 	}
 	if err == io.EOF {
-		sc.once.Do(func() {
-			respBody := sc.buildRespBody()
-			ex := buildExchange(sc.ctx, sc.statusCode, respBody)
-			sc.store.Store(ex)
-		})
+		sc.finalize()
 	}
 	return n, err
+}
+
+// Close overrides the embedded ReadCloser's Close to ensure the exchange is
+// captured even if the stream is interrupted before EOF (e.g. client disconnect).
+func (sc *streamCapture) Close() error {
+	sc.finalize()
+	return sc.ReadCloser.Close()
+}
+
+// finalize stores the captured exchange exactly once, whether triggered by
+// EOF in Read() or by Close().
+func (sc *streamCapture) finalize() {
+	sc.once.Do(func() {
+		respBody := sc.buildRespBody()
+		ex := buildExchange(sc.ctx, sc.statusCode, respBody)
+		sc.store.Store(ex)
+	})
 }
 
 // processChunk scans the chunk for complete "data: ..." lines, updating
@@ -382,7 +395,7 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 			break
 		}
 
-		line := string(data[:idx])
+		line := strings.TrimRight(string(data[:idx]), "\r")
 		data = data[idx+1:]
 
 		if strings.HasPrefix(line, "data: ") {
@@ -603,6 +616,18 @@ func sanitizeJSON(data []byte) json.RawMessage {
 	}
 	b, _ := json.Marshal(string(data))
 	return json.RawMessage(b)
+}
+
+// toLowerSlice returns a new slice with all strings lowercased.
+func toLowerSlice(ss []string) []string {
+	if ss == nil {
+		return nil
+	}
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = strings.ToLower(s)
+	}
+	return out
 }
 
 // singleJoiningSlash joins two path segments ensuring exactly one slash between them.

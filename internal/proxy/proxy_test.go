@@ -938,11 +938,16 @@ func TestProxyNonCapturedPathsPassThrough(t *testing.T) {
 func TestProxyInjectionTimeout(t *testing.T) {
 	// If injection times out, the original (unenriched) request should
 	// still be forwarded to upstream successfully.
-	var upstreamBody string
+	var (
+		upstreamMu   sync.Mutex
+		upstreamBody string
+	)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		upstreamMu.Lock()
 		upstreamBody = string(body)
+		upstreamMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"content": []map[string]string{
@@ -1005,10 +1010,14 @@ func TestProxyInjectionTimeout(t *testing.T) {
 	}
 
 	// Upstream should receive the ORIGINAL request (no injection).
-	if strings.Contains(upstreamBody, "retrieved-context") {
+	upstreamMu.Lock()
+	upBody := upstreamBody
+	upstreamMu.Unlock()
+
+	if strings.Contains(upBody, "retrieved-context") {
 		t.Error("timed-out injection should not produce enriched request")
 	}
-	if !strings.Contains(upstreamBody, "timeout test") {
+	if !strings.Contains(upBody, "timeout test") {
 		t.Error("upstream should receive the original user message")
 	}
 
@@ -1274,5 +1283,39 @@ func TestStreamCapturePreservesUsage(t *testing.T) {
 	}
 	if v, ok := usage["output_tokens"].(float64); !ok || int(v) != 42 {
 		t.Errorf("expected output_tokens=42, got %v", usage["output_tokens"])
+	}
+}
+
+func TestStreamCaptureCRLFLineEndings(t *testing.T) {
+	// Verify that \r\n line endings (valid per SSE spec) are handled correctly.
+	// Before the fix, [DONE] wouldn't be detected and data lines would have
+	// trailing \r causing JSON parse issues.
+	sc := &streamCapture{
+		ReadCloser: io.NopCloser(strings.NewReader("")),
+		ctx:        &captureCtx{start: time.Now()},
+		statusCode: 200,
+	}
+
+	// Simulate SSE events with \r\n line endings.
+	chunk := []byte(
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\r\n" +
+			"\r\n" +
+			"data: {\"type\":\"message_stop\"}\r\n" +
+			"\r\n" +
+			"data: [DONE]\r\n" +
+			"\r\n",
+	)
+	sc.processChunk(chunk)
+
+	if sc.textAccum.String() != "Hello" {
+		t.Errorf("expected text accumulation 'Hello', got %q", sc.textAccum.String())
+	}
+	// [DONE] should NOT be in lastData (it should have been skipped).
+	if strings.Contains(sc.lastData, "DONE") {
+		t.Errorf("lastData should not contain [DONE], got %q", sc.lastData)
+	}
+	// lastData should be clean JSON without trailing \r.
+	if strings.Contains(sc.lastData, "\r") {
+		t.Errorf("lastData should not contain \\r, got %q", sc.lastData)
 	}
 }

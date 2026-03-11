@@ -73,7 +73,7 @@ func ExtractUserMessage(body []byte) string {
 }
 
 // ExtractRecentContext walks the messages/contents backward to collect the
-// last 'turns' messages (user or assistant) to provide a richer semantic context.
+// last 'turns' messages (user, assistant, or model) to provide a richer semantic context.
 func ExtractRecentContext(doc map[string]any, format string, turns int) string {
 	switch format {
 	case Anthropic:
@@ -159,6 +159,7 @@ func extractRecentGemini(doc map[string]any, turns int) string {
 	}
 	return strings.Join(texts, "\n")
 }
+
 // ExtractUserQuery walks the messages/contents backward to find the last
 // user message and returns its text content for the given format.
 func ExtractUserQuery(doc map[string]any, format string) string {
@@ -249,37 +250,32 @@ func ExtractAssistantMessage(body []byte) string {
 }
 
 // TruncateText truncates a string to maxRunes runes, breaking at a word
-// boundary when possible. Appends "…" when truncated.
+// boundary when possible. Appends "…" (U+2026 ellipsis) when truncated.
 func TruncateText(s string, maxRunes int) string {
-	if utf8.RuneCountInString(s) <= maxRunes {
-		return s
-	}
-	runes := []rune(s)
-	cutoff := maxRunes
-	minCut := maxRunes - maxRunes/5
-	for i := cutoff - 1; i >= minCut; i-- {
-		if runes[i] == ' ' || runes[i] == '\n' {
-			return string(runes[:i]) + "…"
-		}
-	}
-	return string(runes[:maxRunes]) + "…"
+	return truncateAt(s, maxRunes, "\u2026", " \n")
 }
 
 // TruncateQuery truncates a query string to maxRunes runes, breaking at a
 // word boundary when possible. Does not append an ellipsis.
 func TruncateQuery(s string, maxRunes int) string {
+	return truncateAt(s, maxRunes, "", " ")
+}
+
+// truncateAt is the shared truncation implementation. It breaks at the last
+// occurrence of any character in breakChars within the final 20% of the string,
+// appending suffix when truncated.
+func truncateAt(s string, maxRunes int, suffix string, breakChars string) string {
 	if utf8.RuneCountInString(s) <= maxRunes {
 		return s
 	}
 	runes := []rune(s)
-	cutoff := maxRunes
 	minCut := maxRunes - maxRunes/5
-	for i := cutoff - 1; i >= minCut; i-- {
-		if runes[i] == ' ' {
-			return string(runes[:i])
+	for i := maxRunes - 1; i >= minCut; i-- {
+		if strings.ContainsRune(breakChars, runes[i]) {
+			return string(runes[:i]) + suffix
 		}
 	}
-	return string(runes[:maxRunes])
+	return string(runes[:maxRunes]) + suffix
 }
 
 // parseDoc unmarshals a JSON body into a generic map.
@@ -368,24 +364,31 @@ func extractGeminiUserQuery(doc map[string]any) string {
 type textExtractor func(msg map[string]any) string
 
 // isAnthropicMessages checks if a messages array uses Anthropic format
-// (content blocks with "type" field).
+// (content blocks with "type" field). Returns false if any message has
+// role "system", since Anthropic uses a top-level system field rather
+// than system-role messages — this prevents misdetecting OpenAI
+// multimodal requests (which also use typed content arrays) as Anthropic.
 func isAnthropicMessages(messages []any) bool {
+	hasTypedContent := false
 	for _, msg := range messages {
 		m, ok := msg.(map[string]any)
 		if !ok {
 			continue
 		}
+		if m["role"] == "system" {
+			return false
+		}
 		if blocks, ok := m["content"].([]any); ok {
 			for _, block := range blocks {
 				if b, ok := block.(map[string]any); ok {
 					if _, hasType := b["type"]; hasType {
-						return true
+						hasTypedContent = true
 					}
 				}
 			}
 		}
 	}
-	return false
+	return hasTypedContent
 }
 
 // anthropicTextExtractor extracts text from an Anthropic message (string

@@ -16,6 +16,7 @@ Agent SDK  →  msc (local proxy)  →  LLM API upstream
 |-------|---------|-----------------|
 | `claude` | `ANTHROPIC_BASE_URL` | `api.anthropic.com` |
 | `gemini` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
+| `antigravity` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 | `codex` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
@@ -97,7 +98,7 @@ By default, `msc` enriches outgoing LLM requests with relevant memories recalled
 
 ### Streaming
 
-SSE streaming responses are handled incrementally — chunks flow through to the agent in real-time. The last SSE `data:` line (which typically contains usage/stop_reason) is captured on stream completion.
+SSE streaming responses are handled incrementally — chunks flow through to the agent in real-time. Text deltas are accumulated from content events across all API formats (Anthropic, OpenAI, and Gemini). At stream completion, a synthetic response is built from the accumulated text for storage, with usage metadata merged from the last usage-bearing event. Falls back to the last `data:` line if no text deltas were captured.
 
 ### Nested invocations
 
@@ -111,7 +112,7 @@ SSE streaming responses are handled incrementally — chunks flow through to the
 |----------|-------------|
 | `MUNINN_MCP_URL` | MuninnDB MCP endpoint (default: `http://127.0.0.1:8750/mcp`) |
 | `MUNINN_TOKEN` | MuninnDB bearer token (default: reads `~/.muninn/mcp.token`) |
-| `MSC_VAULT` | MuninnDB vault name (default: `sidecar`) |
+| `MSC_VAULT` | MuninnDB vault name (default: current directory name, fallback: `sidecar`) |
 
 Command-line flags take precedence over environment variables.
 
@@ -123,12 +124,13 @@ Command-line flags take precedence over environment variables.
 -d, --debug        Enable debug logging (structured slog output)
 -q, --quiet        Suppress msc's own output
 -n, --dry-run      Show resolved config without launching
--j, --json         Machine-readable output (for list, status)
--f, --force        Launch even if MuninnDB is unreachable
-    --no-inject    Disable memory injection (enabled by default)
-    --vault NAME   MuninnDB vault name
-    --mcp-url URL  MuninnDB MCP endpoint
-    --token TOKEN  MuninnDB bearer token
+-j, --json             Machine-readable output (for list, status, version)
+-f, --force            Launch even if MuninnDB is unreachable
+    --no-inject        Disable memory injection (enabled by default)
+    --inject-budget N  Max tokens to inject per request (default: 2048)
+    --vault NAME       MuninnDB vault name
+    --mcp-url URL      MuninnDB MCP endpoint
+    --token TOKEN      MuninnDB bearer token
 ```
 
 ## Prerequisites

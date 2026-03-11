@@ -12,8 +12,8 @@ import (
 )
 
 // contextPrefix is the marker used to identify injected context blocks.
-// proxy/filter.go's injectedContextPrefix must match this prefix for
-// stripInjectedContext to remove injected content before capturing
+// proxy/filter.go's hasInjectedMarker must match this prefix for
+// stripInjectedContextDoc to remove injected content before capturing
 // exchanges, preventing recursive reinforcement.
 const contextPrefix = "<retrieved-context source=\"muninn\">"
 const contextSuffix = "</retrieved-context>"

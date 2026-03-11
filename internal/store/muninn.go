@@ -3,7 +3,7 @@
 package store
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,15 +13,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
 // dedupRingSize is the number of slots in the dedup ring buffer.
-// Each slot holds one hash; the ring advances each flush cycle (~2s).
+// Each slot holds a set of hashes; the ring advances each flush cycle (~2s).
 const dedupRingSize = 8
 
 // formattedMemory holds a pre-formatted exchange ready for MuninnDB.
@@ -36,13 +39,14 @@ type formattedMemory struct {
 // goroutine batches them (up to 10 per call, flushed every 2s) using
 // muninn_remember_batch. This keeps the proxy's hot path free of network I/O.
 type MuninnStore struct {
-	mcpURL string       // MCP endpoint, e.g. http://127.0.0.1:8750/mcp
-	token  string       // Bearer token for MuninnDB auth; empty = no auth
-	vault  string       // target vault in MuninnDB (default: "sidecar")
-	client *http.Client // dedicated HTTP client with short timeout
-	queue  chan *CapturedExchange
-	done   chan struct{} // closed when Drain completes
-	stats  *stats.Stats // session statistics (nil-safe)
+	mcpURL    string             // MCP endpoint, e.g. http://127.0.0.1:8750/mcp
+	token     string             // Bearer token for MuninnDB auth; empty = no auth
+	vault     string             // target vault in MuninnDB (default: "sidecar")
+	mcp       *mcpclient.Client  // shared MCP JSON-RPC client
+	queue     chan *CapturedExchange
+	done      chan struct{} // closed when Drain completes
+	drainOnce sync.Once    // ensures Drain is idempotent
+	stats     *stats.Stats // session statistics (nil-safe)
 }
 
 // CapturedExchange holds one request->response pair captured by the proxy.
@@ -70,11 +74,12 @@ func New(mcpURL, token, vault string, st *stats.Stats) *MuninnStore {
 	if vault == "" {
 		vault = "sidecar"
 	}
+	trimmedURL := strings.TrimRight(mcpURL, "/")
 	s := &MuninnStore{
-		mcpURL: strings.TrimRight(mcpURL, "/"),
+		mcpURL: trimmedURL,
 		token:  token,
 		vault:  vault,
-		client: &http.Client{Timeout: 10 * time.Second},
+		mcp:    mcpclient.New(trimmedURL, token, 10*time.Second),
 		queue:  make(chan *CapturedExchange, 256),
 		done:   make(chan struct{}),
 		stats:  st,
@@ -107,9 +112,11 @@ func (s *MuninnStore) Store(ex *CapturedExchange) {
 
 // Drain flushes any pending exchanges in the queue and returns. Call this
 // during graceful shutdown to avoid losing in-flight captures. The background
-// worker exits after drain completes.
+// worker exits after drain completes. Safe to call multiple times.
 func (s *MuninnStore) Drain() {
-	close(s.queue)
+	s.drainOnce.Do(func() {
+		close(s.queue)
+	})
 	<-s.done
 }
 
@@ -171,7 +178,7 @@ func (s *MuninnStore) worker() {
 	defer close(s.done)
 
 	var batch []formattedMemory
-	var dedupRing [dedupRingSize]uint64
+	var dedupRing [dedupRingSize]map[uint64]struct{}
 	ringIdx := 0
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -199,15 +206,16 @@ func (s *MuninnStore) worker() {
 			}
 			// Advance ring slot each flush cycle to expire old hashes.
 			ringIdx = (ringIdx + 1) % dedupRingSize
-			dedupRing[ringIdx] = 0
+			dedupRing[ringIdx] = nil
 		}
 	}
 }
 
 // formatAndDedup formats an exchange, strips system-reminders, skips empty
-// captures, appends metadata tags to the content footer, and deduplicates by concept hash. Returns nil if the exchange
-// should be dropped. The dedup ring buffer and index are modified in place.
-func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]uint64, ringIdx *int) *formattedMemory {
+// captures, appends metadata tags, and deduplicates by concept hash. Returns
+// nil if the exchange should be dropped. Each ring slot holds a set of hashes
+// from one flush cycle, so multiple exchanges per cycle are tracked correctly.
+func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, ringIdx *int) *formattedMemory {
 	userMsg := apiformat.StripSystemReminders(apiformat.ExtractUserMessage(ex.ReqBody))
 	assistantMsg := apiformat.ExtractAssistantMessage(ex.RespBody)
 
@@ -237,28 +245,33 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	if userMsg == "" && assistantMsg == "" {
 		slog.Debug("skipping empty exchange", "path", ex.Path)
 		if s.stats != nil {
-			s.stats.Deduped.Add(1)
+			s.stats.Skipped.Add(1)
 		}
 		return nil
 	}
 
 	content := sb.String()
 
-	// Dedup by concept hash (FNV-1a). Skip if seen in the ring buffer.
+	// Dedup by concept hash (FNV-1a). Skip if seen in any ring slot.
 	h := fnv.New64a()
 	h.Write([]byte(concept))
 	hash := h.Sum64()
 
 	for i := range ring {
-		if ring[i] == hash {
-			slog.Debug("dedup: skipping duplicate concept", "concept", apiformat.TruncateText(concept, 60))
-			if s.stats != nil {
-				s.stats.Deduped.Add(1)
+		if ring[i] != nil {
+			if _, exists := ring[i][hash]; exists {
+				slog.Debug("dedup: skipping duplicate concept", "concept", apiformat.TruncateText(concept, 60))
+				if s.stats != nil {
+					s.stats.Deduped.Add(1)
+				}
+				return nil
 			}
-			return nil
 		}
 	}
-	ring[*ringIdx] = hash
+	if ring[*ringIdx] == nil {
+		ring[*ringIdx] = make(map[uint64]struct{})
+	}
+	ring[*ringIdx][hash] = struct{}{}
 
 	return &formattedMemory{
 		concept: concept,
@@ -310,31 +323,11 @@ func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 // maxAttempts is the number of attempts for transient MuninnDB failures.
 const maxAttempts = 3
 
-// clientError is a non-retryable error for 4xx responses from MuninnDB.
-type clientError struct{ status int }
-
-func (e *clientError) Error() string { return fmt.Sprintf("client error: HTTP %d", e.status) }
-
-// callTool builds a JSON-RPC 2.0 tools/call envelope and sends it to MuninnDB.
-// Attempts the call up to maxAttempts times with exponential backoff for transient failures
-// (network errors, 5xx). Client errors (4xx) are not retried.
+// callTool sends a JSON-RPC 2.0 tools/call request to MuninnDB via the
+// shared MCP client. Retries up to maxAttempts with exponential backoff
+// for transient failures (network errors, 5xx). Client errors (4xx) are
+// not retried.
 func (s *MuninnStore) callTool(name string, args map[string]any) error {
-	payload := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      name,
-			"arguments": args,
-		},
-		"id": time.Now().UnixNano(),
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		slog.Error("failed to marshal MCP payload", "err", err)
-		return err
-	}
-
 	var lastErr error
 	for attempt := range maxAttempts {
 		if attempt > 0 {
@@ -343,12 +336,12 @@ func (s *MuninnStore) callTool(name string, args map[string]any) error {
 			time.Sleep(backoff)
 		}
 
-		lastErr = s.doRequest(body)
+		_, lastErr = s.mcp.Call(context.Background(), name, args)
 		if lastErr == nil {
 			return nil
 		}
 		// Don't retry client errors (4xx) — they won't succeed on retry.
-		var ce *clientError
+		var ce *mcpclient.ClientError
 		if errors.As(lastErr, &ce) {
 			return lastErr
 		}
@@ -356,86 +349,6 @@ func (s *MuninnStore) callTool(name string, args map[string]any) error {
 
 	slog.Error("MCP call failed after retries", "tool", name, "attempts", maxAttempts, "err", lastErr)
 	return lastErr
-}
-
-// doRequest sends a single MCP request and returns nil on success, or an
-// error for transient failures that should be retried.
-func (s *MuninnStore) doRequest(body []byte) error {
-	req, err := http.NewRequest("POST", s.mcpURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.token != "" {
-		req.Header.Set("Authorization", "Bearer "+s.token)
-	}
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("network error: %w", err)
-	}
-	defer resp.Body.Close()
-	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-		slog.Debug("error draining MCP response body", "err", err)
-	}
-
-	if resp.StatusCode >= 500 {
-		return fmt.Errorf("server error: HTTP %d", resp.StatusCode)
-	}
-	if resp.StatusCode >= 400 {
-		slog.Warn("muninn returned client error", "status", resp.StatusCode)
-		return &clientError{status: resp.StatusCode}
-	}
-
-	return nil
-}
-
-// formatExchange is a legacy formatter used only in tests.
-func formatExchange(ex *CapturedExchange) (concept, content string) {
-	userMsg := apiformat.ExtractUserMessage(ex.ReqBody)
-	assistantMsg := apiformat.ExtractAssistantMessage(ex.RespBody)
-
-	// Concept: truncated user message for search, with agent prefix.
-	if userMsg != "" {
-		concept = apiformat.TruncateText(userMsg, 120)
-	} else {
-		// Fallback to HTTP metadata if we can't extract content.
-		concept = fmt.Sprintf("[%s] %s %s -> %d (%dms)",
-			ex.Agent, ex.Method, ex.Path, ex.StatusCode, ex.DurationMs)
-	}
-
-	var sb strings.Builder
-
-	if userMsg != "" {
-		sb.WriteString("User:\n")
-		sb.WriteString(apiformat.TruncateText(userMsg, 4000))
-		sb.WriteString("\n\n")
-	}
-
-	if assistantMsg != "" {
-		sb.WriteString("Assistant:\n")
-		sb.WriteString(apiformat.TruncateText(assistantMsg, 4000))
-	}
-
-	// Fallback: if neither was extracted, include truncated raw bodies.
-	if userMsg == "" && assistantMsg == "" {
-		sb.WriteString(truncateJSON(ex.ReqBody, 2048))
-		sb.WriteString("\n\n")
-		sb.WriteString(truncateJSON(ex.RespBody, 2048))
-	}
-
-	return concept, sb.String()
-}
-
-func truncateJSON(data json.RawMessage, maxBytes int) string {
-	if len(data) == 0 {
-		return "(empty)"
-	}
-	s := string(data)
-	if len(s) > maxBytes {
-		return s[:maxBytes] + "\n... (truncated)"
-	}
-	return s
 }
 
 func buildTags(ex *CapturedExchange) []string {
@@ -462,8 +375,11 @@ func DefaultToken() string {
 	if t := os.Getenv("MUNINN_TOKEN"); t != "" {
 		return t
 	}
-	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(home + "/.muninn/mcp.token")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".muninn", "mcp.token"))
 	if err != nil {
 		return ""
 	}

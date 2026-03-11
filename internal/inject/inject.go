@@ -1,18 +1,18 @@
 package inject
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -27,21 +27,41 @@ type Config struct {
 	Stats     *stats.Stats  // session statistics (nil-safe)
 }
 
+// decayFactor is multiplied against a memory's score for each turn it is
+// not re-recalled. This creates a gradual fade-out rather than abrupt removal.
+const decayFactor = 0.7
+
+// decayFloor is the minimum effective score before a memory is evicted from
+// the session window. With decayFactor=0.7 and a starting score of 0.85,
+// a memory survives ~4 turns without being re-recalled before falling below 0.2.
+const decayFloor = 0.2
+
+// trackedMemory wraps a recalled memory with session-level tracking state.
+type trackedMemory struct {
+	memory
+	lastSeen int // turn number when last recalled/refreshed
+}
+
 // Injector enriches LLM API requests with recalled memories from MuninnDB.
+// It maintains a session-level memory window: recalled memories persist across
+// turns with decaying scores, so context from earlier turns fades gradually
+// instead of vanishing when the next query's recall results differ.
 type Injector struct {
-	mcpURL    string
-	token     string
+	mcp       *mcpclient.Client
 	vault     string
 	budget    int
 	threshold float64
 	timeout   time.Duration
 	stats     *stats.Stats
-	client    *http.Client
 
 	// Session-start: call where_left_off and guide once on first enrichment.
 	sessionOnce sync.Once
 	sessionCtx  string // cached where_left_off context block, empty if none
-	sessionMu   sync.Mutex
+
+	// Session memory window: rolling set of memories injected across turns.
+	mu             sync.Mutex
+	turn           int                      // monotonically increasing turn counter
+	recentMemories map[string]trackedMemory // memory ID → tracked state
 }
 
 // New creates an Injector with the given configuration.
@@ -60,14 +80,13 @@ func New(cfg Config) *Injector {
 	}
 
 	return &Injector{
-		mcpURL:    cfg.MCPURL,
-		token:     cfg.Token,
-		vault:     cfg.Vault,
-		budget:    cfg.Budget,
-		threshold: cfg.Threshold,
-		timeout:   cfg.Timeout,
-		stats:     cfg.Stats,
-		client:    &http.Client{Timeout: cfg.Timeout},
+		mcp:            mcpclient.New(cfg.MCPURL, cfg.Token, cfg.Timeout),
+		vault:          cfg.Vault,
+		budget:         cfg.Budget,
+		threshold:      cfg.Threshold,
+		timeout:        cfg.Timeout,
+		stats:          cfg.Stats,
+		recentMemories: make(map[string]trackedMemory),
 	}
 }
 
@@ -79,6 +98,9 @@ func New(cfg Config) *Injector {
 // muninn_guide to provide continuity from the previous session and global guidelines.
 func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, error) {
 	// On first call, fetch where_left_off context and guide concurrently (best-effort).
+	// Use context.Background() instead of the request context because sync.Once
+	// never retries — if the request context is cancelled (client disconnect,
+	// timeout), the session initialization would be permanently lost.
 	inj.sessionOnce.Do(func() {
 		var wg sync.WaitGroup
 		var wlo, guide string
@@ -86,14 +108,14 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			ctxW, cancelW := context.WithTimeout(ctx, inj.timeout)
+			ctxW, cancelW := context.WithTimeout(context.Background(), inj.timeout)
 			defer cancelW()
 			wlo = inj.fetchWhereLeftOff(ctxW)
 		}()
 
 		go func() {
 			defer wg.Done()
-			ctxG, cancelG := context.WithTimeout(ctx, inj.timeout)
+			ctxG, cancelG := context.WithTimeout(context.Background(), inj.timeout)
 			defer cancelG()
 			guide = inj.fetchGuide(ctxG)
 		}()
@@ -110,9 +132,9 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 			}
 			sb.WriteString(guide)
 		}
-		inj.sessionMu.Lock()
+		inj.mu.Lock()
 		inj.sessionCtx = sb.String()
-		inj.sessionMu.Unlock()
+		inj.mu.Unlock()
 	})
 
 	var doc map[string]any
@@ -153,22 +175,24 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 
 	slog.Debug("inject: recall returned", "count", len(memories))
 
-	inj.sessionMu.Lock()
-	hasSessionCtx := inj.sessionCtx != ""
-	inj.sessionMu.Unlock()
+	// Merge recalled memories into the session window with decay.
+	merged := inj.mergeMemories(memories)
 
-	if len(memories) == 0 && !hasSessionCtx {
+	inj.mu.Lock()
+	hasSessionCtx := inj.sessionCtx != ""
+	inj.mu.Unlock()
+
+	if len(merged) == 0 && !hasSessionCtx {
 		return body, 0, nil
 	}
 
 	// Format context block within token budget.
-	block, tokens := formatContextBlock(memories, inj.budget)
+	block, tokens := formatContextBlock(merged, inj.budget)
 
 	// Prepend where_left_off context on first enrichment.
-	inj.sessionMu.Lock()
+	inj.mu.Lock()
 	sessCtx := inj.sessionCtx
-	inj.sessionCtx = "" // only inject once
-	inj.sessionMu.Unlock()
+	inj.mu.Unlock()
 
 	if sessCtx != "" {
 		block = sessCtx + "\n" + block
@@ -187,6 +211,14 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		return body, 0, nil
 	}
 
+	// Clear session context only after successful injection to avoid
+	// permanently losing it if InjectContext fails.
+	if sessCtx != "" {
+		inj.mu.Lock()
+		inj.sessionCtx = ""
+		inj.mu.Unlock()
+	}
+
 	// Update stats.
 	if inj.stats != nil {
 		inj.stats.Injections.Add(1)
@@ -196,55 +228,64 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 	return enriched, tokens, nil
 }
 
-// doMCPCall makes a JSON-RPC 2.0 tool call to the MuninnDB MCP server.
-func (inj *Injector) doMCPCall(ctx context.Context, toolName string, args map[string]any) ([]byte, error) {
-	payload := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      toolName,
-			"arguments": args,
-		},
-		"id": time.Now().UnixNano(),
+// mergeMemories merges freshly recalled memories into the session window.
+// Previously seen memories that are recalled again have their score refreshed.
+// Memories not re-recalled decay by decayFactor per turn and are evicted when
+// they drop below decayFloor. Returns the merged set sorted by effective score.
+func (inj *Injector) mergeMemories(recalled []memory) []memory {
+	inj.mu.Lock()
+	defer inj.mu.Unlock()
+
+	inj.turn++
+	currentTurn := inj.turn
+
+	// Refresh or add recalled memories.
+	recalledIDs := make(map[string]bool, len(recalled))
+	for _, m := range recalled {
+		recalledIDs[m.ID] = true
+		inj.recentMemories[m.ID] = trackedMemory{
+			memory:   m,
+			lastSeen: currentTurn,
+		}
 	}
 
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+	// Decay and evict stale memories.
+	for id, tm := range inj.recentMemories {
+		if recalledIDs[id] {
+			continue // just refreshed
+		}
+		turnsAgo := currentTurn - tm.lastSeen
+		effective := tm.Score * math.Pow(decayFactor, float64(turnsAgo))
+		if effective < decayFloor {
+			delete(inj.recentMemories, id)
+			slog.Debug("inject: evicted stale memory", "id", id, "age", turnsAgo)
+		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", inj.mcpURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	// Build sorted output from the merged window.
+	merged := make([]memory, 0, len(inj.recentMemories))
+	for _, tm := range inj.recentMemories {
+		turnsAgo := currentTurn - tm.lastSeen
+		effective := tm.Score * math.Pow(decayFactor, float64(turnsAgo))
+		merged = append(merged, memory{
+			ID:      tm.ID,
+			Concept: tm.Concept,
+			Content: tm.Content,
+			Score:   effective,
+		})
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if inj.token != "" {
-		req.Header.Set("Authorization", "Bearer "+inj.token)
-	}
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].Score > merged[j].Score
+	})
 
-	resp, err := inj.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	return respBody, nil
+	return merged
 }
 
 // fetchWhereLeftOff calls MuninnDB's muninn_where_left_off tool to get
 // context from the previous session. Returns a formatted string for
 // injection, or "" on failure or empty results.
 func (inj *Injector) fetchWhereLeftOff(ctx context.Context) string {
-	respBody, err := inj.doMCPCall(ctx, "muninn_where_left_off", map[string]any{
+	respBody, err := inj.mcp.Call(ctx, "muninn_where_left_off", map[string]any{
 		"vault": inj.vault,
 		"limit": 5,
 	})
@@ -258,7 +299,7 @@ func (inj *Injector) fetchWhereLeftOff(ctx context.Context) string {
 
 // fetchGuide calls MuninnDB's muninn_guide tool to get global guidelines.
 func (inj *Injector) fetchGuide(ctx context.Context) string {
-	respBody, err := inj.doMCPCall(ctx, "muninn_guide", map[string]any{
+	respBody, err := inj.mcp.Call(ctx, "muninn_guide", map[string]any{
 		"vault": inj.vault,
 	})
 	if err != nil {
@@ -360,7 +401,7 @@ func parseWhereLeftOff(body []byte) string {
 
 // recall calls MuninnDB's muninn_recall tool via JSON-RPC.
 func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error) {
-	respBody, err := inj.doMCPCall(ctx, "muninn_recall", map[string]any{
+	respBody, err := inj.mcp.Call(ctx, "muninn_recall", map[string]any{
 		"vault":     inj.vault,
 		"context":   []string{query},
 		"limit":     10,
@@ -455,5 +496,3 @@ func parseRecallResponse(body []byte) ([]memory, error) {
 
 	return nil, nil
 }
-
-// filterRecent removes memories that were injected in the last 2 turns.

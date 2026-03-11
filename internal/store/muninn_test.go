@@ -301,8 +301,8 @@ func TestSkipEmptyCapture(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("expected 0 MCP calls (all skipped), got %d", n)
 	}
-	if st.Deduped.Load() != 2 {
-		t.Fatalf("expected 2 deduped (empty skips), got %d", st.Deduped.Load())
+	if st.Skipped.Load() != 2 {
+		t.Fatalf("expected 2 skipped (empty exchanges), got %d", st.Skipped.Load())
 	}
 }
 
@@ -354,7 +354,12 @@ func TestStripSystemReminderInCapture(t *testing.T) {
 	}
 }
 
-func TestFormatExchangeAnthropic(t *testing.T) {
+func TestFormatAndDedupAnthropic(t *testing.T) {
+	st := &stats.Stats{}
+	s := &MuninnStore{stats: st, vault: "test"}
+	var ring [dedupRingSize]map[uint64]struct{}
+	ringIdx := 0
+
 	ex := &CapturedExchange{
 		Timestamp:  time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
 		Agent:      "claude",
@@ -375,37 +380,45 @@ func TestFormatExchangeAnthropic(t *testing.T) {
 		}`),
 	}
 
-	concept, content := formatExchange(ex)
+	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	if fm == nil {
+		t.Fatal("expected non-nil formatted memory")
+	}
 
 	// Concept should be the user's message, not HTTP metadata.
-	if !strings.Contains(concept, "binary search") {
-		t.Errorf("concept should contain user query: %q", concept)
+	if !strings.Contains(fm.concept, "binary search") {
+		t.Errorf("concept should contain user query: %q", fm.concept)
 	}
-	if strings.Contains(concept, "POST") {
-		t.Errorf("concept should not contain HTTP method: %q", concept)
+	if strings.Contains(fm.concept, "POST") {
+		t.Errorf("concept should not contain HTTP method: %q", fm.concept)
 	}
 
 	// Content should have the conversation.
-	if !strings.Contains(content, "User:") {
-		t.Errorf("content should contain User: section: %q", content)
+	if !strings.Contains(fm.content, "User:") {
+		t.Errorf("content should contain User: section: %q", fm.content)
 	}
-	if !strings.Contains(content, "binary search") {
-		t.Errorf("content should contain user message: %q", content)
+	if !strings.Contains(fm.content, "binary search") {
+		t.Errorf("content should contain user message: %q", fm.content)
 	}
-	if !strings.Contains(content, "Assistant:") {
-		t.Errorf("content should contain Assistant: section: %q", content)
+	if !strings.Contains(fm.content, "Assistant:") {
+		t.Errorf("content should contain Assistant: section: %q", fm.content)
 	}
-	if !strings.Contains(content, "binary search implementation") {
-		t.Errorf("content should contain assistant response: %q", content)
+	if !strings.Contains(fm.content, "binary search implementation") {
+		t.Errorf("content should contain assistant response: %q", fm.content)
 	}
 
 	// Should NOT contain API metadata.
-	if strings.Contains(content, "Model:") {
-		t.Errorf("content should not contain metadata: %q", content)
+	if strings.Contains(fm.content, "Model:") {
+		t.Errorf("content should not contain metadata: %q", fm.content)
 	}
 }
 
-func TestFormatExchangeOpenAI(t *testing.T) {
+func TestFormatAndDedupOpenAI(t *testing.T) {
+	st := &stats.Stats{}
+	s := &MuninnStore{stats: st, vault: "test"}
+	var ring [dedupRingSize]map[uint64]struct{}
+	ringIdx := 0
+
 	ex := &CapturedExchange{
 		Timestamp: time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
 		Agent:     "codex",
@@ -424,17 +437,25 @@ func TestFormatExchangeOpenAI(t *testing.T) {
 		}`),
 	}
 
-	concept, content := formatExchange(ex)
-
-	if !strings.Contains(concept, "goroutine") {
-		t.Errorf("concept should contain user query: %q", concept)
+	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	if fm == nil {
+		t.Fatal("expected non-nil formatted memory")
 	}
-	if !strings.Contains(content, "Goroutines are lightweight") {
-		t.Errorf("content should contain assistant response: %q", content)
+
+	if !strings.Contains(fm.concept, "goroutine") {
+		t.Errorf("concept should contain user query: %q", fm.concept)
+	}
+	if !strings.Contains(fm.content, "Goroutines are lightweight") {
+		t.Errorf("content should contain assistant response: %q", fm.content)
 	}
 }
 
-func TestFormatExchangeGemini(t *testing.T) {
+func TestFormatAndDedupGemini(t *testing.T) {
+	st := &stats.Stats{}
+	s := &MuninnStore{stats: st, vault: "test"}
+	var ring [dedupRingSize]map[uint64]struct{}
+	ringIdx := 0
+
 	ex := &CapturedExchange{
 		Timestamp: time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
 		Agent:     "gemini",
@@ -448,18 +469,26 @@ func TestFormatExchangeGemini(t *testing.T) {
 		}`),
 	}
 
-	concept, content := formatExchange(ex)
-
-	if !strings.Contains(concept, "Kubernetes") {
-		t.Errorf("concept should contain user query: %q", concept)
+	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	if fm == nil {
+		t.Fatal("expected non-nil formatted memory")
 	}
-	if !strings.Contains(content, "container orchestration") {
-		t.Errorf("content should contain assistant response: %q", content)
+
+	if !strings.Contains(fm.concept, "Kubernetes") {
+		t.Errorf("concept should contain user query: %q", fm.concept)
+	}
+	if !strings.Contains(fm.content, "container orchestration") {
+		t.Errorf("content should contain assistant response: %q", fm.content)
 	}
 }
 
-func TestFormatExchangeFallback(t *testing.T) {
-	// Non-LLM body: should fall back to HTTP metadata concept and raw bodies.
+func TestFormatAndDedupEmptySkipped(t *testing.T) {
+	// Non-LLM body with no extractable messages: should be skipped.
+	st := &stats.Stats{}
+	s := &MuninnStore{stats: st, vault: "test"}
+	var ring [dedupRingSize]map[uint64]struct{}
+	ringIdx := 0
+
 	ex := &CapturedExchange{
 		Timestamp:  time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
 		Agent:      "claude",
@@ -471,18 +500,12 @@ func TestFormatExchangeFallback(t *testing.T) {
 		RespBody:   json.RawMessage(`{"ok":true}`),
 	}
 
-	concept, content := formatExchange(ex)
-
-	// Should fall back to HTTP metadata format.
-	if !strings.Contains(concept, "POST") {
-		t.Errorf("fallback concept should contain HTTP method: %q", concept)
+	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	if fm != nil {
+		t.Error("expected nil for empty exchange (no extractable messages)")
 	}
-	if !strings.Contains(concept, "200") {
-		t.Errorf("fallback concept should contain status code: %q", concept)
-	}
-	// Raw bodies should appear as fallback.
-	if !strings.Contains(content, "claude-3-opus") {
-		t.Errorf("fallback content should contain raw body: %q", content)
+	if st.Skipped.Load() != 1 {
+		t.Fatalf("expected 1 skipped, got %d", st.Skipped.Load())
 	}
 }
 
@@ -511,26 +534,6 @@ func TestBuildTags(t *testing.T) {
 			missing = append(missing, k)
 		}
 		t.Fatalf("missing tags: %v", missing)
-	}
-}
-
-func TestTruncateJSON(t *testing.T) {
-	// Empty data.
-	if got := truncateJSON(nil, 100); got != "(empty)" {
-		t.Fatalf("expected (empty), got %q", got)
-	}
-
-	// Short data.
-	short := json.RawMessage(`{"a":1}`)
-	if got := truncateJSON(short, 100); got != `{"a":1}` {
-		t.Fatalf("expected short data unchanged, got %q", got)
-	}
-
-	// Long data.
-	long := json.RawMessage(strings.Repeat("x", 200))
-	got := truncateJSON(long, 100)
-	if !strings.HasSuffix(got, "(truncated)") {
-		t.Fatalf("expected truncated suffix, got %q", got)
 	}
 }
 
@@ -690,12 +693,15 @@ func TestMixedBatchDedupAndValid(t *testing.T) {
 
 	s.Drain()
 
-	// Should have 2 valid + 3 deduped/skipped.
+	// Should have 2 valid + 1 deduped + 2 skipped.
 	if captured := st.Captured.Load(); captured != 5 {
 		t.Fatalf("expected 5 captured, got %d", captured)
 	}
-	if deduped := st.Deduped.Load(); deduped != 3 {
-		t.Fatalf("expected 3 deduped (1 dup + 1 empty-after-strip + 1 no-messages), got %d", deduped)
+	if deduped := st.Deduped.Load(); deduped != 1 {
+		t.Fatalf("expected 1 deduped (duplicate concept), got %d", deduped)
+	}
+	if skipped := st.Skipped.Load(); skipped != 2 {
+		t.Fatalf("expected 2 skipped (1 empty-after-strip + 1 no-messages), got %d", skipped)
 	}
 	if flushed := st.Flushed.Load(); flushed != 2 {
 		t.Fatalf("expected 2 flushed, got %d", flushed)
@@ -748,16 +754,17 @@ func TestConcurrentStoreStats(t *testing.T) {
 	captured := st.Captured.Load()
 	flushed := st.Flushed.Load()
 	deduped := st.Deduped.Load()
+	skipped := st.Skipped.Load()
 	dropped := st.Dropped.Load()
 
 	if captured != 20 {
 		t.Fatalf("expected 20 captured, got %d", captured)
 	}
 	// All items should be accounted for.
-	total := flushed + deduped + dropped
+	total := flushed + deduped + skipped + dropped
 	if total != 20 {
-		t.Fatalf("expected flushed(%d) + deduped(%d) + dropped(%d) = 20, got %d",
-			flushed, deduped, dropped, total)
+		t.Fatalf("expected flushed(%d) + deduped(%d) + skipped(%d) + dropped(%d) = 20, got %d",
+			flushed, deduped, skipped, dropped, total)
 	}
 	if st.TokensIn.Load() != 200 {
 		t.Fatalf("expected 200 tokens in, got %d", st.TokensIn.Load())
@@ -829,4 +836,24 @@ func TestHealthURLFromMCP(t *testing.T) {
 			t.Fatalf("healthURLFromMCP(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
+}
+
+func TestDoubleDrainNoPanic(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL, "", "test", nil)
+	s.Store(&CapturedExchange{
+		Agent:    "test",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"drain test"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
+	})
+
+	// Double drain should not panic.
+	s.Drain()
+	s.Drain()
 }

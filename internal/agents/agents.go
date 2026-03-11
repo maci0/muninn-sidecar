@@ -46,6 +46,7 @@ type Agent struct {
 	DefaultURL     string   // fallback upstream when none of DetectEnv are set
 	AltDefaultCond string   // if this env var is set, use AltDefaultURL instead
 	AltDefaultURL  string   // alternative upstream for a different auth mode
+	WaitArgs       []string // flags to append when executing the agent to prevent it from backgrounding
 	CapturePaths   []string // path substrings that identify LLM traffic to capture
 	ExcludePaths   []string // path substrings that exclude from capture (checked first)
 }
@@ -70,7 +71,8 @@ var Registry = map[string]Agent{
 		// API key auth uses the standard Gemini API instead of Code Assist.
 		AltDefaultCond: "GEMINI_API_KEY",
 		AltDefaultURL:  "https://generativelanguage.googleapis.com",
-		CapturePaths:   []string{"GenerateContent", "CountTokens"},
+		WaitArgs:       []string{"--wait"},
+		CapturePaths:   []string{"GenerateContent", "CountTokens", "LanguageServerService"},
 	},
 	"gemini": {
 		Command:      "gemini",
@@ -171,7 +173,11 @@ func (a Agent) Exec(proxyURL, upstream string, args []string) error {
 		return fmt.Errorf("agent %q not found in PATH: %w", a.Command, err)
 	}
 
-	cmd := exec.Command(binary, args...)
+	execArgs := make([]string, 0, len(a.WaitArgs)+len(args))
+	execArgs = append(execArgs, a.WaitArgs...)
+	execArgs = append(execArgs, args...)
+
+	cmd := exec.Command(binary, execArgs...)
 	cmd.Env = a.BuildEnv(proxyURL, upstream)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

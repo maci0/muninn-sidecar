@@ -15,6 +15,7 @@ type Stats struct {
 	Captured       atomic.Int64 // exchanges successfully queued
 	Dropped        atomic.Int64 // exchanges dropped (queue full)
 	Deduped        atomic.Int64 // exchanges skipped (duplicate concept)
+	Skipped        atomic.Int64 // exchanges skipped (empty content after stripping)
 	Flushed        atomic.Int64 // exchanges delivered to MuninnDB
 	FlushErrors    atomic.Int64 // delivery failures (after retries)
 	TokensIn       atomic.Int64 // total input/prompt tokens
@@ -64,6 +65,7 @@ func (s *Stats) Summary() string {
 	captured := s.Captured.Load()
 	dropped := s.Dropped.Load()
 	deduped := s.Deduped.Load()
+	skipped := s.Skipped.Load()
 	flushed := s.Flushed.Load()
 	errors := s.FlushErrors.Load()
 
@@ -74,9 +76,12 @@ func (s *Stats) Summary() string {
 	var sb strings.Builder
 
 	// Line 1: exchange counts.
-	sb.WriteString(fmt.Sprintf("session: %d captured", flushed))
+	sb.WriteString(fmt.Sprintf("session: %d flushed", flushed))
 	if deduped > 0 {
 		sb.WriteString(fmt.Sprintf(", %d deduped", deduped))
+	}
+	if skipped > 0 {
+		sb.WriteString(fmt.Sprintf(", %d skipped", skipped))
 	}
 	if dropped > 0 {
 		sb.WriteString(fmt.Sprintf(", %d dropped", dropped))
@@ -84,9 +89,9 @@ func (s *Stats) Summary() string {
 	if errors > 0 {
 		sb.WriteString(fmt.Sprintf(", %d errors", errors))
 	}
-	if captured != flushed+deduped {
+	if queued := captured - dropped - flushed - deduped - skipped - errors; queued > 0 {
 		// Some are still in queue (shouldn't happen after drain, but be safe).
-		sb.WriteString(fmt.Sprintf(" (%d queued)", captured-flushed-deduped))
+		sb.WriteString(fmt.Sprintf(" (%d queued)", queued))
 	}
 
 	// Line 2: token totals (only if we saw any).

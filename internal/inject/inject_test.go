@@ -325,9 +325,7 @@ func TestEnrichInvalidJSON(t *testing.T) {
 }
 
 func TestWhereLeftOffInjection(t *testing.T) {
-	callCount := 0
 	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
 		body, _ := io.ReadAll(r.Body)
 		var rpc struct {
 			Params struct {
@@ -347,6 +345,20 @@ func TestWhereLeftOffInjection(t *testing.T) {
 				"result": map[string]any{
 					"content": []map[string]any{
 						{"type": "text", "text": string(inner)},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+
+		if rpc.Params.Name == "muninn_guide" {
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": ""},
 					},
 				},
 				"id": 1,
@@ -537,6 +549,20 @@ func TestWhereLeftOffWithOpenAI(t *testing.T) {
 			return
 		}
 
+		if rpc.Params.Name == "muninn_guide" {
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": ""},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+
 		mems := []memory{
 			{ID: "m1", Concept: "API pattern", Content: "Use middleware", Score: 0.85},
 		}
@@ -595,6 +621,20 @@ func TestWhereLeftOffWithGemini(t *testing.T) {
 				"result": map[string]any{
 					"content": []map[string]any{
 						{"type": "text", "text": string(inner)},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+
+		if rpc.Params.Name == "muninn_guide" {
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": ""},
 					},
 				},
 				"id": 1,
@@ -780,6 +820,20 @@ func TestSessionContextOnlyInjection(t *testing.T) {
 			return
 		}
 
+		if rpc.Params.Name == "muninn_guide" {
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"result": map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": ""},
+					},
+				},
+				"id": 1,
+			})
+			w.Write(resp)
+			return
+		}
+
 		// Empty recall.
 		w.Write(fakeRecallResponse(nil))
 	})
@@ -897,4 +951,92 @@ func TestParseRecallResponseFormats(t *testing.T) {
 			t.Error("expected error for JSON-RPC error response")
 		}
 	})
+}
+
+func TestSessionMemoryWindow(t *testing.T) {
+	// Simulate 3 turns where different memories are recalled each time.
+	// Turn 1: recall A. Turn 2: recall B (A should persist via decay).
+	// Turn 3: recall B again (A should still be present but decayed further).
+	turn := 0
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		turn++
+		var mems []memory
+		switch turn {
+		case 1:
+			mems = []memory{{ID: "a", Concept: "auth rules", Content: "Use JWT", Score: 0.90}}
+		case 2:
+			mems = []memory{{ID: "b", Concept: "test patterns", Content: "Use table tests", Score: 0.85}}
+		case 3:
+			mems = []memory{{ID: "b", Concept: "test patterns", Content: "Use table tests", Score: 0.85}}
+		}
+		w.Write(fakeRecallResponse(mems))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 4096})
+	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
+
+	// Turn 1: Should contain auth rules.
+	enriched1, _, _ := inj.Enrich(t.Context(), body)
+	r1 := string(enriched1)
+	if !strings.Contains(r1, "auth rules") {
+		t.Error("turn 1: should contain auth rules")
+	}
+
+	// Turn 2: Should contain BOTH test patterns (new) AND auth rules (decayed but present).
+	enriched2, _, _ := inj.Enrich(t.Context(), body)
+	r2 := string(enriched2)
+	if !strings.Contains(r2, "test patterns") {
+		t.Error("turn 2: should contain test patterns")
+	}
+	if !strings.Contains(r2, "auth rules") {
+		t.Error("turn 2: auth rules should persist from turn 1 via session window decay")
+	}
+
+	// Turn 3: Both should still be present (B refreshed, A decayed 2 turns).
+	enriched3, _, _ := inj.Enrich(t.Context(), body)
+	r3 := string(enriched3)
+	if !strings.Contains(r3, "test patterns") {
+		t.Error("turn 3: should contain test patterns")
+	}
+	if !strings.Contains(r3, "auth rules") {
+		t.Error("turn 3: auth rules should still persist (2 turns decay, score ~0.44)")
+	}
+}
+
+func TestSessionMemoryEviction(t *testing.T) {
+	// A memory with score 0.5 at decayFactor=0.7 drops below decayFloor=0.2
+	// after ~3 turns: 0.5 * 0.7^3 = 0.17.
+	turn := 0
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		turn++
+		var mems []memory
+		if turn == 1 {
+			mems = []memory{{ID: "a", Concept: "old context", Content: "stale info", Score: 0.50}}
+		}
+		// Turns 2+ return nothing — memory A should decay and eventually be evicted.
+		w.Write(fakeRecallResponse(mems))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 4096})
+	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
+
+	// Turn 1: Contains old context.
+	enriched1, _, _ := inj.Enrich(t.Context(), body)
+	if !strings.Contains(string(enriched1), "old context") {
+		t.Error("turn 1: should contain old context")
+	}
+
+	// Turns 2-4: Keep calling to decay.
+	var last string
+	for i := 2; i <= 5; i++ {
+		enriched, _, _ := inj.Enrich(t.Context(), body)
+		last = string(enriched)
+	}
+
+	// By turn 5, the memory should be evicted (0.5 * 0.7^4 = 0.12 < 0.2).
+	if strings.Contains(last, "old context") {
+		t.Error("turn 5: old context should have been evicted after decay")
+	}
 }

@@ -20,8 +20,8 @@ func TestSummaryBasic(t *testing.T) {
 	s.TokensOut.Store(500)
 
 	got := s.Summary()
-	if !strings.Contains(got, "5 captured") {
-		t.Fatalf("expected '5 captured' in summary: %q", got)
+	if !strings.Contains(got, "5 flushed") {
+		t.Fatalf("expected '5 flushed' in summary: %q", got)
 	}
 	if !strings.Contains(got, "1000 in") {
 		t.Fatalf("expected '1000 in' in summary: %q", got)
@@ -149,8 +149,8 @@ func TestSummaryWithDeduped(t *testing.T) {
 	s.Flushed.Store(7)
 
 	got := s.Summary()
-	if !strings.Contains(got, "7 captured") {
-		t.Fatalf("expected '7 captured' in summary: %q", got)
+	if !strings.Contains(got, "7 flushed") {
+		t.Fatalf("expected '7 flushed' in summary: %q", got)
 	}
 	if !strings.Contains(got, "3 deduped") {
 		t.Fatalf("expected '3 deduped' in summary: %q", got)
