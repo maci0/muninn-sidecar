@@ -176,6 +176,21 @@ def conv_code(pages):
     return out
 
 
+def conv_quora(pages):
+    """toughdata/quora-question-answer-dataset — informal community Q&A. Tests
+    recall on colloquial/informal text, a different register from the clean
+    Wikipedia/scientific prose of the other vaults. Answer is the memory, question
+    the query."""
+    out = []
+    for r in _fetch("toughdata/quora-question-answer-dataset", "default", "train", pages):
+        q = (r.get("question") or "").strip()
+        a = (r.get("answer") or "").strip()
+        if len(a) < 30 or len(q) < 8:
+            continue
+        out.append(_article(len(out), "quora", a, q, a[:60]))
+    return out
+
+
 def _conv_xquad(lang):
     """google/xquad — SQuAD-format extractive QA in `lang`. Tests whether recall
     holds for non-English / non-Latin vaults (the embedding model's multilingual
@@ -205,6 +220,7 @@ CONVERTERS = {
     "code": conv_code,
     "xquad-de": _conv_xquad("de"),  # German (Latin script)
     "xquad-zh": _conv_xquad("zh"),  # Chinese (CJK — distinct writing system)
+    "quora": conv_quora,
 }
 
 

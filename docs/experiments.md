@@ -281,6 +281,7 @@ auto-calibration (§F) rather than a fixed threshold:
 | msc-code | Nan-Do/code-search-net-python | NL→code retrieval | 0.39 | 0.70 | 0.93 |
 | msc-xquad-de | google/xquad (German) | multilingual QA (Latin) | 0.51 | 0.725 | 0.95 |
 | msc-xquad-zh | google/xquad (Chinese) | multilingual QA (CJK) | 0.18 | 0.775 | 0.85 |
+| msc-quora | toughdata/quora-qa | informal community Q&A | 0.40 | 0.65 | 0.96 |
 
 Findings: (1) retrieval difficulty is regime-dependent — instruction+context with
 distinct contexts is trivial (R@1 1.0), while claim/abstract retrieval is hard
