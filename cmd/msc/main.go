@@ -204,7 +204,13 @@ func run() int {
 		if gm == "" {
 			gm = "qwen2.5:7b-instruct"
 		}
-		grounder = grounding.New(o.groundCmd, o.groundURL, gm, os.Getenv("OPENAI_API_KEY"), 120*time.Second)
+		// Bound the in-flight grounding call so a slow/hung judge fails open fast
+		// (degrading to the cosine gate) instead of stalling the user's request.
+		gto := o.groundTimeout
+		if gto <= 0 {
+			gto = 10 * time.Second
+		}
+		grounder = grounding.New(o.groundCmd, o.groundURL, gm, os.Getenv("OPENAI_API_KEY"), gto)
 	}
 
 	// Create injector unless --no-inject is set.

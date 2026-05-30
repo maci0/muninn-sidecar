@@ -215,6 +215,7 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach:
 | Recall mode (`RecallMode`) | `--recall-mode` | — | semantic (best retrieval; real-MuninnDB benchmark) |
 | Answer-grounding rerank (`Grounder`) | `--ground-url` / `--ground-cmd` | — | Off (opt-in precision step; see docs/experiments §B4) |
 | Grounding model / breadth | `--ground-model` / `--ground-topk` | — | qwen2.5:7b-instruct / top-3 |
+| Grounding in-flight timeout | `--ground-timeout` | — | 10s (slow judge fails open to the cosine gate) |
 | Recall timeout | — | — | 200ms per MCP call |
 | Debug logging | `--debug` | — | Off (WARN level) |
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
 )
@@ -32,6 +33,7 @@ type opts struct {
 	groundURL       string  // answer-grounding rerank via an OpenAI-compatible URL
 	groundModel     string  // grounding model name (for --ground-url)
 	groundTopK      int     // candidates to ground per recall (0 = default 3)
+	groundTimeout   time.Duration // in-flight grounding-call timeout (0 = default 10s); bounds how long a slow judge can stall a request
 	noAutoCalibrate bool    // disable self-tuning of the injection threshold
 }
 
@@ -213,6 +215,22 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 				return nil, actionNone, fmt.Errorf("--ground-topk must be a positive integer")
 			}
 			o.groundTopK = n
+			i++
+			continue
+		case "--ground-timeout":
+			v := val
+			if !hasVal {
+				i++
+				if i >= len(args) {
+					return nil, actionNone, fmt.Errorf("%s requires a value", key)
+				}
+				v = args[i]
+			}
+			d, err := time.ParseDuration(v)
+			if err != nil || d <= 0 {
+				return nil, actionNone, fmt.Errorf("--ground-timeout must be a positive duration (e.g. 10s)")
+			}
+			o.groundTimeout = d
 			i++
 			continue
 		case "--vault", "--mcp-url", "--token", "--ground-cmd", "--ground-url", "--ground-model":

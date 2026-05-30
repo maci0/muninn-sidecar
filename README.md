@@ -146,6 +146,7 @@ Command-line flags take precedence over environment variables.
     --ground-cmd CMD      Answer-grounding rerank via a CLI agent (e.g. "claude -p"); frontier-quality but slow (~3.5s) — best for offline use
     --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
     --ground-topk K       Candidates to ground per recall (default: 3)
+    --ground-timeout D    In-flight grounding-call timeout (default: 10s); a slow judge fails open to the cosine gate
     --log-json        Emit logs as JSON (for log aggregation pipelines)
     --vault NAME      MuninnDB vault name
     --mcp-url URL     MuninnDB MCP endpoint

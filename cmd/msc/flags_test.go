@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseFlags(t *testing.T) {
@@ -31,6 +32,17 @@ func TestParseFlags(t *testing.T) {
 		}
 	})
 
+	t.Run("grounding flags", func(t *testing.T) {
+		o := &opts{}
+		_, _, err := parseFlags([]string{"--ground-url", "http://x/v1", "--ground-model", "m", "--ground-topk", "4", "--ground-timeout", "8s", "claude"}, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.groundURL != "http://x/v1" || o.groundModel != "m" || o.groundTopK != 4 || o.groundTimeout != 8*time.Second {
+			t.Errorf("grounding flags not parsed: %+v", o)
+		}
+	})
+
 	t.Run("=value syntax", func(t *testing.T) {
 		o := &opts{}
 		if _, _, err := parseFlags([]string{"--vault=x", "claude"}, o); err != nil || o.vault != "x" {
@@ -51,6 +63,10 @@ func TestParseFlags(t *testing.T) {
 			{"--inject-min-score", "9"},
 			{"--inject-min-score", "x"},
 			{"--recall-mode", "bogus"},
+			{"--ground-topk", "0"},
+			{"--ground-topk", "abc"},
+			{"--ground-timeout", "nope"},
+			{"--ground-timeout", "-5s"},
 			{"--vault", ""},
 			{"--unknown-flag"},
 		} {
