@@ -280,6 +280,37 @@ the eval tools for future experiments. The cheaper, shipped mitigation remains
 the confidence gate: suppress the low-confidence multi-hop recalls rather than
 inject wrong context.
 
+### LLM query rewrite/decomposition — tried (local AND frontier), REJECTED
+
+The §B4 grounding work fixes injection *precision* (drop wrong injects) but can
+only filter what recall surfaced; it can't recover a paragraph recall missed. So
+the obvious recall-side counterpart: have an LLM rewrite/decompose the query into
+focused sub-queries before recall, then merge (`msc-bench -rewrite-url` for a fast
+local model, `-rewrite-cmd "claude -p"` for a frontier agent). Measured on the
+multi-hop hotpot vault (N=12 present probes — small, but consistent across three
+conditions):
+
+| condition | R@1 | R@3 | R@5 | MRR | latency/probe |
+|---|---|---|---|---|---|
+| baseline (no rewrite) | 0.17 | 0.25 | 0.33 | 0.229 | ~290ms |
+| qwen2.5:7b rewrite | 0.17 | 0.25 | 0.25 | 0.220 | ~1s |
+| **claude -p rewrite** | 0.17 | 0.25 | 0.33 | 0.225 | **~5.5s** |
+
+**No lift — not even from the frontier model**, at 5.5s/probe. The reason is
+structural, not a model-quality gap: parallel decomposition cannot satisfy a
+multi-hop question because the second hop's query *depends on the first hop's
+answer* — no upfront rewrite, however capable, can phrase "the director of the
+film that won X" as a lookup without first retrieving X. The sub-queries recall
+the same paragraphs the original already found (or noise), so merging doesn't add
+the bridge fact. True multi-hop needs *iterative* retrieve→read→retrieve (multiple
+recalls + model calls per turn), which is far outside a transparent sidecar's
+latency budget. **Decision: not shipped.** Kept as `msc-bench -rewrite-*` flags
+for future datasets where a single underspecified turn (not a reasoning chain)
+genuinely benefits from rewriting; the confidence gate remains the multi-hop
+mitigation. This closes the recall side as the grounding work closed the
+precision side: frontier models help injection precision in-flight, but do not
+improve single-shot recall on reasoning-chain queries.
+
 ## ⚠️ Cross-cutting — the gate threshold is NOT universal (key finding)
 
 Running `msc-qa` build-only (answer-coverage of the gated recall context) on the

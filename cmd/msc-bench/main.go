@@ -63,6 +63,11 @@ func run() error {
 		groundKey  = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
 		groundTopK = flag.Int("ground-topk", 5, "ground only the top-K candidates by cosine per probe (bounds model calls)")
 		groundTO   = flag.Duration("ground-timeout", 60*time.Second, "per grounding-call timeout")
+		rewriteCmd = flag.String("rewrite-cmd", "", "LLM query rewrite/decomposition before recall via a CLI agent (e.g. \"claude -p\")")
+		rewriteURL = flag.String("rewrite-url", "", "LLM query rewrite via an OpenAI-compatible URL")
+		rewriteMod = flag.String("rewrite-model", "qwen2.5:7b-instruct", "rewrite model name (for -rewrite-url)")
+		rewriteN   = flag.Int("rewrite-n", 4, "max sub-queries per probe (including the original)")
+		rewriteTO  = flag.Duration("rewrite-timeout", 60*time.Second, "per rewrite-call timeout")
 		multiRec   = flag.Bool("multi-recall", false, "split query into entity spans, recall each, merge (helps multi-hop)")
 		n          = flag.Int("n", 300, "number of labeled memories to seed")
 		absent     = flag.Int("absent", 100, "number of absent-topic probes (should suppress)")
@@ -134,6 +139,11 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "probing %d queries (%d present, %d absent) mode=%q transform=%q rerank=%q...\n",
 		len(probes), len(presentProbes), len(absentProbes), *mode, *qTransform, *rerank)
 	opt := probeOpts{mode: *mode, transform: *qTransform, distractN: *distractN, rerank: *rerank, rerankLambda: *rerankL, multiRecall: *multiRec}
+	if rw := buildRewriter(*rewriteCmd, *rewriteURL, *rewriteMod, "", *rewriteTO); rw != nil {
+		opt.rewriter = rw
+		opt.rewriteN = *rewriteN
+		fmt.Fprintf(os.Stderr, "query rewrite enabled via %s (≤%d sub-queries/probe)\n", rw.label(), *rewriteN)
+	}
 	results, err := runProbes(ctx, client, *vault, probes, *limit, opt)
 	if err != nil {
 		return err
@@ -406,6 +416,8 @@ type probeOpts struct {
 	rerank       string  // none | lexical
 	rerankLambda float64 // lexical rerank weight
 	multiRecall  bool    // split the query into entity spans, recall each, merge
+	rewriter     rewriter // optional LLM query rewrite/decomposition before recall
+	rewriteN     int      // max sub-queries (incl. original) from the rewriter
 }
 
 // recallMems issues one recall and parses the memories.
@@ -458,8 +470,14 @@ func recallMerged(ctx context.Context, c *mcpclient.Client, vault, query string,
 	if !multi {
 		return recallMems(ctx, c, vault, query, limit, mode)
 	}
+	return recallSubqueries(ctx, c, vault, splitQuery(query), limit, mode), nil
+}
+
+// recallSubqueries recalls each sub-query and merges by best vector_score per
+// concept — shared by the no-LLM entity split and the LLM query-rewrite path.
+func recallSubqueries(ctx context.Context, c *mcpclient.Client, vault string, subs []string, limit int, mode string) []recalledMemory {
 	best := map[string]recalledMemory{}
-	for _, sub := range splitQuery(query) {
+	for _, sub := range subs {
 		ms, err := recallMems(ctx, c, vault, sub, limit, mode)
 		if err != nil {
 			continue
@@ -475,7 +493,7 @@ func recallMerged(ctx context.Context, c *mcpclient.Client, vault, query string,
 		out = append(out, m)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].VectorScore > out[j].VectorScore })
-	return out, nil
+	return out
 }
 
 // lexOverlap is the word-set Jaccard of two strings (cheap lexical similarity).
@@ -593,7 +611,15 @@ func runProbes(ctx context.Context, c *mcpclient.Client, vault string, probes []
 	for i, pr := range probes {
 		query := transformQuery(opt, probes, i)
 		t0 := time.Now()
-		mems, err := recallMerged(ctx, c, vault, query, limit, opt.mode, opt.multiRecall)
+		var mems []recalledMemory
+		var err error
+		if opt.rewriter != nil {
+			// LLM query rewrite/decomposition → recall each sub-query, merge.
+			subs := opt.rewriter.Rewrite(ctx, query, opt.rewriteN)
+			mems = recallSubqueries(ctx, c, vault, subs, limit, opt.mode)
+		} else {
+			mems, err = recallMerged(ctx, c, vault, query, limit, opt.mode, opt.multiRecall)
+		}
 		totalDur += time.Since(t0)
 		timed++
 		if err != nil {
