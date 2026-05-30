@@ -48,6 +48,7 @@ func run() error {
 		corpus     = flag.String("corpus", "homogeneous", "corpus generator: homogeneous | diverse | facts | squad")
 		squadFile  = flag.String("squad-file", "/tmp/squad-dev.json", "path to SQuAD JSON (corpus=squad)")
 		squadArts  = flag.Int("squad-articles", 12, "number of SQuAD articles to seed (rest are held out as absent)")
+		hardNeg    = flag.Bool("hard-neg", false, "squad: draw negatives from held-out paragraphs of SEEDED articles (same-topic hard negatives) instead of disjoint articles")
 		chunk      = flag.String("chunk", "paragraph", "SQuAD chunk granularity: paragraph | sentence")
 		dumpQA     = flag.String("dump-qa", "", "write present probes as a QA JSON ([{question,answer}]) for msc-qa -dataset generic")
 		mode       = flag.String("mode", "", "MuninnDB recall mode: semantic | recent | balanced | deep (empty = server default)")
@@ -77,7 +78,11 @@ func run() error {
 	switch *corpus {
 	case "squad":
 		var err error
-		items, presentProbes, absentProbes, err = genSquad(*squadFile, *squadArts, *n, *present, *absent, *chunk)
+		if *hardNeg {
+			items, presentProbes, absentProbes, err = genSquadHardNeg(*squadFile, *squadArts, *n, *present, *absent)
+		} else {
+			items, presentProbes, absentProbes, err = genSquad(*squadFile, *squadArts, *n, *present, *absent, *chunk)
+		}
 		if err != nil {
 			return err
 		}

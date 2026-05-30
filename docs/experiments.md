@@ -86,6 +86,39 @@ absolute cosine level remains the single best discriminator; vault-level noise
 drift is handled by auto-calibration (§F), not per-query shape. Kept permanently
 in the study as regression-tested evidence.
 
+### B2 — Hard negatives expose the gate's ceiling (real SQuAD data)
+
+Every prior suppression measurement used **easy** negatives: probes from disjoint,
+off-topic held-out articles. `msc-bench -corpus squad -hard-neg` instead draws
+negatives from held-out **paragraphs of the seeded articles** — same topic, same
+entities, heavy lexical overlap, but the answer is in an unseeded sibling
+paragraph. This is the one suppression case the synthetic study cannot model.
+
+Production gate (auto-calibrated cosine), 80 present + 80 negative probes each:
+
+| negatives | best gate F1 | gate acc | suppress@neg | inject@should |
+|---|---|---|---|---|
+| easy (disjoint articles) | 0.95 | 0.96 | **0.99** | 0.93 |
+| hard (same-article paragraphs) | 0.64 | 0.60 | **0.49** | 0.71 |
+
+The hard-negative gate curve shows `suppress@neg` and `inject@should` moving in
+**lockstep** — raising the threshold from 0.625→0.725 lifts suppression
+0.49→0.84 but collapses true injection 0.71→0.33. No single threshold both injects
+when it should and suppresses hard negatives, because the answer-bearing paragraph
+and its same-article siblings sit in the **same cosine band**.
+
+**Conclusion:** the cosine gate is near-perfect at rejecting off-topic noise
+(suppress 0.99) but cannot reject *on-topic-but-answerless* passages (suppress
+~0.49) — and no score-shape gate can (§B1: top1≈top2 in both present and hard-neg
+cases, so there is no separating signal). This is a **retrieval-precision
+ceiling**, the same wall HotpotQA hit (multi-hop §): distinguishing "relevant
+topic" from "actually answers the query" needs answer-grounding / cross-encoder
+reranking, not a better threshold. It bounds what the *when-to-inject* decision can
+achieve alone and marks reranking-for-precision as the next real lever. In the live
+msc use case this is benign-leaning: injecting a same-topic project memory that
+lacks the exact answer is closer to useful context than to the off-topic
+distractor arm — but it is not free, so it sets the agenda for retrieval precision.
+
 ## C — Recall trigger (when to ask)
 
 **Shipped:** (1) **negative cache** — a repeated intent that already recalled

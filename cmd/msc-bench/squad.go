@@ -120,6 +120,69 @@ func genSquad(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk 
 	return items, present, absent, nil
 }
 
+// genSquadHardNeg builds a HARD-negative gate instrument: instead of drawing
+// negatives from disjoint off-topic articles, it seeds the even-index paragraphs
+// of each article and uses the answerable questions of the ODD-index paragraphs
+// (same article, never seeded) as negatives. These share heavy topical/lexical
+// overlap with seeded memories — the worst case for a cosine gate — yet no seeded
+// memory answers them, so a correct gate must still suppress. This is the one
+// suppression case the synthetic study cannot model (its noise is a cleanly
+// separated low-score cluster). Present probes come from the seeded even paragraphs.
+func genSquadHardNeg(path string, seedArticles, maxItems, nPresent, nAbsent int) ([]item, []probe, []probe, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read squad file: %w", err)
+	}
+	var sq squadFile
+	if err := json.Unmarshal(raw, &sq); err != nil {
+		return nil, nil, nil, fmt.Errorf("parse squad json: %w", err)
+	}
+	if len(sq.Data) < seedArticles {
+		return nil, nil, nil, fmt.Errorf("squad file has %d articles, need >= %d", len(sq.Data), seedArticles)
+	}
+
+	var items []item
+	var present, hardNeg []probe
+	seenContent := map[string]bool{}
+
+	for ai := 0; ai < seedArticles && ai < len(sq.Data); ai++ {
+		art := sq.Data[ai]
+		for pi, para := range art.Paragraphs {
+			if para.Context == "" {
+				continue
+			}
+			if pi%2 == 0 {
+				// Even paragraph → seed it + a present probe.
+				if len(items) >= maxItems || seenContent[para.Context] {
+					continue
+				}
+				seenContent[para.Context] = true
+				concept := fmt.Sprintf("%s#%d", slug(art.Title), pi)
+				items = append(items, item{Concept: concept, Content: para.Context})
+				if len(present) < nPresent {
+					for _, qa := range para.QAs {
+						if qa.IsImpossible || qa.Question == "" || len(qa.Answers) == 0 {
+							continue
+						}
+						present = append(present, probe{Query: qa.Question, Gold: concept, Answer: qa.Answers[0].Text, Present: true})
+						break
+					}
+				}
+			} else if len(hardNeg) < nAbsent {
+				// Odd paragraph → never seeded; its question is a hard negative.
+				for _, qa := range para.QAs {
+					if qa.IsImpossible || qa.Question == "" {
+						continue
+					}
+					hardNeg = append(hardNeg, probe{Query: qa.Question, Gold: "", Present: false})
+					break
+				}
+			}
+		}
+	}
+	return items, present, hardNeg, nil
+}
+
 // splitSentences splits text on sentence-ending punctuation followed by a space.
 func splitSentences(text string) []string {
 	var out []string

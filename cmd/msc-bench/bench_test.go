@@ -183,6 +183,49 @@ func TestGenSquadAndHotpotFromFile(t *testing.T) {
 	}
 }
 
+func TestGenSquadHardNeg(t *testing.T) {
+	dir := t.TempDir()
+	// One article, 3 paragraphs: even (0,2) seeded → present probes; odd (1) is a
+	// same-article hard negative (never seeded).
+	squad := filepath.Join(dir, "squad.json")
+	os.WriteFile(squad, []byte(`{"data":[
+	  {"title":"Newcastle","paragraphs":[
+	    {"context":"The Town Moor is a large area of common land in Newcastle.","qas":[{"question":"what is the Town Moor?","is_impossible":false,"answers":[{"text":"common land"}]}]},
+	    {"context":"The Hoppings funfair is held on the Town Moor each June.","qas":[{"question":"when is the Hoppings held?","is_impossible":false,"answers":[{"text":"June"}]}]},
+	    {"context":"Freemen of the city have grazing rights on the moor.","qas":[{"question":"who has grazing rights?","is_impossible":false,"answers":[{"text":"Freemen"}]}]}
+	  ]}
+	]}`), 0o644)
+	items, present, hardNeg, err := genSquadHardNeg(squad, 1, 10, 5, 5)
+	if err != nil {
+		t.Fatalf("genSquadHardNeg: %v", err)
+	}
+	if len(items) != 2 { // paragraphs 0 and 2 seeded
+		t.Errorf("expected 2 seeded items (even paragraphs), got %d", len(items))
+	}
+	if len(present) != 2 {
+		t.Errorf("expected 2 present probes, got %d", len(present))
+	}
+	if len(hardNeg) != 1 { // paragraph 1's question
+		t.Fatalf("expected 1 hard-negative probe (odd paragraph), got %d", len(hardNeg))
+	}
+	if hardNeg[0].Present || hardNeg[0].Gold != "" {
+		t.Errorf("hard negative must be Present=false, Gold=\"\": %+v", hardNeg[0])
+	}
+	if hardNeg[0].Query != "when is the Hoppings held?" {
+		t.Errorf("hard negative should come from the odd paragraph, got %q", hardNeg[0].Query)
+	}
+	// Present probes carry their gold answer span (for QA dumps).
+	for _, p := range present {
+		if p.Answer == "" {
+			t.Errorf("present probe missing answer: %+v", p)
+		}
+	}
+	// Missing file errors.
+	if _, _, _, err := genSquadHardNeg(filepath.Join(dir, "nope.json"), 1, 1, 1, 1); err == nil {
+		t.Error("expected error on missing file")
+	}
+}
+
 func TestWriteQA(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qa.json")
 	probes := []probe{
