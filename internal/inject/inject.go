@@ -138,6 +138,12 @@ const defaultMinScore = 0.6
 // for semantic recall and gates on the cosine it returns.
 const defaultRecallMode = "semantic"
 
+// maxWhereLeftOffEntries caps how many previous-session items the one-shot
+// session-context block lists. Each entry is already ≤200 runes; bounding the
+// count keeps this server-controlled, budget-exempt block from growing without
+// limit on the first request. 20 entries (~1k tokens) is ample session bootstrap.
+const maxWhereLeftOffEntries = 20
+
 // dupTokenOverlap is the Jaccard similarity (over lowercased word sets) above
 // which two memories are considered near-duplicates. Only the higher-scored of
 // a duplicate pair is injected, so redundant memories don't waste the budget or
@@ -320,15 +326,12 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 			}
 			sb.WriteString(guide)
 		}
-		// Bound the one-shot session context to the injection budget. where_left_off
-		// is server-controlled and unbounded (a long prior session can yield a large
-		// summary), and it is prepended outside the per-memory budget packing — so
-		// without this cap a single recall could put an arbitrarily large block in
-		// the system prompt. The guide (~1.5k tokens) fits a default 2048 budget; the
-		// cap only bites on a pathologically large where_left_off.
-		sessCtx := apiformat.TruncateQuery(sb.String(), inj.budget*charPerToken)
+		// where_left_off is bounded at the source by entry count (parseWhereLeftOff,
+		// maxWhereLeftOffEntries) and the guide is naturally bounded, so the
+		// assembled session context is well-formed and bounded without truncating
+		// the string (which would cut the closing marker).
 		inj.mu.Lock()
-		inj.sessionCtx = sessCtx
+		inj.sessionCtx = sb.String()
 		inj.mu.Unlock()
 	})
 
@@ -970,7 +973,16 @@ func parseWhereLeftOff(body []byte) string {
 
 	var sb strings.Builder
 	sb.WriteString(apiformat.SessionContextOpen + "\nPrevious session context:\n")
+	// Bound the number of entries: where_left_off is server-controlled and
+	// otherwise unbounded by count, and this block is prepended outside the
+	// per-memory budget packing. Capping entries (each already ≤200 runes) bounds
+	// the block at the source while keeping it well-formed — preferable to
+	// truncating the assembled string, which would cut the closing marker.
+	shown := 0
 	for _, m := range wloResult.Memories {
+		if shown >= maxWhereLeftOffEntries {
+			break
+		}
 		label := m.Concept
 		if label == "" {
 			label = m.Summary
@@ -979,6 +991,7 @@ func parseWhereLeftOff(body []byte) string {
 			sb.WriteString("- ")
 			sb.WriteString(apiformat.TruncateText(label, 200))
 			sb.WriteString("\n")
+			shown++
 		}
 	}
 	sb.WriteString(apiformat.SessionContextClose)

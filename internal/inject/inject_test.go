@@ -424,10 +424,10 @@ func TestWhereLeftOffInjection(t *testing.T) {
 	}
 }
 
-func TestSessionContextCappedToBudget(t *testing.T) {
-	// where_left_off returns MANY memories (each capped at 200 runes, but the
-	// count is unbounded) so the combined session context far exceeds a small
-	// budget. The injector must cap it; the trailing marker must be truncated out.
+func TestSessionContextEntryCapWellFormed(t *testing.T) {
+	// where_left_off returns far more entries than the cap. The injector must
+	// bound the count (maxWhereLeftOffEntries) AND keep the block well-formed —
+	// the closing marker present, the trailing dropped entry's marker absent.
 	const lastMarker = "ZZ_LAST_FACT_MARKER_ZZ"
 	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -461,8 +461,7 @@ func TestSessionContextCappedToBudget(t *testing.T) {
 	})
 	defer srv.Close()
 
-	budget := 128 // tokens → ~512 chars cap
-	inj := New(Config{MCPURL: srv.URL, Vault: "default", Budget: budget, Timeout: 2 * time.Second})
+	inj := New(Config{MCPURL: srv.URL, Vault: "default", Budget: 2048, Timeout: 2 * time.Second})
 	body := []byte(`{"model":"claude-3","system":"s","messages":[{"role":"user","content":"hi"}]}`)
 	enriched, _, err := inj.Enrich(t.Context(), body)
 	if err != nil {
@@ -472,13 +471,22 @@ func TestSessionContextCappedToBudget(t *testing.T) {
 	if !strings.Contains(s, "fact number 0") {
 		t.Error("expected the start of the session context to survive")
 	}
-	if strings.Contains(s, lastMarker) {
-		t.Error("session context was not capped — the trailing marker should be truncated out")
+	// Capped at maxWhereLeftOffEntries (20): entry 19 kept, entry 20 and beyond
+	// (including the marker on entry 59) dropped.
+	if !strings.Contains(s, "fact number "+strconv.Itoa(maxWhereLeftOffEntries-1)) {
+		t.Errorf("expected entry %d (within the cap) to survive", maxWhereLeftOffEntries-1)
 	}
-	// The injected session block should be within a small multiple of the budget,
-	// not the full 60-memory payload (~9k chars).
-	if injected := len(s) - len(body); injected > budget*charPerToken*2 {
-		t.Errorf("injected session context %d chars exceeds the budget cap (~%d)", injected, budget*charPerToken)
+	if strings.Contains(s, "fact number "+strconv.Itoa(maxWhereLeftOffEntries)) {
+		t.Errorf("entry %d exceeds the cap and should be dropped", maxWhereLeftOffEntries)
+	}
+	if strings.Contains(s, lastMarker) {
+		t.Error("trailing dropped entry's marker should be absent")
+	}
+	// Well-formed: the closing marker must be present (the bug the entry cap fixes
+	// vs truncating the assembled string, which cut it off). Angle brackets are
+	// JSON-escaped in the body, so match the distinguishing "/session-context".
+	if !strings.Contains(s, "/session-context") {
+		t.Errorf("session-context block is not well-formed (missing close marker): %.400s", s)
 	}
 }
 
