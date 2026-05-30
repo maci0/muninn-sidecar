@@ -1385,6 +1385,18 @@ func TestSelectForInjection(t *testing.T) {
 		}
 	})
 
+	t.Run("non-stale supersedes a stale same-concept duplicate", func(t *testing.T) {
+		// The stale one is even NEWER by created_at, but MuninnDB's stale flag is
+		// authoritative — the non-stale memory must win.
+		stale := memory{ID: "stale", Concept: "k", Content: "outdated", Score: 0.9, CreatedAt: "2026-06-01T00:00:00Z"}
+		stale.Annotations.Stale = true
+		fresh := memory{ID: "fresh", Concept: "k", Content: "current", Score: 0.8, CreatedAt: "2026-01-01T00:00:00Z"}
+		got := selectForInjection([]memory{stale, fresh}, 0.5)
+		if len(got) != 1 || got[0].ID != "fresh" {
+			t.Fatalf("non-stale should supersede stale regardless of created_at, got %+v", got)
+		}
+	})
+
 	t.Run("dead and untrusted memories excluded", func(t *testing.T) {
 		in := []memory{
 			{ID: "arch", Concept: "a", Content: "retired decision", Score: 0.95, State: "archived"},
@@ -1402,6 +1414,29 @@ func TestSelectForInjection(t *testing.T) {
 			t.Errorf("expected 'ok' and 'done' kept (archived/cancelled/untrusted dropped), got %v", ids)
 		}
 	})
+}
+
+func TestSupersedes(t *testing.T) {
+	mkStale := func(id, created string, stale bool) memory {
+		m := memory{ID: id, CreatedAt: created}
+		m.Annotations.Stale = stale
+		return m
+	}
+	// Non-stale beats stale even when the stale one is newer.
+	if !supersedes(mkStale("c", "2026-01-01T00:00:00Z", false), mkStale("k", "2026-06-01T00:00:00Z", true)) {
+		t.Error("non-stale candidate should supersede a newer stale incumbent")
+	}
+	// Stale never beats non-stale.
+	if supersedes(mkStale("c", "2026-06-01T00:00:00Z", true), mkStale("k", "2026-01-01T00:00:00Z", false)) {
+		t.Error("stale candidate must not supersede a non-stale incumbent")
+	}
+	// Same staleness → newer created_at wins.
+	if !supersedes(mkStale("c", "2026-05-01T00:00:00Z", false), mkStale("k", "2026-01-01T00:00:00Z", false)) {
+		t.Error("with equal staleness, newer created_at should win")
+	}
+	if supersedes(mkStale("c", "2026-01-01T00:00:00Z", false), mkStale("k", "2026-05-01T00:00:00Z", false)) {
+		t.Error("older created_at should not supersede")
+	}
 }
 
 func TestInjectable(t *testing.T) {

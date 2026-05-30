@@ -53,6 +53,15 @@ type memory struct {
 	// memories are excluded from injection (see injectable).
 	State string `json:"state"`
 	Trust string `json:"trust"`
+	// Annotations.Stale is MuninnDB's staleness verdict (present when recall is
+	// called with annotate:true) — a fact that has aged past its verification
+	// window. Used as the authoritative tiebreak in same-concept dedup: a fresh
+	// memory supersedes a stale duplicate even if created_at comparison is
+	// ambiguous. (Staleness is age-based, not wrongness, so a *lone* stale memory
+	// is still injected — it may be the only answer; only duplicates are pruned.)
+	Annotations struct {
+		Stale bool `json:"stale"`
+	} `json:"annotations"`
 }
 
 // injectable reports whether a recalled memory is fit to inject. It excludes
@@ -780,13 +789,15 @@ func selectForInjection(merged []memory, minScore float64) []memory {
 		concept := normalizeConcept(m.Concept)
 		if concept != "" {
 			if i, ok := conceptIdx[concept]; ok {
-				// Same fact already kept: keep whichever is fresher.
-				if m.CreatedAt > kept[i].CreatedAt {
-					slog.Debug("inject: replaced stale same-concept memory with fresher", "concept", m.Concept, "old_created", kept[i].CreatedAt, "new_created", m.CreatedAt)
+				// Same fact already kept: keep the current version. MuninnDB's
+				// stale annotation is authoritative (a non-stale memory supersedes a
+				// stale duplicate); created_at breaks ties when staleness matches.
+				if supersedes(m, kept[i]) {
+					slog.Debug("inject: replaced stale same-concept memory with current", "concept", m.Concept, "old_stale", kept[i].Annotations.Stale, "new_stale", m.Annotations.Stale, "old_created", kept[i].CreatedAt, "new_created", m.CreatedAt)
 					kept[i] = m
 					keptTokens[i] = wordSet(m.Content)
 				} else {
-					slog.Debug("inject: skipped duplicate-concept memory (not fresher)", "id", m.ID, "concept", m.Concept)
+					slog.Debug("inject: skipped duplicate-concept memory (not current)", "id", m.ID, "concept", m.Concept)
 				}
 				continue
 			}
@@ -840,6 +851,17 @@ func (inj *Injector) groundMemories(ctx context.Context, query string, mems []me
 		}
 	}
 	return kept
+}
+
+// supersedes reports whether candidate should replace the kept same-concept
+// memory: a non-stale memory supersedes a stale one (MuninnDB's annotation is
+// authoritative); when staleness matches, the one with the later created_at wins
+// (RFC3339 UTC compares lexically). Equal on both → keep the incumbent.
+func supersedes(candidate, kept memory) bool {
+	if candidate.Annotations.Stale != kept.Annotations.Stale {
+		return !candidate.Annotations.Stale // candidate wins iff it is the fresh (non-stale) one
+	}
+	return candidate.CreatedAt > kept.CreatedAt
 }
 
 // normalizeConcept lowercases and trims a concept for duplicate detection so
@@ -1026,6 +1048,11 @@ func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error)
 		"context":   []string{query},
 		"limit":     10,
 		"threshold": inj.threshold,
+		// Ask MuninnDB to annotate staleness: a memory whose fact has aged out is
+		// flagged stale=true, an authoritative signal used to break same-concept
+		// duplicates toward the current version (selectForInjection), stronger than
+		// the created_at heuristic alone.
+		"annotate": true,
 	}
 	if inj.recallMode != "" {
 		args["mode"] = inj.recallMode // semantic: best retrieval (see cmd/msc-bench)
