@@ -85,6 +85,11 @@ func run() error {
 		multiRecall = flag.Bool("multi-recall", false, "split query into entity spans, recall each, merge (multi-hop)")
 		timeout     = flag.Duration("timeout", 60*time.Second, "per-call timeout")
 		mdFile      = flag.String("md", "", "append a results row per model to this markdown file")
+		groundURL   = flag.String("ground-url", "", "add a 4th \"grounded\" arm: LLM answer-grounding filter on the injected context via an OpenAI-compatible URL")
+		groundCmd   = flag.String("ground-cmd", "", "add a 4th \"grounded\" arm via a CLI agent grounder (e.g. \"claude -p\")")
+		groundMod   = flag.String("ground-model", "qwen2.5:7b-instruct", "grounding model name (for -ground-url)")
+		groundKey   = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
+		groundTopK  = flag.Int("ground-topk", 5, "ground only the top-K recalled passages per question")
 	)
 	flag.Parse()
 
@@ -97,25 +102,40 @@ func run() error {
 	mcp := mcpclient.New(*mcpURL, resolveToken(*token), *timeout)
 	ctx := context.Background()
 
+	// Optional answer-grounding rerank: a 4th "grounded" arm filters the injected
+	// passages by an LLM "does this answer the query?" judgment (model-independent,
+	// so computed once with the injected context). Tests whether grounding helps
+	// downstream where wrong-paragraph injects hurt (e.g. HotpotQA, experiments §B).
+	grd := buildGrounder(*groundCmd, *groundURL, *groundMod, *groundKey, *timeout)
+
 	// Precompute recall context per question ONCE — it is model-independent, so
 	// all models reuse it (recall is the expensive MCP path; only model calls
 	// repeat per model).
 	type prepared struct {
-		q                  qaItem
-		injected, distract string
+		q                            qaItem
+		injected, distract, grounded string
 	}
 	prep := make([]prepared, len(questions))
-	var coverage int
+	var coverage, groundCalls int
 	for i, q := range questions {
-		inj := recallContext(ctx, mcp, *vault, q.Question, *minScore, *multiRecall)
+		cands := recallCandidates(ctx, mcp, *vault, q.Question, *minScore, *multiRecall)
+		inj := strings.Join(cands, "\n")
 		dis := recallContext(ctx, mcp, *vault, "unrelated trivia about cooking and weather", *minScore, false)
-		prep[i] = prepared{q: q, injected: inj, distract: dis}
+		grounded := ""
+		if grd != nil {
+			groundCalls += min(*groundTopK, len(cands))
+			grounded = strings.Join(groundFilter(ctx, grd, q.Question, cands, *groundTopK), "\n")
+		}
+		prep[i] = prepared{q: q, injected: inj, distract: dis, grounded: grounded}
 		if containsAnswer(inj, q.Answers) {
 			coverage++
 		}
 	}
 	fmt.Fprintf(os.Stderr, "recall context contained the gold answer for %d/%d (%.0f%%)\n",
 		coverage, len(questions), 100*float64(coverage)/float64(max(1, len(questions))))
+	if grd != nil {
+		fmt.Fprintf(os.Stderr, "grounding arm enabled via %s (~%d judge calls)\n", grd.label(), groundCalls)
+	}
 
 	// Assemble reader backends: OpenAI-compatible HTTP models (-model-url) and/or
 	// CLI agents (-model-cmd). Either source can be empty.
@@ -136,14 +156,25 @@ func run() error {
 		return nil
 	}
 
-	armNames := [3]string{"none", "injected", "distractor"}
+	// Arms are dynamic: the grounded arm appears only when a grounder is set.
+	armNames := []string{"none", "injected", "distractor"}
+	if grd != nil {
+		armNames = append(armNames, "grounded")
+	}
 	fmt.Printf("\n=== msc-qa: downstream answer quality (%d questions) ===\n", len(questions))
-	fmt.Printf("%-26s %12s %12s %12s   %s\n", "model", "none EM/F1", "inj EM/F1", "dist EM/F1", "Δinj F1")
+	header := fmt.Sprintf("%-26s %12s %12s %12s", "model", "none EM/F1", "inj EM/F1", "dist EM/F1")
+	if grd != nil {
+		header += fmt.Sprintf(" %12s", "grnd EM/F1")
+	}
+	fmt.Printf("%s   %s\n", header, "Δinj F1")
 	for _, r := range readers {
-		var agg [3]armAgg
+		agg := make([]armAgg, len(armNames))
 		for i, p := range prep {
-			ctxBlocks := [3]string{"", p.injected, p.distract}
-			for a := 0; a < 3; a++ {
+			ctxBlocks := []string{"", p.injected, p.distract}
+			if grd != nil {
+				ctxBlocks = append(ctxBlocks, p.grounded)
+			}
+			for a := range armNames {
 				ans, err := r.answer(ctx, p.q.Question, ctxBlocks[a])
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "  warn: %s q%d arm %s: %v\n", r.label(), i, armNames[a], err)
@@ -153,10 +184,17 @@ func run() error {
 			}
 		}
 		dInj := agg[1].f1() - agg[0].f1()
-		fmt.Printf("%-26s  %4.2f/%4.2f   %4.2f/%4.2f   %4.2f/%4.2f   %+5.2f\n",
-			trunc(r.label(), 26), agg[0].em(), agg[0].f1(), agg[1].em(), agg[1].f1(), agg[2].em(), agg[2].f1(), dInj)
+		row := fmt.Sprintf("%-26s  %4.2f/%4.2f   %4.2f/%4.2f   %4.2f/%4.2f",
+			trunc(r.label(), 26), agg[0].em(), agg[0].f1(), agg[1].em(), agg[1].f1(), agg[2].em(), agg[2].f1())
+		if grd != nil {
+			row += fmt.Sprintf("   %4.2f/%4.2f", agg[3].em(), agg[3].f1())
+		}
+		fmt.Printf("%s   %+5.2f\n", row, dInj)
+		if grd != nil {
+			fmt.Printf("    Δgrounded F1 = %+.2f (vs none), %+.2f (vs injected)\n", agg[3].f1()-agg[0].f1(), agg[3].f1()-agg[1].f1())
+		}
 		if *mdFile != "" {
-			appendMD(*mdFile, r.label(), len(questions), agg)
+			appendMD(*mdFile, r.label(), len(questions), [3]armAgg{agg[0], agg[1], agg[2]})
 		}
 	}
 	return nil
@@ -245,24 +283,30 @@ func splitQueryQA(q string) []string {
 }
 
 func recallContext(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) string {
+	return strings.Join(recallCandidates(ctx, mcp, vault, query, minScore, multi), "\n")
+}
+
+// recallCandidates returns the gated recall passages (cosine >= minScore),
+// highest-scored first, as a slice — so callers can ground-filter before joining.
+func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) []string {
 	if multi {
 		seen := map[string]bool{}
 		var parts []string
 		for _, sub := range splitQueryQA(query) {
-			for _, line := range strings.Split(recallContext(ctx, mcp, vault, sub, minScore, false), "\n") {
-				if line != "" && !seen[line] {
-					seen[line] = true
-					parts = append(parts, line)
+			for _, c := range recallCandidates(ctx, mcp, vault, sub, minScore, false) {
+				if c != "" && !seen[c] {
+					seen[c] = true
+					parts = append(parts, c)
 				}
 			}
 		}
-		return strings.Join(parts, "\n")
+		return parts
 	}
 	resp, err := mcp.Call(ctx, "muninn_recall", map[string]any{
 		"vault": vault, "context": []string{query}, "limit": 5, "threshold": 0.05, "mode": "semantic",
 	})
 	if err != nil {
-		return ""
+		return nil
 	}
 	var rpc struct {
 		Result struct {
@@ -272,7 +316,7 @@ func recallContext(ctx context.Context, mcp *mcpclient.Client, vault, query stri
 		} `json:"result"`
 	}
 	if json.Unmarshal(resp, &rpc) != nil {
-		return ""
+		return nil
 	}
 	for _, c := range rpc.Result.Content {
 		if c.Type != "text" {
@@ -286,7 +330,7 @@ func recallContext(ctx context.Context, mcp *mcpclient.Client, vault, query stri
 			} `json:"memories"`
 		}
 		if json.Unmarshal([]byte(c.Text), &inner) != nil {
-			return ""
+			return nil
 		}
 		var parts []string
 		for _, m := range inner.Memories {
@@ -298,9 +342,9 @@ func recallContext(ctx context.Context, mcp *mcpclient.Client, vault, query stri
 				parts = append(parts, m.Content)
 			}
 		}
-		return strings.Join(parts, "\n")
+		return parts
 	}
-	return ""
+	return nil
 }
 
 // answerer is a reader backend: given a question and an optional injected

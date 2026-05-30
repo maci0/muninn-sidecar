@@ -164,9 +164,45 @@ suppressing them is *correct* — part of the 0.49 cosine ceiling is right behav
 not gate failure, and no honest grader should push suppression to 1.0.
 
 **Decision:** keep the cosine gate + auto-calibration as the in-flight design; ship
-the grounding rerank as an **offline** precision/curation tool only (the `-ground-*`
+the grounding rerank as an **offline** precision/curation tool (the `-ground-*`
 flags). Frontier-CLI grounding is the right instrument for *evaluating* vault
-precision and curating memories, not for the per-request inject decision.
+precision and curating memories. But §B4 shows a *fast local* grounder is also a
+viable in-flight precision step for harm-prone vaults — see below.
+
+### B4 — Grounding's value IS real downstream (where false-injects hurt)
+
+§B3 measured grounding on the gate metric (suppress@neg) and found no win — but
+that instrument is confounded (sibling paragraphs often genuinely answer). The
+honest test is **downstream answer quality on a regime where wrong-paragraph
+injects demonstrably hurt**: HotpotQA, ungated (min-score 0.1), where naive cosine
+injection went *negative* (§B). Added a 4th "grounded" arm to `msc-qa`
+(`-ground-url` / `-ground-cmd`): the injected passages are filtered by an LLM
+answer-grounding judgment before the reader sees them. Grounder = qwen2.5:7b
+(fast, local), 20 questions, gold-in-recall only 25% (multi-hop retrieval is poor):
+
+| reader | none F1 | cosine-inject F1 | grounded F1 | Δgrounded vs inject |
+|---|---|---|---|---|
+| qwen2.5:3b-instruct | 0.05 | 0.00 | 0.00 | +0.00 |
+| granite3.1-dense:2b | 0.32 | 0.10 | **0.34** | **+0.24** |
+| llama3.2:3b | 0.20 | 0.14 | **0.21** | **+0.08** |
+
+**Grounding recovers the harm of bad injection — and beats the threshold gate at
+it.** Naive injection cost granite −0.22 (0.32→0.10); grounding restores it to
+0.34 (≈ baseline, +0.01 vs none). The earlier production-gate confirming run only
+recovered granite to −0.10 at min-score 0.6; **grounding recovers to +0.01 —
+better than the cosine gate**, because it drops paragraphs by answer-presence
+rather than by a score band that wrong paragraphs still clear. Grounding doesn't
+*add* over the no-context baseline on multi-hop (no single paragraph fully answers,
+so it correctly drops them → ≈ none), but it *eliminates the downstream harm* that
+the threshold gate only partially contains.
+
+**Refined decision:** the cosine gate + auto-calibration stays the default
+in-flight (≈11ms, no model). For **harm-prone vaults** (weak retrieval / many
+on-topic-but-wrong neighbours, e.g. multi-hop), a *fast local* grounder
+(`-ground-url`, ~1s/judge) is a viable in-flight precision upgrade that beats the
+threshold at harm-recovery. **Frontier CLIs** (`-ground-cmd`) remain offline-only
+(~3.5s/judge, §B3) — best for vault audit/curation. The grounding lever is real;
+its place is set by the grader's latency.
 
 ## C — Recall trigger (when to ask)
 
