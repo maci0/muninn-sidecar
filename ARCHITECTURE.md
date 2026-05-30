@@ -213,6 +213,8 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach:
 | Injection threshold (`MinScore`) | `--inject-min-score` | — | 0.6 prior, then auto-calibrated per vault |
 | Auto-calibrate gate | `--no-auto-calibrate` (disable) | — | On (self-tunes `MinScore` to the score distribution) |
 | Recall mode (`RecallMode`) | `--recall-mode` | — | semantic (best retrieval; real-MuninnDB benchmark) |
+| Answer-grounding rerank (`Grounder`) | `--ground-url` / `--ground-cmd` | — | Off (opt-in precision step; see docs/experiments §B4) |
+| Grounding model / breadth | `--ground-model` / `--ground-topk` | — | qwen2.5:7b-instruct / top-3 |
 | Recall timeout | — | — | 200ms per MCP call |
 | Debug logging | `--debug` | — | Off (WARN level) |
 

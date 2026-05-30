@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 )
 
@@ -148,15 +149,15 @@ func run() error {
 	// recalled candidates the model says don't answer the query. This is the
 	// cross-encoder precision step the cosine gate can't do (§B2). It mutates a
 	// COPY of the results so the cosine report above is untouched.
-	if g := buildGrounder(*groundCmd, *groundURL, *groundMod, *groundKey, *groundTO); g != nil {
+	if g := grounding.New(*groundCmd, *groundURL, *groundMod, *groundKey, *groundTO); g != nil {
 		grounded := deepCopyResults(results)
-		fmt.Fprintf(os.Stderr, "grounding rerank via %s (top-%d/probe)...\n", g.label(), *groundTopK)
+		fmt.Fprintf(os.Stderr, "grounding rerank via %s (top-%d/probe)...\n", g.Label(), *groundTopK)
 		t0 := time.Now()
 		calls := applyGrounding(ctx, g, grounded, *groundTopK)
 		fmt.Fprintf(os.Stderr, "grounding: %d model calls in %s\n", calls, time.Since(t0).Round(time.Millisecond))
 		// Split AFTER grounding so the partitions see the filtered Recalled sets.
 		gp, ga := splitPresentAbsent(grounded)
-		reportGroundedGate(g.label(), gp, ga)
+		reportGroundedGate(g.Label(), gp, ga)
 	}
 	return nil
 }

@@ -28,6 +28,10 @@ type opts struct {
 	injectBudget    int     // max tokens to inject per request (0 = default)
 	minScore        float64 // injection cosine threshold (0 = default 0.6)
 	recallMode      string  // MuninnDB recall mode (empty = default "semantic")
+	groundCmd       string  // answer-grounding rerank via a CLI agent (e.g. "claude -p")
+	groundURL       string  // answer-grounding rerank via an OpenAI-compatible URL
+	groundModel     string  // grounding model name (for --ground-url)
+	groundTopK      int     // candidates to ground per recall (0 = default 3)
 	noAutoCalibrate bool    // disable self-tuning of the injection threshold
 }
 
@@ -195,7 +199,23 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			}
 			i++
 			continue
-		case "--vault", "--mcp-url", "--token":
+		case "--ground-topk":
+			v := val
+			if !hasVal {
+				i++
+				if i >= len(args) {
+					return nil, actionNone, fmt.Errorf("%s requires a value", key)
+				}
+				v = args[i]
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				return nil, actionNone, fmt.Errorf("--ground-topk must be a positive integer")
+			}
+			o.groundTopK = n
+			i++
+			continue
+		case "--vault", "--mcp-url", "--token", "--ground-cmd", "--ground-url", "--ground-model":
 			v := val
 			if !hasVal {
 				i++
@@ -214,6 +234,12 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 				o.mcpURL = v
 			case "--token":
 				o.token = v
+			case "--ground-cmd":
+				o.groundCmd = v
+			case "--ground-url":
+				o.groundURL = v
+			case "--ground-model":
+				o.groundModel = v
 			}
 			i++
 			continue

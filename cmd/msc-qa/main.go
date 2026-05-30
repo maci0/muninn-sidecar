@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 )
 
@@ -106,7 +107,7 @@ func run() error {
 	// passages by an LLM "does this answer the query?" judgment (model-independent,
 	// so computed once with the injected context). Tests whether grounding helps
 	// downstream where wrong-paragraph injects hurt (e.g. HotpotQA, experiments §B).
-	grd := buildGrounder(*groundCmd, *groundURL, *groundMod, *groundKey, *timeout)
+	grd := grounding.New(*groundCmd, *groundURL, *groundMod, *groundKey, *timeout)
 
 	// Precompute recall context per question ONCE — it is model-independent, so
 	// all models reuse it (recall is the expensive MCP path; only model calls
@@ -124,7 +125,7 @@ func run() error {
 		grounded := ""
 		if grd != nil {
 			groundCalls += min(*groundTopK, len(cands))
-			grounded = strings.Join(groundFilter(ctx, grd, q.Question, cands, *groundTopK), "\n")
+			grounded = strings.Join(grounding.Filter(ctx, grd, q.Question, cands, *groundTopK), "\n")
 		}
 		prep[i] = prepared{q: q, injected: inj, distract: dis, grounded: grounded}
 		if containsAnswer(inj, q.Answers) {
@@ -134,7 +135,7 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "recall context contained the gold answer for %d/%d (%.0f%%)\n",
 		coverage, len(questions), 100*float64(coverage)/float64(max(1, len(questions))))
 	if grd != nil {
-		fmt.Fprintf(os.Stderr, "grounding arm enabled via %s (~%d judge calls)\n", grd.label(), groundCalls)
+		fmt.Fprintf(os.Stderr, "grounding arm enabled via %s (~%d judge calls)\n", grd.Label(), groundCalls)
 	}
 
 	// Assemble reader backends: OpenAI-compatible HTTP models (-model-url) and/or

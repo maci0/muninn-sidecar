@@ -142,6 +142,10 @@ Command-line flags take precedence over environment variables.
     --inject-budget N Max tokens to inject per request (default: 2048)
     --inject-min-score F  Min cosine score to inject a memory, 0-1 (default: 0.6)
     --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
+    --ground-url URL      Opt-in answer-grounding rerank via an OpenAI-compatible model (fast local judge, ~1s); drops recalled passages the model says don't answer the query
+    --ground-cmd CMD      Answer-grounding rerank via a CLI agent (e.g. "claude -p"); frontier-quality but slow (~3.5s) — best for offline use
+    --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
+    --ground-topk K       Candidates to ground per recall (default: 3)
     --log-json        Emit logs as JSON (for log aggregation pipelines)
     --vault NAME      MuninnDB vault name
     --mcp-url URL     MuninnDB MCP endpoint

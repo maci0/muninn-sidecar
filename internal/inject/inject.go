@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
@@ -71,6 +72,17 @@ type Config struct {
 	AutoCalibrate bool          // self-tune MinScore from observed recall-score distribution (the sidecar enables this; New() callers default off)
 	Timeout       time.Duration // MCP call timeout (default: 200ms)
 	Stats         *stats.Stats  // session statistics (nil-safe)
+
+	// Grounder, when set, adds an LLM answer-grounding rerank after the cosine
+	// gate: each freshly-recalled candidate (top GroundTopK by score) is dropped
+	// unless the model judges it actually answers the query. This is the
+	// cross-encoder precision step the cosine gate can't do — it recovers
+	// downstream harm from on-topic-but-wrong injects better than the threshold
+	// alone (docs/experiments.md §B4). Opt-in: a fast local judge (~1s) is viable
+	// in-flight for harm-prone vaults; a frontier CLI (~3.5s) is best offline. nil
+	// disables it (the default — the cosine gate alone).
+	Grounder   grounding.Grounder
+	GroundTopK int // candidates to ground per recall (default 3 when Grounder set)
 }
 
 // decayFactor is multiplied against a memory's score for each turn it is
@@ -150,6 +162,9 @@ type Injector struct {
 	timeout       time.Duration
 	stats         *stats.Stats
 
+	grounder   grounding.Grounder // optional answer-grounding rerank (nil = cosine gate only)
+	groundTopK int
+
 	// Online calibration state (guarded by mu): the sidecar samples effective
 	// recall scores and periodically retunes minScore to the noise/relevant
 	// valley, so the gate self-improves to the deployment's score distribution
@@ -202,6 +217,9 @@ func New(cfg Config) *Injector {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 200 * time.Millisecond
 	}
+	if cfg.Grounder != nil && cfg.GroundTopK <= 0 {
+		cfg.GroundTopK = 3
+	}
 
 	return &Injector{
 		mcp:            mcpclient.New(cfg.MCPURL, cfg.Token, cfg.Timeout),
@@ -214,6 +232,8 @@ func New(cfg Config) *Injector {
 		autoCalibrate:  cfg.AutoCalibrate,
 		timeout:        cfg.Timeout,
 		stats:          cfg.Stats,
+		grounder:       cfg.Grounder,
+		groundTopK:     cfg.GroundTopK,
 		recentMemories: make(map[string]trackedMemory),
 	}
 }
@@ -363,6 +383,12 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 
 		inj.observeCalibration(memories) // self-tune the gate to this vault's scores
 		merged = selectForInjection(inj.mergeMemories(memories), minScore)
+		// Optional answer-grounding rerank: drop gated candidates the judge says
+		// don't answer the query (the cross-encoder precision step, §B4). Only on
+		// fresh recalls — the window holds already-vetted memories.
+		if inj.grounder != nil && len(merged) > 0 {
+			merged = inj.groundMemories(ctx, query, merged)
+		}
 
 		inj.mu.Lock()
 		inj.lastQueryHash = qhash
@@ -681,6 +707,31 @@ func selectForInjection(merged []memory, minScore float64) []memory {
 		}
 	}
 
+	return kept
+}
+
+// groundMemories applies the answer-grounding rerank to the gated set: the top
+// groundTopK by score are dropped unless the judge says they answer the query;
+// lower-ranked candidates are kept untouched (they are rarely the high-cosine
+// wrong-passage case grounding targets, and judging them all would add latency).
+// The grounder fails open, so an unavailable judge degrades to the cosine gate.
+func (inj *Injector) groundMemories(ctx context.Context, query string, mems []memory) []memory {
+	n := inj.groundTopK
+	if n <= 0 || n > len(mems) {
+		n = len(mems)
+	}
+	kept := make([]memory, 0, len(mems))
+	dropped := 0
+	for i, m := range mems {
+		if i < n && !inj.grounder.Grounded(ctx, query, m.Content) {
+			dropped++
+			continue
+		}
+		kept = append(kept, m)
+	}
+	if dropped > 0 {
+		slog.Debug("inject: grounding dropped candidates", "dropped", dropped, "kept", len(kept), "judge", inj.grounder.Label())
+	}
 	return kept
 }
 

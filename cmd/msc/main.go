@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
+	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/proxy"
 	"github.com/maci0/muninn-sidecar/internal/stats"
@@ -193,6 +194,19 @@ func run() int {
 		return printDryRun(o, cmd, agent, upstream, mcpURL, vault, healthErr)
 	}
 
+	// Optional answer-grounding rerank (opt-in precision step, docs §B4): a fast
+	// local judge (--ground-url) is viable in-flight for harm-prone vaults; a
+	// frontier CLI (--ground-cmd) is best offline. The grounder caps its own
+	// per-call latency, so it gets a generous timeout independent of the MCP one.
+	var grounder grounding.Grounder
+	if o.groundCmd != "" || o.groundURL != "" {
+		gm := o.groundModel
+		if gm == "" {
+			gm = "qwen2.5:7b-instruct"
+		}
+		grounder = grounding.New(o.groundCmd, o.groundURL, gm, os.Getenv("OPENAI_API_KEY"), 120*time.Second)
+	}
+
 	// Create injector unless --no-inject is set.
 	var injector *inject.Injector
 	if !o.noInject {
@@ -204,6 +218,8 @@ func run() int {
 			MinScore:      o.minScore,
 			RecallMode:    o.recallMode,
 			AutoCalibrate: !o.noAutoCalibrate, // self-tune the gate by default
+			Grounder:      grounder,
+			GroundTopK:    o.groundTopK,
 			Stats:         sessionStats,
 		})
 	}
