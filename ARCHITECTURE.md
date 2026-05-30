@@ -125,7 +125,9 @@ The winner is a **single absolute confidence threshold**. `selectForInjection` k
 
 1. **Absolute threshold**: keep memories with effective score ≥ `MinScore`. Because this drops *every* candidate when none is confident enough, one threshold answers both questions: an empty result suppresses the turn (*when*), and the survivors are the injection (*what*). A turn whose strongest match is only weakly relevant — a generic opener, an off-topic question — injects nothing, which is better than injecting noise that spends budget and dilutes the real prompt.
 
-2. **Near-duplicate removal**: a memory is dropped if it duplicates an already-kept, higher-scored memory — by identical normalized concept, or by word-set Jaccard overlap ≥ 0.8. This stops re-phrasings and supersets of the same fact from spending budget twice. (Dedup is orthogonal to the threshold and applied on top of whatever method wins.)
+2. **Near-duplicate removal**: a memory is dropped if it duplicates an already-kept memory — by identical normalized concept, or by word-set Jaccard overlap ≥ 0.8. This stops re-phrasings and supersets of the same fact from spending budget twice. (Dedup is orthogonal to the threshold and applied on top of whatever method wins.)
+
+   For **same-concept** duplicates (one concept = one fact) the *fresher* memory wins, not the higher-cosine one: recall ranks by similarity, so without this an outdated fact ("we use MySQL") can be injected over the current one ("migrated to Postgres") whenever its cosine is marginally higher. The injector compares the recall's `created_at` (RFC3339 UTC, so a lexical string compare is chronological) and keeps the newest — the anti-staleness behavior a long-lived vault needs. Cross-concept content-overlap dups still keep the higher-cosine one (they may be genuinely distinct facts).
 
 The greedy token-budget packer then runs over the survivors. Note the interaction with decay: a memory injected at score 0.9 keeps being injected while its decayed score stays ≥ 0.5 (≈2 turns of non-recall), then drops out as stale even though it remains in the window (above the 0.2 eviction floor) and can be revived by a fresh recall.
 

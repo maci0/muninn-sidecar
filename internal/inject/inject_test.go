@@ -1247,6 +1247,44 @@ func TestSelectForInjection(t *testing.T) {
 			t.Errorf("expected a and c kept, got %v,%v", got[0].ID, got[1].ID)
 		}
 	})
+
+	t.Run("fresher same-concept memory supersedes the stale higher-cosine one", func(t *testing.T) {
+		in := []memory{
+			// Same concept; the stale one scores marginally higher, but the fresher
+			// (later created_at) one is the current fact and must win.
+			{ID: "stale", Concept: "auth-datastore", Content: "auth uses MySQL", Score: 0.88, CreatedAt: "2026-01-01T00:00:00Z"},
+			{ID: "fresh", Concept: "auth-datastore", Content: "auth migrated to Postgres", Score: 0.82, CreatedAt: "2026-05-01T00:00:00Z"},
+		}
+		got := selectForInjection(in, 0.5)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 kept (same concept), got %d", len(got))
+		}
+		if got[0].ID != "fresh" {
+			t.Errorf("expected the fresher 'fresh' memory to win, got %q (%s)", got[0].ID, got[0].Content)
+		}
+	})
+
+	t.Run("higher-cosine kept when it is also the freshest", func(t *testing.T) {
+		in := []memory{
+			{ID: "new", Concept: "k", Content: "current fact", Score: 0.90, CreatedAt: "2026-05-01T00:00:00Z"},
+			{ID: "old", Concept: "k", Content: "old fact", Score: 0.80, CreatedAt: "2026-01-01T00:00:00Z"},
+		}
+		got := selectForInjection(in, 0.5)
+		if len(got) != 1 || got[0].ID != "new" {
+			t.Errorf("expected fresher+higher 'new' kept, got %v", got)
+		}
+	})
+
+	t.Run("missing timestamps fall back to higher cosine", func(t *testing.T) {
+		in := []memory{
+			{ID: "a", Concept: "k", Content: "first", Score: 0.90},
+			{ID: "b", Concept: "k", Content: "second", Score: 0.80},
+		}
+		got := selectForInjection(in, 0.5)
+		if len(got) != 1 || got[0].ID != "a" {
+			t.Errorf("with no timestamps, higher-cosine a should win, got %v", got)
+		}
+	})
 }
 
 func TestJaccard(t *testing.T) {

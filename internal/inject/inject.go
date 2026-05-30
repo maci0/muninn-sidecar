@@ -41,6 +41,12 @@ type memory struct {
 	Content     string  `json:"content"`
 	Score       float64 `json:"score"`
 	VectorScore float64 `json:"vector_score"`
+	// CreatedAt is the memory's creation timestamp (RFC3339 UTC, e.g.
+	// "2026-05-30T14:32:02Z"). Because it is zero-padded UTC, lexical string
+	// comparison is chronological — used to prefer the fresher of two
+	// near-duplicate memories so an updated fact wins over the stale one it
+	// supersedes (anti-staleness; see selectForInjection).
+	CreatedAt string `json:"created_at"`
 }
 
 // normalizeRelevance rewrites each memory's Score to the gating/ranking signal:
@@ -678,9 +684,17 @@ func CalibrateThreshold(scores []float64) float64 {
 //     relative cutoff + gate while being simpler and wasting less budget.
 //
 //  2. Near-duplicate removal: a memory is dropped if it duplicates an
-//     already-kept, higher-scored memory — either by identical normalized
-//     concept or by high word-set overlap of content. This keeps the injected
-//     block from spending budget on redundant restatements of the same fact.
+//     already-kept memory — either by identical normalized concept or by high
+//     word-set overlap of content. This keeps the injected block from spending
+//     budget on redundant restatements of the same fact.
+//
+//     For same-concept duplicates (one concept = one fact), the *fresher* memory
+//     wins rather than the higher-cosine one: an updated fact ("migrated to
+//     Postgres") supersedes the stale restatement it duplicates ("we use MySQL"),
+//     even if the stale one scored marginally higher. This is the anti-staleness
+//     behavior a long-lived vault needs; recall ranks by similarity, not by
+//     which statement is currently true. Cross-concept content-overlap dups keep
+//     the higher-cosine one (they may be genuinely distinct facts).
 //
 // minScore <= 0 disables the threshold (every recalled memory is eligible).
 func selectForInjection(merged []memory, minScore float64) []memory {
@@ -690,7 +704,7 @@ func selectForInjection(merged []memory, minScore float64) []memory {
 
 	kept := make([]memory, 0, len(merged))
 	keptTokens := make([][]string, 0, len(merged))
-	seenConcepts := make(map[string]bool, len(merged))
+	conceptIdx := make(map[string]int, len(merged))
 
 	for _, m := range merged {
 		if minScore > 0 && m.Score < minScore {
@@ -698,9 +712,18 @@ func selectForInjection(merged []memory, minScore float64) []memory {
 		}
 
 		concept := normalizeConcept(m.Concept)
-		if concept != "" && seenConcepts[concept] {
-			slog.Debug("inject: skipped duplicate-concept memory", "id", m.ID, "concept", m.Concept)
-			continue
+		if concept != "" {
+			if i, ok := conceptIdx[concept]; ok {
+				// Same fact already kept: keep whichever is fresher.
+				if m.CreatedAt > kept[i].CreatedAt {
+					slog.Debug("inject: replaced stale same-concept memory with fresher", "concept", m.Concept, "old_created", kept[i].CreatedAt, "new_created", m.CreatedAt)
+					kept[i] = m
+					keptTokens[i] = wordSet(m.Content)
+				} else {
+					slog.Debug("inject: skipped duplicate-concept memory (not fresher)", "id", m.ID, "concept", m.Concept)
+				}
+				continue
+			}
 		}
 
 		tokens := wordSet(m.Content)
@@ -712,7 +735,7 @@ func selectForInjection(merged []memory, minScore float64) []memory {
 		kept = append(kept, m)
 		keptTokens = append(keptTokens, tokens)
 		if concept != "" {
-			seenConcepts[concept] = true
+			conceptIdx[concept] = len(kept) - 1
 		}
 	}
 
