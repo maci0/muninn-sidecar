@@ -411,6 +411,28 @@ unimodal sample it keeps the prior, so it never latches onto noise. Disable with
 `--no-auto-calibrate`. `TestAutoCalibrateLowersGate` proves a vault where the 0.6
 gate suppresses everything starts injecting after calibration.
 
+**Validation on the real HF vaults (`msc-bench` now prints AUTO-CALIBRATED vs the
+empirical best).** Feeding each vault's observed cosines to the production
+`CalibrateThreshold` and comparing to the labeled balanced-accuracy optimum:
+
+| vault | cluster separation | empirical best T | auto-calibrated T | Δ |
+|---|---|---|---|---|
+| dolly | clean (R@1 1.0) | 0.575 | 0.600 | **0.025** |
+| code | moderate | 0.700 | 0.640 | 0.06 |
+| scifact | overlapping | 0.700 | 0.580 | 0.12 |
+| fever | overlapping | 0.625 | 0.500 | 0.125 |
+| sciq | overlapping | 0.700 | 0.560 | 0.14 |
+| medical | overlapping | 0.750 | 0.600 | 0.15 |
+
+Calibration **nails** a cleanly-separated vault (dolly Δ0.025) but the Otsu valley
+sits **0.12–0.15 below** the balanced-accuracy optimum when the noise and relevant
+cosine clusters *overlap* — it is systematically too permissive on exactly the
+hard moderate-cosine vaults (including the product-relevant code regime). The
+valley (min intra-class variance) is not the precision-optimal point once the
+clusters touch. **Open improvement:** an overlap-aware upward bias on the
+calibrated threshold (toward the relevant cluster) should close this without
+regressing clean vaults — to be validated across all vaults before shipping.
+
 ## E — Downstream answer quality (gold metric) — RUN (real model)
 
 Ran `cmd/msc-qa` end-to-end through a local ollama model (`qwen2.5:1.5b-instruct`)

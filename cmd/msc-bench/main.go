@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/grounding"
+	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 )
 
@@ -888,6 +890,22 @@ func printReport(rep benchReport, results []probeResult) {
 		rep.BestScore.Threshold, rep.BestScore.GateAcc, rep.BestScore.GateF1, rep.BestScore.InjectWhenS, rep.BestScore.SuppressOK, rep.BestScore.WhatCorrect)
 	fmt.Printf("BEST gate on vector: T=%.3f acc=%.2f f1=%.2f (inject@should=%.2f suppress@absent=%.2f what=%.2f)\n",
 		rep.BestVec.Threshold, rep.BestVec.GateAcc, rep.BestVec.GateF1, rep.BestVec.InjectWhenS, rep.BestVec.SuppressOK, rep.BestVec.WhatCorrect)
+
+	// Validate auto-calibration: feed the observed cosines (what the injector's
+	// observeCalibration samples) to the production CalibrateThreshold and compare
+	// to the empirical best. They should land close — proof the shipped online
+	// calibration discovers the right per-vault gate without the labeled sweep.
+	var cosines []float64
+	for _, r := range results {
+		for _, m := range r.Recalled {
+			cosines = append(cosines, m.VectorScore)
+		}
+	}
+	if len(cosines) > 0 {
+		calT := inject.CalibrateThreshold(cosines)
+		fmt.Printf("AUTO-CALIBRATED gate: T=%.3f (from %d observed cosines; empirical best %.3f, |Δ|=%.3f)\n",
+			calT, len(cosines), rep.BestVec.Threshold, math.Abs(calT-rep.BestVec.Threshold))
+	}
 }
 
 func printGate(title string, pts []gatePoint) {
