@@ -260,6 +260,35 @@ The retrieval + usefulness studies run against multiple seeded vaults:
 `msc-bench -corpus {squad|hotpot|agentmem|facts}` seeds; `msc-qa -dataset
 {squad|hotpot|generic}` evaluates downstream.
 
+### HuggingFace dataset zoo (reproducible via `scripts/fetch_hf_datasets.py`)
+
+To stress recall/injection across many real retrieval regimes, `scripts/
+fetch_hf_datasets.py` pulls assorted HF datasets via the datasets-server API and
+converts each to the SQuAD-style JSON the harness seeds (`-corpus squad
+-squad-file`). Seeded into dedicated vaults and probed (80 present + 80 absent,
+semantic), they span a wide retrieval-difficulty range — and each lands a
+*different* optimal gate, which is the empirical case for per-vault
+auto-calibration (§F) rather than a fixed threshold:
+
+| vault | dataset | regime | R@1 | best gate T | suppress@neg |
+|---|---|---|---|---|---|
+| msc-dolly | databricks-dolly-15k (closed_qa) | instruction + context | 1.00 | 0.575 | 1.00 |
+| msc-sciq | allenai/sciq | science exam QA (support passage) | 0.49 | 0.70 | 0.99 |
+| msc-fever | copenlu/fever_gold_evidence | claim verification (claim→evidence) | 0.40 | 0.625 | 0.97 |
+| msc-scifact | BeIR/scifact-generated-queries | scientific abstract retrieval | 0.39 | 0.70 | 0.84 |
+
+Findings: (1) retrieval difficulty is regime-dependent — instruction+context with
+distinct contexts is trivial (R@1 1.0), while claim/abstract retrieval is hard
+(R@1 ~0.4) because the query wording diverges from the evidence. (2) The optimal
+gate ranges 0.575–0.70 across vaults — no single threshold is right, confirming
+auto-calibration on real data. (3) **scifact's lower suppress@neg (0.84)** is the
+hard-negative ceiling (§B2) appearing *naturally*: scientific abstracts are
+topically dense, so an absent claim partially matches seeded abstracts — the same
+"on-topic-but-wrong" wall, now observed in a real domain vault rather than a
+constructed instrument. (4) These low-cosine vaults are exactly where the recall
+floor fix (0.4→0.05, §recall floor) matters — the old floor would have withheld
+the moderate-cosine evidence the calibrated gate wants.
+
 ## Multi-recall for multi-hop — tried, REJECTED (no-LLM constraint)
 
 The HotpotQA residual (single-shot recall misses the 2nd hop) suggested a
