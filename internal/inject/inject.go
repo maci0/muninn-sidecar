@@ -320,8 +320,15 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 			}
 			sb.WriteString(guide)
 		}
+		// Bound the one-shot session context to the injection budget. where_left_off
+		// is server-controlled and unbounded (a long prior session can yield a large
+		// summary), and it is prepended outside the per-memory budget packing — so
+		// without this cap a single recall could put an arbitrarily large block in
+		// the system prompt. The guide (~1.5k tokens) fits a default 2048 budget; the
+		// cap only bites on a pathologically large where_left_off.
+		sessCtx := apiformat.TruncateQuery(sb.String(), inj.budget*charPerToken)
 		inj.mu.Lock()
-		inj.sessionCtx = sb.String()
+		inj.sessionCtx = sessCtx
 		inj.mu.Unlock()
 	})
 

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -420,6 +421,64 @@ func TestWhereLeftOffInjection(t *testing.T) {
 	enriched2, _, _ := inj.Enrich(t.Context(), body)
 	if strings.Contains(string(enriched2), "session-context") {
 		t.Error("second enrichment should NOT contain session-context")
+	}
+}
+
+func TestSessionContextCappedToBudget(t *testing.T) {
+	// where_left_off returns MANY memories (each capped at 200 runes, but the
+	// count is unbounded) so the combined session context far exceeds a small
+	// budget. The injector must cap it; the trailing marker must be truncated out.
+	const lastMarker = "ZZ_LAST_FACT_MARKER_ZZ"
+	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		json.Unmarshal(body, &rpc)
+		switch rpc.Params.Name {
+		case "muninn_where_left_off":
+			// parseWhereLeftOff uses the concept as the label (≤200 runes each), so
+			// put the bulk there. Many entries → combined far exceeds a 128-token cap.
+			mems := make([]map[string]any, 0, 60)
+			for i := 0; i < 60; i++ {
+				concept := "fact number " + strconv.Itoa(i) + " " + strings.Repeat("detail ", 18)
+				if i == 59 {
+					concept = lastMarker // short, but the 60th entry — cut by the budget cap
+				}
+				mems = append(mems, map[string]any{"concept": concept, "summary": "s"})
+			}
+			inner, _ := json.Marshal(map[string]any{"memories": mems})
+			resp, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1,
+				"result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(inner)}}}})
+			w.Write(resp)
+		case "muninn_guide":
+			w.Write(fakeEmptyGuideResponse())
+		default:
+			w.Write(fakeRecallResponse(nil)) // no memories — isolate session context
+		}
+	})
+	defer srv.Close()
+
+	budget := 128 // tokens → ~512 chars cap
+	inj := New(Config{MCPURL: srv.URL, Vault: "default", Budget: budget, Timeout: 2 * time.Second})
+	body := []byte(`{"model":"claude-3","system":"s","messages":[{"role":"user","content":"hi"}]}`)
+	enriched, _, err := inj.Enrich(t.Context(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(enriched)
+	if !strings.Contains(s, "fact number 0") {
+		t.Error("expected the start of the session context to survive")
+	}
+	if strings.Contains(s, lastMarker) {
+		t.Error("session context was not capped — the trailing marker should be truncated out")
+	}
+	// The injected session block should be within a small multiple of the budget,
+	// not the full 60-memory payload (~9k chars).
+	if injected := len(s) - len(body); injected > budget*charPerToken*2 {
+		t.Errorf("injected session context %d chars exceeds the budget cap (~%d)", injected, budget*charPerToken)
 	}
 }
 
