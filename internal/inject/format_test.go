@@ -14,7 +14,7 @@ func TestFormatContextBlock(t *testing.T) {
 			{ID: "1", Concept: "test1", Content: "content one", Score: 0.9},
 			{ID: "2", Concept: "test2", Content: "content two", Score: 0.8},
 		}
-		block, tokens := formatContextBlock(mems, 2048)
+		block, tokens, dropped := formatContextBlock(mems, 2048)
 		if !strings.Contains(block, apiformat.ContextPrefix) {
 			t.Error("block should contain context prefix")
 		}
@@ -27,6 +27,9 @@ func TestFormatContextBlock(t *testing.T) {
 		if tokens <= 0 {
 			t.Error("tokens should be positive")
 		}
+		if dropped != 0 {
+			t.Errorf("nothing should be dropped within budget, got %d", dropped)
+		}
 	})
 
 	t.Run("budget limits memories", func(t *testing.T) {
@@ -35,22 +38,28 @@ func TestFormatContextBlock(t *testing.T) {
 			{ID: "2", Concept: "second", Content: strings.Repeat("y", 1000), Score: 0.8},
 		}
 		// Very tight budget that can fit first but not second.
-		block, _ := formatContextBlock(mems, 300)
+		block, _, dropped := formatContextBlock(mems, 300)
 		if !strings.Contains(block, "first") {
 			t.Error("should include first memory")
 		}
 		if strings.Contains(block, "second") {
 			t.Error("should not include second memory (over budget)")
 		}
+		if dropped != 1 {
+			t.Errorf("budget should report 1 dropped memory, got %d", dropped)
+		}
 	})
 
 	t.Run("empty memories", func(t *testing.T) {
-		block, tokens := formatContextBlock(nil, 2048)
+		block, tokens, dropped := formatContextBlock(nil, 2048)
 		if block != "" {
 			t.Error("empty memories should return empty block")
 		}
 		if tokens != 0 {
 			t.Error("empty memories should return 0 tokens")
+		}
+		if dropped != 0 {
+			t.Errorf("empty memories should drop nothing, got %d", dropped)
 		}
 	})
 }

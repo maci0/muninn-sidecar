@@ -48,12 +48,14 @@ func withinBudget(memories []memory, budget int) []memory {
 // formatContextBlock formats memories into a retrieved-context XML block,
 // greedily including memories within the token budget (memories are expected
 // to be pre-sorted by score). The first memory is always included even if it
-// alone exceeds the budget. Returns the formatted block and estimated token
-// count (4 chars ≈ 1 token).
-func formatContextBlock(memories []memory, budget int) (string, int) {
+// alone exceeds the budget. Returns the formatted block, estimated token count
+// (4 chars ≈ 1 token), and how many gated memories the budget dropped (so a
+// caller can surface silent truncation on large-memory vaults).
+func formatContextBlock(memories []memory, budget int) (string, int, int) {
 	kept := withinBudget(memories, budget)
+	dropped := len(memories) - len(kept)
 	if len(kept) == 0 {
-		return "", 0
+		return "", 0, dropped
 	}
 
 	var sb strings.Builder
@@ -78,7 +80,7 @@ func formatContextBlock(memories []memory, budget int) (string, int) {
 	if tokens == 0 && totalChars > 0 {
 		tokens = 1
 	}
-	return sb.String(), tokens
+	return sb.String(), tokens, dropped
 }
 
 // InjectContext injects a context block into the request document based on

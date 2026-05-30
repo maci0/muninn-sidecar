@@ -96,7 +96,7 @@ func FuzzSelectAndFormat(f *testing.F) {
 		}
 		sel := selectForInjection(mems, minScore)
 		kept := withinBudget(sel, budget)
-		block, tokens := formatContextBlock(kept, budget)
+		block, tokens, _ := formatContextBlock(kept, budget)
 		if tokens < 0 {
 			t.Fatalf("negative token count %d", tokens)
 		}

@@ -159,6 +159,19 @@ func TestSummaryWithGrounding(t *testing.T) {
 	}
 }
 
+func TestSummaryWithBudgetTruncation(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(1)
+	s.Flushed.Store(1)
+	s.Injections.Store(3)
+	s.BudgetTruncated.Store(5)
+
+	got := s.Summary()
+	if !strings.Contains(got, "5 memories truncated") {
+		t.Fatalf("expected budget truncation line in summary: %q", got)
+	}
+}
+
 func TestSummaryNoGroundingLineWhenUnused(t *testing.T) {
 	s := &Stats{}
 	s.Captured.Store(1)

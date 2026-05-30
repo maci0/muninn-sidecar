@@ -39,7 +39,7 @@ func BenchmarkFormatContextBlock(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = formatContextBlock(mems, 2048)
+		_, _, _ = formatContextBlock(mems, 2048)
 	}
 }
 
@@ -70,7 +70,7 @@ func BenchmarkFullInjectPipeline(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		merged := selectForInjection(inj.mergeMemories(recalled), inj.minScore)
-		blk, _ := formatContextBlock(merged, inj.budget)
+		blk, _, _ := formatContextBlock(merged, inj.budget)
 		doc := map[string]any{"system": "s", "messages": []any{map[string]any{"role": "user", "content": "q"}}}
 		if _, err := InjectContext(doc, apiformat.Anthropic, blk); err != nil {
 			b.Fatal(err)

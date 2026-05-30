@@ -417,7 +417,16 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 	}
 
 	// Format context block within token budget.
-	block, tokens := formatContextBlock(merged, inj.budget)
+	block, tokens, droppedByBudget := formatContextBlock(merged, inj.budget)
+	if droppedByBudget > 0 {
+		// The gate passed more memories than the budget fits, so the lowest-scored
+		// were silently dropped. Surface it: a large-memory vault may need a higher
+		// --inject-budget to avoid losing answer-bearing context.
+		slog.Debug("inject: budget truncated gated memories", "dropped", droppedByBudget, "kept", len(merged)-droppedByBudget, "budget", inj.budget)
+		if inj.stats != nil {
+			inj.stats.BudgetTruncated.Add(int64(droppedByBudget))
+		}
+	}
 
 	// Prepend session context (where_left_off + guide) on first enrichment.
 	if sessCtx != "" {
