@@ -61,6 +61,11 @@ type memory struct {
 	// is still injected — it may be the only answer; only duplicates are pruned.)
 	Annotations struct {
 		Stale bool `json:"stale"`
+		// ConflictsWith lists IDs of memories MuninnDB has detected this one
+		// contradicts. When both sides of a contradiction are recalled, injecting
+		// both feeds the agent mutually-exclusive "facts"; selectForInjection keeps
+		// only the superseding side (see resolveConflicts).
+		ConflictsWith []string `json:"conflicts_with"`
 	} `json:"annotations"`
 }
 
@@ -816,7 +821,57 @@ func selectForInjection(merged []memory, minScore float64) []memory {
 		}
 	}
 
-	return kept
+	return resolveConflicts(kept)
+}
+
+// resolveConflicts drops the superseded side of any contradiction among the kept
+// memories, using MuninnDB's conflicts_with annotation. Injecting both sides of a
+// contradiction ("deploys to AWS" + "never AWS, only GCP") feeds the agent
+// mutually-exclusive facts; keep only the side that supersedes() (non-stale, then
+// newer). Conflicts are checked both directions (the edge may be annotated on
+// either memory). O(n²) over the already-small kept set.
+func resolveConflicts(kept []memory) []memory {
+	if len(kept) < 2 {
+		return kept
+	}
+	drop := make([]bool, len(kept))
+	for i := range kept {
+		for j := i + 1; j < len(kept); j++ {
+			if drop[i] || drop[j] || !conflicts(kept[i], kept[j]) {
+				continue
+			}
+			// Keep the superseding side; drop the other.
+			if supersedes(kept[j], kept[i]) {
+				drop[i] = true
+			} else {
+				drop[j] = true
+			}
+			slog.Debug("inject: dropped contradicted memory", "kept_a", kept[i].ID, "kept_b", kept[j].ID, "dropped_i", drop[i])
+		}
+	}
+	out := kept[:0]
+	for i, m := range kept {
+		if !drop[i] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// conflicts reports whether a and b are flagged as contradicting each other
+// (the conflicts_with edge may be annotated on either side).
+func conflicts(a, b memory) bool {
+	for _, id := range a.Annotations.ConflictsWith {
+		if id == b.ID {
+			return true
+		}
+	}
+	for _, id := range b.Annotations.ConflictsWith {
+		if id == a.ID {
+			return true
+		}
+	}
+	return false
 }
 
 // groundMemories applies the answer-grounding rerank to the gated set: the top

@@ -1397,6 +1397,26 @@ func TestSelectForInjection(t *testing.T) {
 		}
 	})
 
+	t.Run("contradicting memories resolved to the superseding side", func(t *testing.T) {
+		// Distinct concepts, but flagged as contradicting; both clear the gate.
+		// The newer (non-stale) one supersedes; the other is dropped.
+		old := memory{ID: "aws", Concept: "deploy-aws", Content: "deploys to AWS", Score: 0.90, CreatedAt: "2026-01-01T00:00:00Z"}
+		newer := memory{ID: "gcp", Concept: "deploy-gcp", Content: "never AWS, only GCP", Score: 0.85, CreatedAt: "2026-05-01T00:00:00Z"}
+		newer.Annotations.ConflictsWith = []string{"aws"} // edge annotated on the newer side
+		got := selectForInjection([]memory{old, newer}, 0.5)
+		if len(got) != 1 || got[0].ID != "gcp" {
+			t.Fatalf("expected only the superseding 'gcp' kept on contradiction, got %+v", got)
+		}
+	})
+
+	t.Run("non-conflicting memories both kept", func(t *testing.T) {
+		a := memory{ID: "a", Concept: "x", Content: "fact a", Score: 0.9}
+		b := memory{ID: "b", Concept: "y", Content: "fact b", Score: 0.8}
+		if got := selectForInjection([]memory{a, b}, 0.5); len(got) != 2 {
+			t.Fatalf("non-conflicting distinct memories should both survive, got %d", len(got))
+		}
+	})
+
 	t.Run("dead and untrusted memories excluded", func(t *testing.T) {
 		in := []memory{
 			{ID: "arch", Concept: "a", Content: "retired decision", Score: 0.95, State: "archived"},
@@ -1436,6 +1456,25 @@ func TestSupersedes(t *testing.T) {
 	}
 	if supersedes(mkStale("c", "2026-01-01T00:00:00Z", false), mkStale("k", "2026-05-01T00:00:00Z", false)) {
 		t.Error("older created_at should not supersede")
+	}
+}
+
+func TestConflictsHelper(t *testing.T) {
+	a := memory{ID: "a"}
+	b := memory{ID: "b"}
+	if conflicts(a, b) {
+		t.Error("no conflict edge → false")
+	}
+	a.Annotations.ConflictsWith = []string{"b"}
+	if !conflicts(a, b) || !conflicts(b, a) {
+		t.Error("conflict edge should be detected in both directions")
+	}
+}
+
+func TestResolveConflictsNoEdges(t *testing.T) {
+	in := []memory{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+	if got := resolveConflicts(in); len(got) != 3 {
+		t.Errorf("no conflicts → all kept, got %d", len(got))
 	}
 }
 
