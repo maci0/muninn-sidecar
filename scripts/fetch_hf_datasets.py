@@ -176,6 +176,24 @@ def conv_code(pages):
     return out
 
 
+def _conv_xquad(lang):
+    """google/xquad — SQuAD-format extractive QA in `lang`. Tests whether recall
+    holds for non-English / non-Latin vaults (the embedding model's multilingual
+    reach). Each example is its own article."""
+    def conv(pages):
+        out = []
+        for i, r in enumerate(_fetch("google/xquad", f"xquad.{lang}", "validation", pages)):
+            ctx = (r.get("context") or "").strip()
+            q = (r.get("question") or "").strip()
+            ans = r.get("answers") or {}
+            texts = ans.get("text") or []
+            if len(ctx) < 20 or not q or not texts:
+                continue
+            out.append(_article(i, f"xquad-{lang}", ctx, q, texts[0]))
+        return out
+    return conv
+
+
 CONVERTERS = {
     "sciq": conv_sciq,
     "fever": conv_fever,
@@ -185,6 +203,8 @@ CONVERTERS = {
     "narrativeqa": conv_narrativeqa,
     "medical": conv_medical,
     "code": conv_code,
+    "xquad-de": _conv_xquad("de"),  # German (Latin script)
+    "xquad-zh": _conv_xquad("zh"),  # Chinese (CJK — distinct writing system)
 }
 
 

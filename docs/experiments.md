@@ -279,6 +279,8 @@ auto-calibration (§F) rather than a fixed threshold:
 | msc-medical | lavita/medical-qa | medical Q→answer | 0.45 | 0.75 | 0.85 |
 | msc-narrativeqa | deepmind/narrativeqa (summary) | long-narrative QA | 0.89 | 0.575 | 0.83 |
 | msc-code | Nan-Do/code-search-net-python | NL→code retrieval | 0.39 | 0.70 | 0.93 |
+| msc-xquad-de | google/xquad (German) | multilingual QA (Latin) | 0.51 | 0.725 | 0.95 |
+| msc-xquad-zh | google/xquad (Chinese) | multilingual QA (CJK) | 0.18 | 0.775 | 0.85 |
 
 Findings: (1) retrieval difficulty is regime-dependent — instruction+context with
 distinct contexts is trivial (R@1 1.0), while claim/abstract retrieval is hard
@@ -299,7 +301,15 @@ natural-language summary matches stored Python at R@1 0.39 — the embedding han
 code but the NL↔code gap is real, like the claim↔evidence gap. Its optimal gate is
 higher (0.70) and suppression is clean (0.93), so the sidecar serves its actual
 use case correctly *because* auto-calibration adapts the threshold per vault
-rather than assuming the prose-tuned 0.6.
+rather than assuming the prose-tuned 0.6. Downstream confirms it: qwen2.5:3b can't
+name a function from the NL intent alone (F1 0.03) but does with the recalled
+source injected (**0.81, +0.78**), distractor ≤ baseline. (7) **Multilingual reach
+is script-dependent:** German (Latin) retrieves reasonably (R@1 0.51) but Chinese
+(CJK) collapses (R@1 0.18, top-concept-correct 0.02) — the embedding's multilingual
+competence drops sharply off Latin script. Crucially the gate *adapts*: on the weak
+CJK vault auto-calibration raises the threshold (0.775) and suppresses 0.85, so it
+injects little (inject@should 0.29) rather than feeding wrong context — the
+calibrated gate degrades safely when the embedding is out of its depth.
 
 **Grounding is grader-domain-dependent (scifact negative).** Running the listwise
 answer-grounding rerank (§B4) on scifact's *natural* hard negatives with a general
