@@ -11,9 +11,14 @@ if [[ "${1:-}" == "-d" ]]; then
 fi
 
 VAULT="msc-test-$$"
-MCP_URL="http://127.0.0.1:8750/mcp"
-TOKEN=$(cat ~/.muninn/mcp.token 2>/dev/null || echo "")
+MCP_URL="${MUNINN_MCP_URL:-http://127.0.0.1:8750/mcp}"
+TOKEN_FILE="${MUNINN_TOKEN_FILE:-$HOME/.muninn/mcp.token}"
+TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
 ERRORS=0
+
+if [[ -z "$TOKEN" ]]; then
+    echo "WARN: no MuninnDB token found at $TOKEN_FILE — requests may fail"
+fi
 
 mcp_call() {
     local tool="$1"
@@ -38,11 +43,15 @@ cleanup() {
         count=$((count + 1))
     done
     echo "Deleted $count memories from vault '$VAULT'"
+    rm -f msc
 }
 trap cleanup EXIT
 
 echo "=== Building msc ==="
-go build -o msc ./cmd/msc/
+if ! go build -o msc ./cmd/msc/; then
+    echo "FAIL: build failed"
+    exit 1
+fi
 
 echo ""
 echo "=== Test vault: $VAULT ==="
@@ -139,3 +148,4 @@ if [[ "$ERRORS" -gt 0 ]]; then
 else
     echo "=== All quality checks passed ==="
 fi
+exit $ERRORS

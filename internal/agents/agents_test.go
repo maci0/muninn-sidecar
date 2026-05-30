@@ -1,7 +1,7 @@
 package agents
 
 import (
-	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -89,35 +89,41 @@ func TestBuildEnvSetsProxyAndSentinel(t *testing.T) {
 
 func TestBuildEnvExtraKeys(t *testing.T) {
 	agent := Registry["gemini"]
-	env := agent.BuildEnv("http://127.0.0.1:9999", "https://cloudcode-pa.googleapis.com")
+	const proxyURL = "http://127.0.0.1:9999"
+	env := agent.BuildEnv(proxyURL, "https://cloudcode-pa.googleapis.com")
 
-	found := map[string]bool{}
+	values := map[string]string{}
 	for _, e := range env {
-		k, _, _ := strings.Cut(e, "=")
+		k, v, _ := strings.Cut(e, "=")
 		if k == agent.EnvKey || k == mscSentinel {
-			found[k] = true
+			values[k] = v
 		}
 		for _, extra := range agent.ExtraEnvKeys {
 			if k == extra {
-				found[k] = true
+				values[k] = v
 			}
 		}
 	}
 
-	if !found[agent.EnvKey] {
+	if _, ok := values[agent.EnvKey]; !ok {
 		t.Fatalf("primary env key %q not found", agent.EnvKey)
 	}
+	if values[agent.EnvKey] != proxyURL {
+		t.Errorf("primary env key %q = %q, want %q", agent.EnvKey, values[agent.EnvKey], proxyURL)
+	}
 	for _, extra := range agent.ExtraEnvKeys {
-		if !found[extra] {
+		if _, ok := values[extra]; !ok {
 			t.Fatalf("extra env key %q not found", extra)
+		}
+		if values[extra] != proxyURL {
+			t.Errorf("extra env key %q = %q, want %q", extra, values[extra], proxyURL)
 		}
 	}
 }
 
 func TestBuildEnvReplacesExisting(t *testing.T) {
 	// Simulate an existing env var that should be replaced.
-	os.Setenv("ANTHROPIC_BASE_URL", "https://old.example.com")
-	defer os.Unsetenv("ANTHROPIC_BASE_URL")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://old.example.com")
 
 	agent := Registry["claude"]
 	env := agent.BuildEnv("http://127.0.0.1:9999", "https://api.anthropic.com")
@@ -169,5 +175,22 @@ func TestAllAgentsHaveRequiredFields(t *testing.T) {
 		if len(a.CapturePaths) == 0 {
 			t.Errorf("agent %q: missing CapturePaths", name)
 		}
+	}
+}
+
+func TestExecMissingBinary(t *testing.T) {
+	a := Agent{Command: "msc-nonexistent-binary-xyz-123", EnvKey: "FOO_URL", DefaultURL: "https://x"}
+	if err := a.Exec("http://127.0.0.1:1", "https://x", nil); err == nil {
+		t.Error("expected error for missing binary")
+	}
+}
+
+func TestExecRunsTrue(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skip("/bin/true not available")
+	}
+	a := Agent{Command: "true", EnvKey: "FOO_URL", DefaultURL: "https://x"}
+	if err := a.Exec("http://127.0.0.1:9", "https://x", nil); err != nil {
+		t.Errorf("Exec true should succeed, got %v", err)
 	}
 }

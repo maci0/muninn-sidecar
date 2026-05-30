@@ -12,18 +12,23 @@ import (
 
 // Stats tracks session-level counters for proxy and store activity.
 type Stats struct {
-	Captured       atomic.Int64 // exchanges successfully queued
-	Dropped        atomic.Int64 // exchanges dropped (queue full)
-	Deduped        atomic.Int64 // exchanges skipped (duplicate concept)
-	Skipped        atomic.Int64 // exchanges skipped (empty content after stripping)
-	Flushed        atomic.Int64 // exchanges delivered to MuninnDB
-	FlushErrors    atomic.Int64 // delivery failures (after retries)
-	TokensIn       atomic.Int64 // total input/prompt tokens
-	TokensOut      atomic.Int64 // total output/completion tokens
-	CacheWrite     atomic.Int64 // Anthropic cache_creation_input_tokens
-	CacheRead      atomic.Int64 // Anthropic cache_read_input_tokens
-	Injections     atomic.Int64 // requests enriched with recalled memories
-	InjectedTokens atomic.Int64 // approximate tokens injected across all enrichments
+	Captured    atomic.Int64 // total exchanges entering Store() (includes those later dropped, deduped, skipped, or failed to flush)
+	Dropped     atomic.Int64 // exchanges dropped (queue full)
+	Deduped     atomic.Int64 // exchanges skipped (duplicate concept)
+	Skipped     atomic.Int64 // exchanges skipped (empty content or noise patterns)
+	Flushed     atomic.Int64 // exchanges delivered to MuninnDB
+	FlushErrors atomic.Int64 // delivery failures (after retries)
+	TokensIn    atomic.Int64 // total input/prompt tokens
+	TokensOut   atomic.Int64 // total output/completion tokens
+	CacheWrite  atomic.Int64 // Anthropic cache_creation_input_tokens
+	CacheRead   atomic.Int64 // Anthropic cache_read_input_tokens
+
+	Injections      atomic.Int64 // requests enriched with recalled memories
+	InjectedTokens  atomic.Int64 // approximate tokens injected across all enrichments
+	InjectionErrors atomic.Int64 // enrichment failures (inject fell back to original body)
+	Suppressed      atomic.Int64 // requests where the gate chose to inject nothing (no memory cleared the threshold)
+	Recalls         atomic.Int64 // recall calls actually fired to MuninnDB
+	RecallsSkipped  atomic.Int64 // recalls avoided by reusing the session window (unchanged-query continuations)
 
 	models sync.Map // model name → *atomic.Int64
 }
@@ -60,7 +65,7 @@ type ModelCount struct {
 }
 
 // Summary returns a human-readable session summary. Returns empty string
-// if no exchanges were captured or dropped (nothing interesting happened).
+// if no exchanges were captured or dropped and no injections happened.
 func (s *Stats) Summary() string {
 	captured := s.Captured.Load()
 	dropped := s.Dropped.Load()
@@ -69,14 +74,17 @@ func (s *Stats) Summary() string {
 	flushed := s.Flushed.Load()
 	errors := s.FlushErrors.Load()
 
-	if captured == 0 && dropped == 0 {
+	injections := s.Injections.Load()
+	injTokens := s.InjectedTokens.Load()
+
+	if captured == 0 && dropped == 0 && injections == 0 {
 		return ""
 	}
 
 	var sb strings.Builder
 
 	// Line 1: exchange counts.
-	sb.WriteString(fmt.Sprintf("session: %d flushed", flushed))
+	sb.WriteString(fmt.Sprintf("session: %d saved", flushed))
 	if deduped > 0 {
 		sb.WriteString(fmt.Sprintf(", %d deduped", deduped))
 	}
@@ -87,10 +95,11 @@ func (s *Stats) Summary() string {
 		sb.WriteString(fmt.Sprintf(", %d dropped", dropped))
 	}
 	if errors > 0 {
-		sb.WriteString(fmt.Sprintf(", %d errors", errors))
+		sb.WriteString(fmt.Sprintf(", %d save errors", errors))
 	}
-	if queued := captured - dropped - flushed - deduped - skipped - errors; queued > 0 {
-		// Some are still in queue (shouldn't happen after drain, but be safe).
+	// Individual atomic loads are non-atomic as a group, so a concurrent flush
+	// can make the arithmetic transiently negative; clamp before display.
+	if queued := max(captured-dropped-flushed-deduped-skipped-errors, 0); queued > 0 {
 		sb.WriteString(fmt.Sprintf(" (%d queued)", queued))
 	}
 
@@ -109,11 +118,19 @@ func (s *Stats) Summary() string {
 	}
 
 	// Line 3: injection stats (only if any injections happened).
-	injections := s.Injections.Load()
-	injTokens := s.InjectedTokens.Load()
-	if injections > 0 {
-		sb.WriteString(fmt.Sprintf("\ninject: %d enriched, %s tokens injected",
-			injections, formatCount(injTokens)))
+	injErrors := s.InjectionErrors.Load()
+	suppressed := s.Suppressed.Load()
+	recalls := s.Recalls.Load()
+	recallsSkipped := s.RecallsSkipped.Load()
+	if injections > 0 || injErrors > 0 || suppressed > 0 {
+		sb.WriteString(fmt.Sprintf("\ninject: %d injected, %d suppressed, ~%s tokens",
+			injections, suppressed, formatCount(injTokens)))
+		if injErrors > 0 {
+			sb.WriteString(fmt.Sprintf(", %d errors", injErrors))
+		}
+		if recalls > 0 || recallsSkipped > 0 {
+			sb.WriteString(fmt.Sprintf("\nrecall: %d queried, %d reused (window)", recalls, recallsSkipped))
+		}
 	}
 
 	// Line 4: model breakdown (only if we tracked any).

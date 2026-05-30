@@ -8,8 +8,9 @@
 # Test binary, built with `go test -c`
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Output of the go coverage tool
 *.out
+cover.out
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
@@ -18,8 +19,23 @@
 msc
 testmsc
 
+# Profiling and coverage artifacts
+*.prof
+coverage.html
+
+# Distribution directory
+dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
 # OS/Editor specific
 .DS_Store
 .idea/
 .vscode/
 *.swp
+msc-bench
+msc-eval
+msc-qa

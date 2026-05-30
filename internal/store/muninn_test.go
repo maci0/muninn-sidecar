@@ -104,11 +104,8 @@ func TestBatching(t *testing.T) {
 	n := calls
 	mu.Unlock()
 
-	if n == 0 {
-		t.Fatal("expected at least one MCP call")
-	}
-	if n > 2 {
-		t.Fatalf("expected batching (<=2 calls for 10 items), got %d calls", n)
+	if n != 1 {
+		t.Fatalf("expected exactly 1 batched MCP call for 10 unique items, got %d calls", n)
 	}
 	t.Logf("10 items sent in %d MCP call(s)", n)
 }
@@ -212,6 +209,37 @@ func TestNoRetryOnClientError(t *testing.T) {
 	}
 	if st.FlushErrors.Load() != 1 {
 		t.Fatalf("expected 1 flush error for 4xx, got %d", st.FlushErrors.Load())
+	}
+}
+
+func TestNoRetryOnRPCError(t *testing.T) {
+	var attempts atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"vault not found"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	st := &stats.Stats{}
+	s := New(srv.URL, "", "test", st)
+
+	s.Store(&CapturedExchange{
+		Agent:    "test",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"rpc error test"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"response"}]}`),
+	})
+
+	s.Drain()
+
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 attempt (no retry on rpc error), got %d", got)
+	}
+	if st.FlushErrors.Load() != 1 {
+		t.Fatalf("expected 1 flush error for rpc error, got %d", st.FlushErrors.Load())
 	}
 }
 
@@ -385,9 +413,15 @@ func TestFormatAndDedupAnthropic(t *testing.T) {
 		t.Fatal("expected non-nil formatted memory")
 	}
 
-	// Concept should be the user's message, not HTTP metadata.
+	// Concept should include both user query and assistant preview.
 	if !strings.Contains(fm.concept, "binary search") {
 		t.Errorf("concept should contain user query: %q", fm.concept)
+	}
+	if !strings.Contains(fm.concept, "→") {
+		t.Errorf("concept should contain arrow separator for user→assistant: %q", fm.concept)
+	}
+	if !strings.Contains(fm.concept, "binary search implementation") {
+		t.Errorf("concept should contain assistant preview: %q", fm.concept)
 	}
 	if strings.Contains(fm.concept, "POST") {
 		t.Errorf("concept should not contain HTTP method: %q", fm.concept)
@@ -445,6 +479,9 @@ func TestFormatAndDedupOpenAI(t *testing.T) {
 	if !strings.Contains(fm.concept, "goroutine") {
 		t.Errorf("concept should contain user query: %q", fm.concept)
 	}
+	if !strings.Contains(fm.concept, "→") {
+		t.Errorf("concept should contain arrow separator for user→assistant: %q", fm.concept)
+	}
 	if !strings.Contains(fm.content, "Goroutines are lightweight") {
 		t.Errorf("content should contain assistant response: %q", fm.content)
 	}
@@ -476,6 +513,9 @@ func TestFormatAndDedupGemini(t *testing.T) {
 
 	if !strings.Contains(fm.concept, "Kubernetes") {
 		t.Errorf("concept should contain user query: %q", fm.concept)
+	}
+	if !strings.Contains(fm.concept, "→") {
+		t.Errorf("concept should contain arrow separator for user→assistant: %q", fm.concept)
 	}
 	if !strings.Contains(fm.content, "container orchestration") {
 		t.Errorf("content should contain assistant response: %q", fm.content)
@@ -519,9 +559,9 @@ func TestBuildTags(t *testing.T) {
 	tags := buildTags(ex)
 
 	expected := map[string]bool{
-		"sidecar":           true,
-		"claude":            true,
-		"status:200":        true,
+		"sidecar":             true,
+		"claude":              true,
+		"status:200":          true,
 		"model:claude-3-opus": true,
 	}
 
@@ -562,8 +602,8 @@ func TestPartialSystemReminderStrip(t *testing.T) {
 		Agent:     "claude",
 		Method:    "POST",
 		Path:      "/v1/messages",
-		ReqBody: json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>first reminder</system-reminder>\nReal question about databases\n<system-reminder>second reminder</system-reminder>\nMore real content here"}]}]}`),
-		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"Here is the database answer"}]}`),
+		ReqBody:   json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>first reminder</system-reminder>\nReal question about databases\n<system-reminder>second reminder</system-reminder>\nMore real content here"}]}]}`),
+		RespBody:  json.RawMessage(`{"content":[{"type":"text","text":"Here is the database answer"}]}`),
 	})
 
 	s.Drain()
@@ -591,9 +631,11 @@ func TestPartialSystemReminderStrip(t *testing.T) {
 }
 
 func TestDedupRingExpiry(t *testing.T) {
-	// After enough time passes (ticker advances ring), the same concept
-	// should be storable again. We simulate this by draining and creating
-	// a new store (since the ring resets).
+	// Verify that a fresh store with an empty ring buffer does not consider
+	// a previously seen concept as a duplicate. In production the ring buffer
+	// rotates on a ticker, so old entries expire; here we simulate that by
+	// creating a new store instance (fresh ring) rather than waiting for the
+	// ticker to advance.
 	var (
 		mu    sync.Mutex
 		calls int
@@ -671,10 +713,10 @@ func TestMixedBatchDedupAndValid(t *testing.T) {
 		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"unique question one"}]}`),
 		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"answer one"}]}`)})
 
-	// 2. Duplicate of #1
+	// 2. Exact duplicate of #1 (same user message AND same response).
 	s.Store(&CapturedExchange{Agent: "claude", Path: "/v1/messages",
 		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"unique question one"}]}`),
-		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"answer one again"}]}`)})
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"answer one"}]}`)})
 
 	// 3. Empty (system-reminder only)
 	s.Store(&CapturedExchange{Agent: "claude", Path: "/v1/messages",
@@ -817,23 +859,71 @@ func TestFormatAndDedupAssistantOnly(t *testing.T) {
 	}
 }
 
-func TestHealthURLFromMCP(t *testing.T) {
+func TestSkipContextContinuation(t *testing.T) {
+	st := &stats.Stats{}
+	s := &MuninnStore{stats: st, vault: "test"}
+	var ring [dedupRingSize]map[uint64]struct{}
+	ringIdx := 0
+
+	ex := &CapturedExchange{
+		Agent: "claude",
+		Path:  "/v1/messages",
+		ReqBody: json.RawMessage(`{
+			"messages":[{"role":"user","content":"This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation. Summary: 1. Primary Request..."}]
+		}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"I'll continue from where we left off."}]}`),
+	}
+
+	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	if fm != nil {
+		t.Error("expected nil for context continuation message")
+	}
+	if st.Skipped.Load() != 1 {
+		t.Fatalf("expected 1 skipped, got %d", st.Skipped.Load())
+	}
+}
+
+func TestSkipSummaryTask(t *testing.T) {
+	st := &stats.Stats{}
+	s := &MuninnStore{stats: st, vault: "test"}
+	var ring [dedupRingSize]map[uint64]struct{}
+	ringIdx := 0
+
+	ex := &CapturedExchange{
+		Agent: "claude",
+		Path:  "/v1/messages",
+		ReqBody: json.RawMessage(`{
+			"messages":[{"role":"user","content":"Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests..."}]
+		}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"<analysis>..."}]}`),
+	}
+
+	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	if fm != nil {
+		t.Error("expected nil for summary task prompt")
+	}
+	if st.Skipped.Load() != 1 {
+		t.Fatalf("expected 1 skipped, got %d", st.Skipped.Load())
+	}
+}
+
+func TestIsNoiseContent(t *testing.T) {
 	tests := []struct {
-		input string
-		want  string
+		msg   string
+		noise bool
 	}{
-		{"http://localhost:8750/mcp", "http://localhost:8750/mcp/health"},
-		{"http://localhost:8750/mcp/", "http://localhost:8750/mcp/health"},
-		{"http://example.com/api/mcp", "http://example.com/api/mcp/health"},
+		{"This session is being continued from a previous conversation", true},
+		{"This session is being continued from a previous conversation that ran out of context.", true},
+		{"Your task is to create a detailed summary of the conversation", true},
+		{"How do I sort a slice in Go?", false},
+		{"fix the bug in the login handler", false},
+		{"", false},
 	}
 
 	for _, tt := range tests {
-		got, err := healthURLFromMCP(tt.input)
-		if err != nil {
-			t.Fatalf("healthURLFromMCP(%q) error: %v", tt.input, err)
-		}
-		if got != tt.want {
-			t.Fatalf("healthURLFromMCP(%q) = %q, want %q", tt.input, got, tt.want)
+		got := isNoiseContent(tt.msg)
+		if got != tt.noise {
+			t.Errorf("isNoiseContent(%q) = %v, want %v", tt.msg, got, tt.noise)
 		}
 	}
 }
@@ -856,4 +946,17 @@ func TestDoubleDrainNoPanic(t *testing.T) {
 	// Double drain should not panic.
 	s.Drain()
 	s.Drain()
+}
+
+func TestStoreHealthCheck(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	defer ok.Close()
+	if err := New(ok.URL+"/mcp", "", "v", nil).HealthCheck(); err != nil {
+		t.Errorf("expected healthy, got %v", err)
+	}
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+	defer bad.Close()
+	if err := New(bad.URL+"/mcp", "", "v", nil).HealthCheck(); err == nil {
+		t.Error("expected error on 503 health")
+	}
 }

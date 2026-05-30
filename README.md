@@ -21,7 +21,7 @@ This allows agents to magically "remember" project context, conventions, and pas
 | Agent | Env var | Default upstream |
 |-------|---------|-----------------|
 | `claude` | `ANTHROPIC_BASE_URL` | `api.anthropic.com` |
-| `gemini` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
+| `gemini` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
 | `antigravity`*| `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 | `codex` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
@@ -29,7 +29,9 @@ This allows agents to magically "remember" project context, conventions, and pas
 
 *\* Antigravity support is currently broken. It is hidden behind the `MSC_EXPERIMENTAL_ANTIGRAVITY=1` environment variable feature gate.*
 
-### How it works
+*† When `GEMINI_API_KEY` is set and `CODE_ASSIST_ENDPOINT` is not, the upstream is `generativelanguage.googleapis.com` instead.*
+
+### Installation
 
 ```bash
 go install github.com/maci0/muninn-sidecar/cmd/msc@latest
@@ -76,7 +78,7 @@ msc list
 msc --json list
 
 # Install shell completions
-msc completion zsh >> ~/.zshrc
+msc completion zsh > ~/.zsh_functions/_msc
 msc completion bash >> ~/.bashrc
 msc completion fish > ~/.config/fish/completions/msc.fish
 
@@ -102,11 +104,13 @@ msc -- claude --weird-flag
 
 ### Memory injection
 
-By default, `msc` enriches outgoing LLM requests with relevant memories recalled from MuninnDB. The user's message is used as a search query, and matching memories are injected as system-level context (format-appropriate for Anthropic, OpenAI, and Gemini APIs). Injected context is stripped before storing captured exchanges to prevent recursive reinforcement. Use `--no-inject` to disable this.
+By default, `msc` enriches outgoing LLM requests with relevant memories recalled from MuninnDB. The latest user turn is used as the semantic search query (a benchmark showed concatenating prior turns roughly halves retrieval — see [docs/experiments.md](docs/experiments.md)), and matching memories are injected as system-level context (format-appropriate for Anthropic, OpenAI, and Gemini APIs). Injected context is stripped before storing captured exchanges to prevent recursive reinforcement. Use `--no-inject` to disable this.
+
+`msc` decides *when* to ask MuninnDB, *which* recalled memories to inject, and *when to inject nothing at all* — entirely in-flight, with no agent involvement. The recall mode, the confidence gate (auto-calibrated per vault), and the skip-redundant-recall trigger were all tuned against a real MuninnDB instance. A downstream eval across **10 local models** (Qwen2.5/Qwen3, Gemma2/3, Llama3.2, Nemotron, Phi3.5, Granite) and **4 task regimes** (agent-memory, SQuAD, BoolQ, HotpotQA) found a clean law: **injection's value ≈ retrieval accuracy × the model's ability to use context, and a wrong injection never helps.** It's most stark on agent-memory questions a model *cannot* answer without memory (F1 0.00 → 0.67–0.88). That's exactly why the sidecar both recalls accurately and *gates* (inject confident recalls, suppress the rest). See [docs/model-eval.md](docs/model-eval.md). See [docs/recall-and-injection.md](docs/recall-and-injection.md) for the design, [docs/model-eval.md](docs/model-eval.md) for the cross-model results, and [docs/experiments.md](docs/experiments.md) for the full study log.
 
 ### Streaming
 
-SSE streaming responses are handled incrementally — chunks flow through to the agent in real-time. Text deltas are accumulated from content events across all API formats (Anthropic, OpenAI, and Gemini). At stream completion, a synthetic response is built from the accumulated text for storage, with usage metadata merged from the last usage-bearing event. Falls back to the last `data:` line if no text deltas were captured.
+SSE streaming responses are handled incrementally — chunks flow through to the agent in real-time. Text deltas are accumulated from content events across all API formats (Anthropic, OpenAI, and Gemini). At stream completion, a synthetic response is built from the accumulated text for storage, with usage metadata merged from the last usage-bearing event. Falls back to the last `data:` line if no text deltas or tool names were captured.
 
 ### Nested invocations
 
@@ -127,18 +131,21 @@ Command-line flags take precedence over environment variables.
 ### Flags
 
 ```
--h, --help         Show help
--v, --version      Show version
--d, --debug        Enable debug logging (structured slog output)
--q, --quiet        Suppress msc's own output
--n, --dry-run      Show resolved config without launching
--j, --json             Machine-readable output (for list, status, version)
--f, --force            Launch even if MuninnDB is unreachable
-    --no-inject        Disable memory injection (enabled by default)
-    --inject-budget N  Max tokens to inject per request (default: 2048)
-    --vault NAME       MuninnDB vault name
-    --mcp-url URL      MuninnDB MCP endpoint
-    --token TOKEN      MuninnDB bearer token
+-h, --help            Show help
+-v, --version         Show version
+-d, --debug           Enable debug logging (verbose structured output)
+-q, --quiet           Suppress msc's own output
+-n, --dry-run         Show resolved config without launching
+-j, --json            Machine-readable output (for list, status, version)
+-f, --force           Launch even if MuninnDB is unreachable
+    --no-inject       Disable memory injection (enabled by default)
+    --inject-budget N Max tokens to inject per request (default: 2048)
+    --inject-min-score F  Min cosine score to inject a memory, 0-1 (default: 0.6)
+    --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
+    --log-json        Emit logs as JSON (for log aggregation pipelines)
+    --vault NAME      MuninnDB vault name
+    --mcp-url URL     MuninnDB MCP endpoint
+    --token TOKEN     MuninnDB bearer token
 ```
 
 ## Prerequisites

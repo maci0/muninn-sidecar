@@ -16,20 +16,43 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/maci0/muninn-sidecar/internal/apiformat"
-	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
 
+// Enricher enriches a request body with recalled context from MuninnDB.
+// A nil Enricher disables injection. Implemented by *inject.Injector.
+type Enricher interface {
+	Enrich(ctx context.Context, body []byte) ([]byte, int, error)
+}
+
+// Storer enqueues a captured exchange for async delivery to MuninnDB.
+// A nil Storer discards captures. Implemented by *store.MuninnStore.
+type Storer interface {
+	Store(*store.CapturedExchange)
+}
+
 // maxStreamBuf caps the incremental SSE line buffer to prevent OOM.
-// Partial lines exceeding this limit are silently dropped.
+// Partial lines exceeding this limit are dropped (logged at warn level).
 const maxStreamBuf = 1 << 20 // 1 MiB
 
 // maxTextAccum caps accumulated assistant text from SSE deltas.
 const maxTextAccum = 16 << 10 // 16 KiB
+
+// maxDecompressSize caps gzip decompression to prevent gzip-bomb OOM attacks
+// from a malicious or compromised upstream. If exceeded, the compressed body
+// is served unchanged.
+const maxDecompressSize = 50 << 20 // 50 MiB
+
+// maxRequestBodySize caps request body buffering to prevent OOM from a
+// malicious or misbehaving agent. Requests exceeding this limit are rejected
+// with 413.
+const maxRequestBodySize = 50 << 20 // 50 MiB
+
+// maxNonStreamBodySize caps non-streaming response body buffering. Responses
+// exceeding this limit are rejected to prevent OOM from a compromised upstream.
+const maxNonStreamBodySize = 50 << 20 // 50 MiB
 
 // Proxy is a transparent reverse proxy that sits between a coding agent and
 // its LLM API upstream. All traffic is forwarded, but only requests matching
@@ -38,32 +61,33 @@ const maxTextAccum = 16 << 10 // 16 KiB
 // ANTHROPIC_BASE_URL) to point here.
 //
 // Streaming (SSE) responses are handled specially: the body is wrapped so
-// chunks flow through to the agent in real-time while text deltas are accumulated
-// from the stream to build a synthetic Anthropic-format response, falling back
-// to the last data line only if no text is found.
+// chunks flow through to the agent in real-time while text deltas and tool
+// names are accumulated from the stream to build a synthetic Anthropic-format
+// response, falling back to the last data line only if no text deltas or tool
+// names are captured.
 type Proxy struct {
 	listenAddr     string                 // resolved after Start() when port is :0
 	upstream       *url.URL               // real LLM API (e.g. https://api.anthropic.com)
 	agentName      string                 // "claude", "gemini", etc. — used for tagging
-	store          *store.MuninnStore     // async MuninnDB writer
+	store          Storer                 // async MuninnDB writer
 	capturePaths   []string               // path substrings to capture; empty = capture all
 	excludePaths   []string               // path substrings to exclude from capture (checked first)
-	filterPatterns []string               // tool name patterns to strip from stored bodies
-	injector       *inject.Injector       // optional memory injector (nil = disabled)
+	filterPatterns []string               // tool name patterns to strip from stored bodies; empty non-nil = no filtering
+	injector       Enricher               // optional memory injector (nil = disabled)
 	server         *http.Server           // underlying HTTP server
-	reverseP       *httputil.ReverseProxy // stdlib reverse proxy with our hooks
+	reverseProxy   *httputil.ReverseProxy // stdlib reverse proxy with our hooks
 }
 
 // Config holds the parameters for creating a Proxy.
 type Config struct {
-	ListenAddr     string             // e.g. "127.0.0.1:0" for random port
-	Upstream       string             // real API URL to forward to
-	AgentName      string             // agent name for tagging in MuninnDB
-	Store          *store.MuninnStore // MuninnDB writer
-	CapturePaths   []string           // path substrings to capture; empty = capture all
-	ExcludePaths   []string           // path substrings to exclude from capture (checked first)
-	FilterPatterns []string           // tool name patterns to strip; nil = defaultFilterPatterns
-	Injector       *inject.Injector   // optional memory injector; nil = disabled
+	ListenAddr     string   // e.g. "127.0.0.1:0" for random port
+	Upstream       string   // real API URL to forward to
+	AgentName      string   // agent name for tagging in MuninnDB
+	Store          Storer   // MuninnDB writer; nil = discard captures
+	CapturePaths   []string // path substrings to capture; empty = capture all
+	ExcludePaths   []string // path substrings to exclude from capture (checked first)
+	FilterPatterns []string // tool name patterns to strip; nil = defaultFilterPatterns; []string{} = disable all filtering
+	Injector       Enricher // optional memory injector; nil = disabled
 }
 
 // New creates a Proxy. Use ListenAddr "127.0.0.1:0" in Config to bind to a
@@ -92,13 +116,13 @@ func New(cfg Config) (*Proxy, error) {
 	}
 
 	transport := &http.Transport{
-		TLSClientConfig:    &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS13},
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
 		IdleConnTimeout:     90 * time.Second,
 	}
 
-	p.reverseP = &httputil.ReverseProxy{
+	p.reverseProxy = &httputil.ReverseProxy{
 		// Rewrite instead of Director: Director silently appends
 		// X-Forwarded-For headers, which leaks the proxy's presence to
 		// the upstream API. Rewrite gives full control and keeps requests
@@ -113,12 +137,15 @@ func New(cfg Config) (*Proxy, error) {
 	}
 
 	// Long timeouts: LLM API calls routinely take 30-120s for large contexts.
+	// ReadHeaderTimeout is kept short to prevent slow-header (slowloris) attacks
+	// even though the server is loopback-only.
 	p.server = &http.Server{
-		Addr:         cfg.ListenAddr,
-		Handler:      p,
-		ReadTimeout:  5 * time.Minute,
-		WriteTimeout: 10 * time.Minute,
-		IdleTimeout:  120 * time.Second,
+		Addr:              cfg.ListenAddr,
+		Handler:           p,
+		ReadHeaderTimeout: 30 * time.Second,
+		ReadTimeout:       5 * time.Minute,
+		WriteTimeout:      10 * time.Minute,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	return p, nil
@@ -137,9 +164,11 @@ func (p *Proxy) Start() (string, error) {
 	addr := ln.Addr().String()
 	p.listenAddr = addr
 
+	slog.Debug("proxy listening", "addr", addr, "upstream", redactURL(p.upstream))
+
 	go func() {
 		if err := p.server.Serve(ln); err != nil && err != http.ErrServerClosed {
-			slog.Error("proxy server error", "err", err)
+			slog.Error("proxy server error", "err", err, "addr", addr)
 		}
 	}()
 
@@ -164,9 +193,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var reqBody []byte
 		if r.Body != nil {
 			var err error
-			reqBody, err = io.ReadAll(r.Body)
+			reqBody, err = io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize+1))
 			if err != nil {
 				slog.Warn("failed to read request body for capture", "path", r.URL.Path, "err", err)
+				writeJSONError(w, http.StatusInternalServerError, "failed to read request body")
+				return
+			}
+			if int64(len(reqBody)) > maxRequestBodySize {
+				slog.Warn("request body exceeds size limit", "path", r.URL.Path, "limit", maxRequestBodySize)
+				writeJSONError(w, http.StatusRequestEntityTooLarge, "request body exceeds proxy size limit")
+				return
 			}
 		}
 
@@ -174,12 +210,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		forwardBody := reqBody
 		if p.injector != nil && len(reqBody) > 0 {
 			enriched, _, err := p.injector.Enrich(r.Context(), reqBody)
-			if err == nil && len(enriched) > 0 {
+			if err != nil {
+				slog.Warn("inject enrichment failed, using original body", "path", r.URL.Path, "err", err)
+			} else if len(enriched) > 0 {
 				forwardBody = enriched
 			}
 		}
 
-		// Set the forward body for the upstream request.
 		r.Body = io.NopCloser(bytes.NewReader(forwardBody))
 		r.ContentLength = int64(len(forwardBody))
 
@@ -194,7 +231,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(withCapture(r.Context(), ctx))
 	}
 
-	p.reverseP.ServeHTTP(w, r)
+	p.reverseProxy.ServeHTTP(w, r)
 }
 
 // shouldCapture returns true if the request path matches one of the
@@ -234,13 +271,16 @@ func (p *Proxy) rewrite(pr *httputil.ProxyRequest) {
 		pr.Out.URL.Path = singleJoiningSlash(p.upstream.Path, pr.Out.URL.Path)
 	}
 
-	slog.Debug("proxying", "method", pr.Out.Method, "url", pr.Out.URL.String())
+	slog.Debug("proxying", "method", pr.Out.Method, "url", redactURL(pr.Out.URL))
 }
 
 // captureResponse is called after the upstream responds. For non-streaming
-// responses it reads the full body, captures the exchange, and re-wraps the
-// body. For SSE/ndjson streams it wraps the body in a streamCapture that
-// tees data through while tracking the last SSE data line incrementally.
+// responses it reads the full body, transparently decompresses gzip (serving
+// the agent an uncompressed body unless decompression fails or the decompressed
+// size exceeds the limit, in which case the compressed body is served unchanged),
+// captures the exchange, and re-wraps the body. For SSE/ndjson streams it wraps
+// the body in a streamCapture that tees data through while accumulating text
+// deltas and tool names from stream events to build a synthetic response for storage.
 func (p *Proxy) captureResponse(resp *http.Response) error {
 	ctx := captureFromContext(resp.Request.Context())
 	if ctx == nil {
@@ -261,42 +301,71 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxNonStreamBodySize+1))
 	resp.Body.Close()
 	if err != nil {
 		return err
 	}
+	if int64(len(body)) > maxNonStreamBodySize {
+		slog.Warn("non-streaming response exceeds size limit", "path", ctx.path, "limit", maxNonStreamBodySize)
+		return fmt.Errorf("response body exceeds %d-byte limit", maxNonStreamBodySize)
+	}
 
 	// Transparent gzip decompression for capture. The response is served
 	// uncompressed to the agent (simpler and avoids double-compression issues).
+	// LimitReader caps decompression to maxDecompressSize to prevent gzip-bomb
+	// OOM: if the limit is hit the compressed body is served unchanged.
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gr, err := gzip.NewReader(bytes.NewReader(body))
 		if err != nil {
 			slog.Warn("failed to decompress gzip response, storing raw", "path", ctx.path, "err", err)
 		} else {
-			decompressed, err := io.ReadAll(gr)
+			decompressed, err := io.ReadAll(io.LimitReader(gr, maxDecompressSize+1))
 			gr.Close()
 			if err != nil {
 				slog.Warn("gzip decompression incomplete, storing raw", "path", ctx.path, "err", err)
+			} else if int64(len(decompressed)) > maxDecompressSize {
+				slog.Warn("gzip response exceeds decompression limit, serving compressed", "path", ctx.path, "limit", maxDecompressSize)
 			} else {
 				body = decompressed
 				resp.Header.Del("Content-Encoding")
 				resp.Header.Del("Content-Length")
+				resp.ContentLength = int64(len(body))
 			}
 		}
 	}
 
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 
-	ex := buildExchange(ctx, resp.StatusCode, sanitizeJSON(body))
-	p.store.Store(ex)
+	if p.store != nil {
+		ex := buildExchange(ctx, resp.StatusCode, sanitizeJSON(body))
+		p.store.Store(ex)
+	}
 
 	return nil
 }
 
 func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	slog.Error("proxy error", "err", err, "path", r.URL.Path)
-	http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
+	slog.Error("proxy error", "err", err, "method", r.Method, "path", r.URL.Path, "agent", p.agentName)
+	writeJSONError(w, http.StatusBadGateway, "upstream request failed")
+}
+
+// writeJSONError writes a JSON error response compatible with the common
+// subset of LLM API error formats (Anthropic, OpenAI, Gemini all use an
+// "error" object with a "message" field). Using JSON avoids secondary parse
+// failures in SDK error handlers that expect a JSON body on 4xx/5xx responses.
+func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	// Best-effort: if Marshal fails we can't do much, but it won't for a
+	// plain string message.
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "proxy_error",
+		},
+	})
+	_, _ = w.Write(body)
 }
 
 // buildExchange constructs a CapturedExchange from capture context and
@@ -315,226 +384,6 @@ func buildExchange(ctx *captureCtx, statusCode int, respBody json.RawMessage) *s
 	}
 	extractModelAndTokens(ex)
 	return ex
-}
-
-// streamCapture wraps a streaming response body (SSE or ndjson). Data flows
-// through to the agent via Read() while text deltas are accumulated from the
-// stream to build a synthetic Anthropic-format response, falling back to the
-// last data line only if no text is found.
-//
-// sync.Once ensures the store call happens exactly once even if Read returns
-// EOF multiple times (which http.Response.Body contracts allow).
-type streamCapture struct {
-	io.ReadCloser
-	ctx        *captureCtx
-	store      *store.MuninnStore
-	statusCode int
-	once       sync.Once
-
-	// Incremental SSE parsing: we track the last non-[DONE] data line
-	// and a line buffer for partial reads, avoiding unbounded memory.
-	lineBuf  []byte // partial line carried across Read calls
-	lastData string // last complete "data: ..." value seen
-	totalLen int    // total bytes seen (for fallback summary)
-
-	// Accumulated assistant text from SSE content deltas.
-	textAccum strings.Builder // capped at maxTextAccum
-	usageJSON string          // last data line containing usage metadata
-}
-
-func (sc *streamCapture) Read(p []byte) (int, error) {
-	n, err := sc.ReadCloser.Read(p)
-	if n > 0 {
-		sc.processChunk(p[:n])
-	}
-	if err == io.EOF {
-		sc.finalize()
-	}
-	return n, err
-}
-
-// Close overrides the embedded ReadCloser's Close to ensure the exchange is
-// captured even if the stream is interrupted before EOF (e.g. client disconnect).
-func (sc *streamCapture) Close() error {
-	sc.finalize()
-	return sc.ReadCloser.Close()
-}
-
-// finalize stores the captured exchange exactly once, whether triggered by
-// EOF in Read() or by Close().
-func (sc *streamCapture) finalize() {
-	sc.once.Do(func() {
-		respBody := sc.buildRespBody()
-		ex := buildExchange(sc.ctx, sc.statusCode, respBody)
-		sc.store.Store(ex)
-	})
-}
-
-// processChunk scans the chunk for complete "data: ..." lines, updating
-// lastData incrementally. Partial lines are carried in lineBuf.
-func (sc *streamCapture) processChunk(chunk []byte) {
-	sc.totalLen += len(chunk)
-
-	// Prepend any leftover from the previous read.
-	data := chunk
-	if len(sc.lineBuf) > 0 {
-		data = append(sc.lineBuf, chunk...)
-		sc.lineBuf = nil
-	}
-
-	for len(data) > 0 {
-		idx := bytes.IndexByte(data, '\n')
-		if idx == -1 {
-			// Incomplete line — stash for next Read, but cap to avoid
-			// accumulating a huge partial line.
-			if len(data) <= maxStreamBuf {
-				sc.lineBuf = append(sc.lineBuf[:0], data...)
-			} else {
-				slog.Debug("SSE line buffer exceeded limit, dropping partial line", "len", len(data))
-			}
-			break
-		}
-
-		line := strings.TrimRight(string(data[:idx]), "\r")
-		data = data[idx+1:]
-
-		if strings.HasPrefix(line, "data: ") {
-			d := line[len("data: "):]
-			if d != "[DONE]" {
-				sc.lastData = d
-
-				// Accumulate text deltas from content events.
-				if delta := extractStreamDelta([]byte(d)); delta != "" && sc.textAccum.Len() < maxTextAccum {
-					remaining := maxTextAccum - sc.textAccum.Len()
-					if len(delta) > remaining {
-						delta = delta[:remaining]
-					}
-					sc.textAccum.WriteString(delta)
-				}
-
-				// Track usage metadata separately.
-				if strings.Contains(d, `"usage"`) || strings.Contains(d, `"usageMetadata"`) {
-					sc.usageJSON = d
-				}
-			}
-		}
-	}
-}
-
-// buildRespBody returns the response body for storage. When assistant text
-// was accumulated from SSE deltas, it builds a synthetic Anthropic-format
-// response that ExtractAssistantMessage already understands. Usage metadata
-// is merged from the last usage-bearing SSE event. Falls back to raw lastData
-// when no text deltas were captured.
-func (sc *streamCapture) buildRespBody() json.RawMessage {
-	if sc.textAccum.Len() > 0 {
-		return sc.buildSyntheticResp()
-	}
-	if sc.lastData != "" && json.Valid([]byte(sc.lastData)) {
-		return json.RawMessage(sc.lastData)
-	}
-	if sc.lastData != "" {
-		b, _ := json.Marshal(sc.lastData)
-		return json.RawMessage(b)
-	}
-	b, _ := json.Marshal(map[string]any{
-		"_stream": true,
-		"_bytes":  sc.totalLen,
-	})
-	return b
-}
-
-// buildSyntheticResp constructs an Anthropic-format response body from
-// accumulated text deltas and usage metadata.
-func (sc *streamCapture) buildSyntheticResp() json.RawMessage {
-	resp := map[string]any{
-		"content": []map[string]string{
-			{"type": "text", "text": sc.textAccum.String()},
-		},
-	}
-
-	// Merge usage from the dedicated usage event or lastData.
-	usageSrc := sc.usageJSON
-	if usageSrc == "" {
-		usageSrc = sc.lastData
-	}
-	if usageSrc != "" {
-		var event map[string]any
-		if json.Unmarshal([]byte(usageSrc), &event) == nil {
-			if u, ok := event["usage"]; ok {
-				resp["usage"] = u
-			}
-			if u, ok := event["usageMetadata"]; ok {
-				resp["usageMetadata"] = u
-			}
-		}
-	}
-
-	b, _ := json.Marshal(resp)
-	return json.RawMessage(b)
-}
-
-// extractStreamDelta extracts text content from a single SSE data JSON line.
-// Supports Anthropic, OpenAI (chat + responses), and Gemini delta formats.
-// Returns "" on parse error or when the event contains no text delta.
-func extractStreamDelta(data []byte) string {
-	// Quick reject: must look like a JSON object.
-	if len(data) == 0 || data[0] != '{' {
-		return ""
-	}
-
-	var doc map[string]any
-	if json.Unmarshal(data, &doc) != nil {
-		return ""
-	}
-
-	// Anthropic: {"type":"content_block_delta","delta":{"type":"text_delta","text":"chunk"}}
-	if doc["type"] == "content_block_delta" {
-		if delta, ok := apiformat.GetMap(doc, "delta"); ok {
-			if text, ok := apiformat.GetString(delta, "text"); ok {
-				return text
-			}
-		}
-		return ""
-	}
-
-	// OpenAI responses API: {"type":"response.output_text.delta","delta":"chunk"}
-	if doc["type"] == "response.output_text.delta" {
-		if text, ok := apiformat.GetString(doc, "delta"); ok {
-			return text
-		}
-		return ""
-	}
-
-	// OpenAI chat: {"choices":[{"delta":{"content":"chunk"}}]}
-	if choices, ok := apiformat.GetArray(doc, "choices"); ok && len(choices) > 0 {
-		if choice, ok := choices[0].(map[string]any); ok {
-			if delta, ok := apiformat.GetMap(choice, "delta"); ok {
-				if text, ok := apiformat.GetString(delta, "content"); ok {
-					return text
-				}
-			}
-		}
-		return ""
-	}
-
-	// Gemini: {"candidates":[{"content":{"parts":[{"text":"chunk"}]}}]}
-	if candidates, ok := apiformat.GetArray(doc, "candidates"); ok && len(candidates) > 0 {
-		if cand, ok := candidates[0].(map[string]any); ok {
-			if content, ok := apiformat.GetMap(cand, "content"); ok {
-				if parts, ok := apiformat.GetArray(content, "parts"); ok && len(parts) > 0 {
-					if part, ok := parts[0].(map[string]any); ok {
-						if text, ok := apiformat.GetString(part, "text"); ok {
-							return text
-						}
-					}
-				}
-			}
-		}
-		return ""
-	}
-
-	return ""
 }
 
 // extractModelAndTokens pulls the model name and token usage from the
@@ -628,6 +477,18 @@ func toLowerSlice(ss []string) []string {
 		out[i] = strings.ToLower(s)
 	}
 	return out
+}
+
+// redactURL returns a URL string with the query string replaced by "[redacted]"
+// to avoid leaking API keys that some providers pass as query parameters
+// (e.g. Gemini ?key=...).
+func redactURL(u *url.URL) string {
+	if u.RawQuery == "" {
+		return u.String()
+	}
+	redacted := *u
+	redacted.RawQuery = "[redacted]"
+	return redacted.String()
 }
 
 // singleJoiningSlash joins two path segments ensuring exactly one slash between them.

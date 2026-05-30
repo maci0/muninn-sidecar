@@ -15,10 +15,10 @@ func TestFormatContextBlock(t *testing.T) {
 			{ID: "2", Concept: "test2", Content: "content two", Score: 0.8},
 		}
 		block, tokens := formatContextBlock(mems, 2048)
-		if !strings.Contains(block, contextPrefix) {
+		if !strings.Contains(block, apiformat.ContextPrefix) {
 			t.Error("block should contain context prefix")
 		}
-		if !strings.Contains(block, contextSuffix) {
+		if !strings.Contains(block, apiformat.ContextSuffix) {
 			t.Error("block should contain context suffix")
 		}
 		if !strings.Contains(block, "test1") || !strings.Contains(block, "test2") {
@@ -58,7 +58,9 @@ func TestFormatContextBlock(t *testing.T) {
 func TestInjectContextAnthropic(t *testing.T) {
 	t.Run("no system field", func(t *testing.T) {
 		var doc map[string]any
-		json.Unmarshal([]byte(`{"model":"claude-3","messages":[]}`), &doc)
+		if err := json.Unmarshal([]byte(`{"model":"claude-3","messages":[]}`), &doc); err != nil {
+			t.Fatalf("invalid test JSON: %v", err)
+		}
 
 		result, err := InjectContext(doc, apiformat.Anthropic, "test context")
 		if err != nil {
@@ -66,7 +68,9 @@ func TestInjectContextAnthropic(t *testing.T) {
 		}
 
 		var out map[string]any
-		json.Unmarshal(result, &out)
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
 		sys := out["system"].([]any)
 		if len(sys) != 1 {
 			t.Fatalf("expected 1 system block, got %d", len(sys))
@@ -79,7 +83,9 @@ func TestInjectContextAnthropic(t *testing.T) {
 
 	t.Run("string system", func(t *testing.T) {
 		var doc map[string]any
-		json.Unmarshal([]byte(`{"model":"claude-3","system":"You are helpful","messages":[]}`), &doc)
+		if err := json.Unmarshal([]byte(`{"model":"claude-3","system":"You are helpful","messages":[]}`), &doc); err != nil {
+			t.Fatalf("invalid test JSON: %v", err)
+		}
 
 		result, err := InjectContext(doc, apiformat.Anthropic, "test context")
 		if err != nil {
@@ -87,7 +93,9 @@ func TestInjectContextAnthropic(t *testing.T) {
 		}
 
 		var out map[string]any
-		json.Unmarshal(result, &out)
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
 		sys := out["system"].([]any)
 		if len(sys) != 2 {
 			t.Fatalf("expected 2 system blocks, got %d", len(sys))
@@ -102,7 +110,9 @@ func TestInjectContextAnthropic(t *testing.T) {
 
 	t.Run("array system", func(t *testing.T) {
 		var doc map[string]any
-		json.Unmarshal([]byte(`{"model":"claude-3","system":[{"type":"text","text":"existing"}],"messages":[]}`), &doc)
+		if err := json.Unmarshal([]byte(`{"model":"claude-3","system":[{"type":"text","text":"existing"}],"messages":[]}`), &doc); err != nil {
+			t.Fatalf("invalid test JSON: %v", err)
+		}
 
 		result, err := InjectContext(doc, apiformat.Anthropic, "test context")
 		if err != nil {
@@ -110,7 +120,9 @@ func TestInjectContextAnthropic(t *testing.T) {
 		}
 
 		var out map[string]any
-		json.Unmarshal(result, &out)
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
 		sys := out["system"].([]any)
 		if len(sys) != 2 {
 			t.Fatalf("expected 2 system blocks, got %d", len(sys))
@@ -121,10 +133,12 @@ func TestInjectContextAnthropic(t *testing.T) {
 func TestInjectContextOpenAI(t *testing.T) {
 	t.Run("insert after system messages", func(t *testing.T) {
 		var doc map[string]any
-		json.Unmarshal([]byte(`{"model":"gpt-4","messages":[
+		if err := json.Unmarshal([]byte(`{"model":"gpt-4","messages":[
 			{"role":"system","content":"You are helpful"},
 			{"role":"user","content":"hello"}
-		]}`), &doc)
+		]}`), &doc); err != nil {
+			t.Fatalf("invalid test JSON: %v", err)
+		}
 
 		result, err := InjectContext(doc, apiformat.OpenAI, "test context")
 		if err != nil {
@@ -132,7 +146,9 @@ func TestInjectContextOpenAI(t *testing.T) {
 		}
 
 		var out map[string]any
-		json.Unmarshal(result, &out)
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
 		msgs := out["messages"].([]any)
 		if len(msgs) != 3 {
 			t.Fatalf("expected 3 messages, got %d", len(msgs))
@@ -150,9 +166,11 @@ func TestInjectContextOpenAI(t *testing.T) {
 
 	t.Run("no system messages", func(t *testing.T) {
 		var doc map[string]any
-		json.Unmarshal([]byte(`{"model":"gpt-4","messages":[
+		if err := json.Unmarshal([]byte(`{"model":"gpt-4","messages":[
 			{"role":"user","content":"hello"}
-		]}`), &doc)
+		]}`), &doc); err != nil {
+			t.Fatalf("invalid test JSON: %v", err)
+		}
 
 		result, err := InjectContext(doc, apiformat.OpenAI, "test context")
 		if err != nil {
@@ -160,7 +178,9 @@ func TestInjectContextOpenAI(t *testing.T) {
 		}
 
 		var out map[string]any
-		json.Unmarshal(result, &out)
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
 		msgs := out["messages"].([]any)
 		if len(msgs) != 2 {
 			t.Fatalf("expected 2 messages, got %d", len(msgs))
@@ -174,7 +194,9 @@ func TestInjectContextOpenAI(t *testing.T) {
 func TestInjectContextGemini(t *testing.T) {
 	t.Run("no systemInstruction", func(t *testing.T) {
 		var doc map[string]any
-		json.Unmarshal([]byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`), &doc)
+		if err := json.Unmarshal([]byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`), &doc); err != nil {
+			t.Fatalf("invalid test JSON: %v", err)
+		}
 
 		result, err := InjectContext(doc, apiformat.Gemini, "test context")
 		if err != nil {
@@ -182,7 +204,9 @@ func TestInjectContextGemini(t *testing.T) {
 		}
 
 		var out map[string]any
-		json.Unmarshal(result, &out)
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
 		si := out["systemInstruction"].(map[string]any)
 		parts := si["parts"].([]any)
 		if len(parts) != 1 {
@@ -195,7 +219,9 @@ func TestInjectContextGemini(t *testing.T) {
 
 	t.Run("existing systemInstruction", func(t *testing.T) {
 		var doc map[string]any
-		json.Unmarshal([]byte(`{"contents":[],"systemInstruction":{"parts":[{"text":"existing"}]}}`), &doc)
+		if err := json.Unmarshal([]byte(`{"contents":[],"systemInstruction":{"parts":[{"text":"existing"}]}}`), &doc); err != nil {
+			t.Fatalf("invalid test JSON: %v", err)
+		}
 
 		result, err := InjectContext(doc, apiformat.Gemini, "test context")
 		if err != nil {
@@ -203,11 +229,59 @@ func TestInjectContextGemini(t *testing.T) {
 		}
 
 		var out map[string]any
-		json.Unmarshal(result, &out)
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
 		si := out["systemInstruction"].(map[string]any)
 		parts := si["parts"].([]any)
 		if len(parts) != 2 {
 			t.Fatalf("expected 2 parts, got %d", len(parts))
+		}
+	})
+}
+
+func TestInjectContextOpenAIResponses(t *testing.T) {
+	t.Run("no instructions", func(t *testing.T) {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(`{"model":"gpt-4o","input":"hello"}`), &doc); err != nil {
+			t.Fatalf("invalid test JSON: %v", err)
+		}
+
+		result, err := InjectContext(doc, apiformat.OpenAIResponses, "test context")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var out map[string]any
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+		if out["instructions"] != "test context" {
+			t.Errorf("expected instructions = 'test context', got %v", out["instructions"])
+		}
+	})
+
+	t.Run("existing instructions", func(t *testing.T) {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(`{"model":"gpt-4o","input":"hello","instructions":"Be helpful"}`), &doc); err != nil {
+			t.Fatalf("invalid test JSON: %v", err)
+		}
+
+		result, err := InjectContext(doc, apiformat.OpenAIResponses, "test context")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var out map[string]any
+		if err := json.Unmarshal(result, &out); err != nil {
+			t.Fatalf("failed to unmarshal result: %v", err)
+		}
+		instructions := out["instructions"].(string)
+		if !strings.HasPrefix(instructions, "Be helpful") {
+			t.Error("should start with original instructions")
+		}
+		if !strings.Contains(instructions, "test context") {
+			t.Error("should contain injected context")
 		}
 	})
 }

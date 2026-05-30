@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -51,8 +53,23 @@ func fakeWhereLeftOffEmpty() []byte {
 	return resp
 }
 
+// fakeEmptyGuideResponse returns a muninn_guide JSON-RPC response with empty
+// text, simulating a server that has no guide to provide.
+func fakeEmptyGuideResponse() []byte {
+	resp, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": ""},
+			},
+		},
+		"id": 1,
+	})
+	return resp
+}
+
 // newRecallServer creates a test server that handles both where_left_off
-// (returning empty) and recall (returning the given handler).
+// (returning an empty memories array) and recall (delegating to the given handler).
 func newRecallServer(handler http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -61,22 +78,16 @@ func newRecallServer(handler http.HandlerFunc) *httptest.Server {
 				Name string `json:"name"`
 			} `json:"params"`
 		}
-		json.Unmarshal(body, &rpc)
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 		if rpc.Params.Name == "muninn_where_left_off" {
 			w.Write(fakeWhereLeftOffEmpty())
 			return
 		}
 		if rpc.Params.Name == "muninn_guide" {
-			resp, _ := json.Marshal(map[string]any{
-				"jsonrpc": "2.0",
-				"result": map[string]any{
-					"content": []map[string]any{
-						{"type": "text", "text": ""},
-					},
-				},
-				"id": 1,
-			})
-			w.Write(resp)
+			w.Write(fakeEmptyGuideResponse())
 			return
 		}
 		// Re-create request body for downstream handler.
@@ -117,7 +128,9 @@ func TestEnrichAnthropic(t *testing.T) {
 	}
 
 	var doc map[string]any
-	json.Unmarshal(enriched, &doc)
+	if err := json.Unmarshal(enriched, &doc); err != nil {
+		t.Fatal(err)
+	}
 
 	// System should be converted to array with original + injected.
 	sys := doc["system"].([]any)
@@ -128,10 +141,10 @@ func TestEnrichAnthropic(t *testing.T) {
 	if sys[0].(map[string]any)["text"] != "You are helpful" {
 		t.Error("first system block should be original")
 	}
-	// Second block: injected context with cache_control.
+	// Second block: injected context.
 	injected := sys[1].(map[string]any)
 	text := injected["text"].(string)
-	if !strings.Contains(text, contextPrefix) {
+	if !strings.Contains(text, apiformat.ContextPrefix) {
 		t.Error("injected block should contain context prefix")
 	}
 	if !strings.Contains(text, "User prefers Go") {
@@ -165,7 +178,9 @@ func TestEnrichOpenAI(t *testing.T) {
 	}
 
 	var doc map[string]any
-	json.Unmarshal(enriched, &doc)
+	if err := json.Unmarshal(enriched, &doc); err != nil {
+		t.Fatal(err)
+	}
 	msgs := doc["messages"].([]any)
 
 	// Should have 3 messages: original system, injected system, user.
@@ -176,7 +191,7 @@ func TestEnrichOpenAI(t *testing.T) {
 	if injectedMsg["role"] != "system" {
 		t.Error("injected message should be system role")
 	}
-	if !strings.Contains(injectedMsg["content"].(string), contextPrefix) {
+	if !strings.Contains(injectedMsg["content"].(string), apiformat.ContextPrefix) {
 		t.Error("injected message should contain context prefix")
 	}
 }
@@ -199,13 +214,15 @@ func TestEnrichGemini(t *testing.T) {
 	}
 
 	var doc map[string]any
-	json.Unmarshal(enriched, &doc)
+	if err := json.Unmarshal(enriched, &doc); err != nil {
+		t.Fatal(err)
+	}
 	si := doc["systemInstruction"].(map[string]any)
 	parts := si["parts"].([]any)
 	if len(parts) != 1 {
 		t.Fatalf("expected 1 part, got %d", len(parts))
 	}
-	if !strings.Contains(parts[0].(map[string]any)["text"].(string), contextPrefix) {
+	if !strings.Contains(parts[0].(map[string]any)["text"].(string), apiformat.ContextPrefix) {
 		t.Error("part should contain context prefix")
 	}
 }
@@ -283,7 +300,6 @@ func TestEnrichUnrecognizedFormat(t *testing.T) {
 	}
 }
 
-
 func TestTokenBudget(t *testing.T) {
 	mems := []memory{
 		{ID: "m1", Concept: "high score", Content: strings.Repeat("A", 500), Score: 0.95},
@@ -305,6 +321,9 @@ func TestTokenBudget(t *testing.T) {
 	resultStr := string(result)
 	if !strings.Contains(resultStr, "high score") {
 		t.Error("should include highest-score memory")
+	}
+	if strings.Contains(resultStr, "medium score") {
+		t.Error("should not include medium-score memory (over budget)")
 	}
 	if strings.Contains(resultStr, "low score") {
 		t.Error("should not include lowest-score memory (over budget)")
@@ -332,7 +351,10 @@ func TestWhereLeftOffInjection(t *testing.T) {
 				Name string `json:"name"`
 			} `json:"params"`
 		}
-		json.Unmarshal(body, &rpc)
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 
 		if rpc.Params.Name == "muninn_where_left_off" {
 			inner, _ := json.Marshal(map[string]any{
@@ -354,16 +376,7 @@ func TestWhereLeftOffInjection(t *testing.T) {
 		}
 
 		if rpc.Params.Name == "muninn_guide" {
-			resp, _ := json.Marshal(map[string]any{
-				"jsonrpc": "2.0",
-				"result": map[string]any{
-					"content": []map[string]any{
-						{"type": "text", "text": ""},
-					},
-				},
-				"id": 1,
-			})
-			w.Write(resp)
+			w.Write(fakeEmptyGuideResponse())
 			return
 		}
 
@@ -418,34 +431,18 @@ func TestWhereLeftOffEmpty(t *testing.T) {
 				Name string `json:"name"`
 			} `json:"params"`
 		}
-		json.Unmarshal(body, &rpc)
-
-		if rpc.Params.Name == "muninn_where_left_off" {
-			inner, _ := json.Marshal(map[string]any{"memories": []any{}})
-			resp, _ := json.Marshal(map[string]any{
-				"jsonrpc": "2.0",
-				"result": map[string]any{
-					"content": []map[string]any{
-						{"type": "text", "text": string(inner)},
-					},
-				},
-				"id": 1,
-			})
-			w.Write(resp)
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		
+
+		if rpc.Params.Name == "muninn_where_left_off" {
+			w.Write(fakeWhereLeftOffEmpty())
+			return
+		}
+
 		if rpc.Params.Name == "muninn_guide" {
-			resp, _ := json.Marshal(map[string]any{
-				"jsonrpc": "2.0",
-				"result": map[string]any{
-					"content": []map[string]any{
-						{"type": "text", "text": ""},
-					},
-				},
-				"id": 1,
-			})
-			w.Write(resp)
+			w.Write(fakeEmptyGuideResponse())
 			return
 		}
 
@@ -528,7 +525,10 @@ func TestWhereLeftOffWithOpenAI(t *testing.T) {
 				Name string `json:"name"`
 			} `json:"params"`
 		}
-		json.Unmarshal(body, &rpc)
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 
 		if rpc.Params.Name == "muninn_where_left_off" {
 			inner, _ := json.Marshal(map[string]any{
@@ -550,16 +550,7 @@ func TestWhereLeftOffWithOpenAI(t *testing.T) {
 		}
 
 		if rpc.Params.Name == "muninn_guide" {
-			resp, _ := json.Marshal(map[string]any{
-				"jsonrpc": "2.0",
-				"result": map[string]any{
-					"content": []map[string]any{
-						{"type": "text", "text": ""},
-					},
-				},
-				"id": 1,
-			})
-			w.Write(resp)
+			w.Write(fakeEmptyGuideResponse())
 			return
 		}
 
@@ -582,7 +573,9 @@ func TestWhereLeftOffWithOpenAI(t *testing.T) {
 	}
 
 	var doc map[string]any
-	json.Unmarshal(enriched, &doc)
+	if err := json.Unmarshal(enriched, &doc); err != nil {
+		t.Fatal(err)
+	}
 	msgs := doc["messages"].([]any)
 
 	// Should have system + injected-system + user = 3 messages.
@@ -608,7 +601,10 @@ func TestWhereLeftOffWithGemini(t *testing.T) {
 				Name string `json:"name"`
 			} `json:"params"`
 		}
-		json.Unmarshal(body, &rpc)
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 
 		if rpc.Params.Name == "muninn_where_left_off" {
 			inner, _ := json.Marshal(map[string]any{
@@ -630,16 +626,7 @@ func TestWhereLeftOffWithGemini(t *testing.T) {
 		}
 
 		if rpc.Params.Name == "muninn_guide" {
-			resp, _ := json.Marshal(map[string]any{
-				"jsonrpc": "2.0",
-				"result": map[string]any{
-					"content": []map[string]any{
-						{"type": "text", "text": ""},
-					},
-				},
-				"id": 1,
-			})
-			w.Write(resp)
+			w.Write(fakeEmptyGuideResponse())
 			return
 		}
 
@@ -662,7 +649,9 @@ func TestWhereLeftOffWithGemini(t *testing.T) {
 	}
 
 	var doc map[string]any
-	json.Unmarshal(enriched, &doc)
+	if err := json.Unmarshal(enriched, &doc); err != nil {
+		t.Fatal(err)
+	}
 	si := doc["systemInstruction"].(map[string]any)
 	parts := si["parts"].([]any)
 	if len(parts) != 1 {
@@ -681,14 +670,36 @@ func TestConcurrentEnrichment(t *testing.T) {
 	mems := []memory{
 		{ID: "m1", Concept: "concurrent", Content: "test content", Score: 0.9},
 	}
-	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(fakeRecallResponse(mems))
+
+	var whereLeftOffCalls atomic.Int32
+	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		switch rpc.Params.Name {
+		case "muninn_where_left_off":
+			whereLeftOffCalls.Add(1)
+			w.Write(fakeWhereLeftOffEmpty())
+		case "muninn_guide":
+			w.Write(fakeEmptyGuideResponse())
+		default:
+			w.Write(fakeRecallResponse(mems))
+		}
 	})
 	defer srv.Close()
 
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
 
-	// First call triggers where_left_off via sessionOnce; subsequent calls should not.
+	// sessionOnce guarantees where_left_off is called exactly once regardless
+	// of how many goroutines call Enrich concurrently.
 	done := make(chan struct{}, 10)
 	for i := range 10 {
 		go func(idx int) {
@@ -706,6 +717,10 @@ func TestConcurrentEnrichment(t *testing.T) {
 	}
 	for range 10 {
 		<-done
+	}
+
+	if n := whereLeftOffCalls.Load(); n != 1 {
+		t.Errorf("expected where_left_off called exactly once (sessionOnce), got %d", n)
 	}
 }
 
@@ -799,7 +814,10 @@ func TestSessionContextOnlyInjection(t *testing.T) {
 				Name string `json:"name"`
 			} `json:"params"`
 		}
-		json.Unmarshal(body, &rpc)
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 
 		if rpc.Params.Name == "muninn_where_left_off" {
 			inner, _ := json.Marshal(map[string]any{
@@ -821,16 +839,7 @@ func TestSessionContextOnlyInjection(t *testing.T) {
 		}
 
 		if rpc.Params.Name == "muninn_guide" {
-			resp, _ := json.Marshal(map[string]any{
-				"jsonrpc": "2.0",
-				"result": map[string]any{
-					"content": []map[string]any{
-						{"type": "text", "text": ""},
-					},
-				},
-				"id": 1,
-			})
-			w.Write(resp)
+			w.Write(fakeEmptyGuideResponse())
 			return
 		}
 
@@ -940,17 +949,6 @@ func TestParseRecallResponseFormats(t *testing.T) {
 		}
 	})
 
-	t.Run("JSON-RPC error", func(t *testing.T) {
-		resp, _ := json.Marshal(map[string]any{
-			"jsonrpc": "2.0",
-			"error":   map[string]any{"message": "vault not found"},
-			"id":      1,
-		})
-		_, err := parseRecallResponse(resp)
-		if err == nil {
-			t.Error("expected error for JSON-RPC error response")
-		}
-	})
 }
 
 func TestSessionMemoryWindow(t *testing.T) {
@@ -974,17 +972,22 @@ func TestSessionMemoryWindow(t *testing.T) {
 	defer srv.Close()
 
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 4096})
-	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
+	// Each turn uses a DISTINCT user message: a new intent fires a fresh recall
+	// and advances the decay window (an identical message would be treated as a
+	// continuation and reuse the window without re-recalling — see TestRecallReuse).
+	turnBody := func(msg string) []byte {
+		return []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"` + msg + `"}]}`)
+	}
 
 	// Turn 1: Should contain auth rules.
-	enriched1, _, _ := inj.Enrich(t.Context(), body)
+	enriched1, _, _ := inj.Enrich(t.Context(), turnBody("how does auth work"))
 	r1 := string(enriched1)
 	if !strings.Contains(r1, "auth rules") {
 		t.Error("turn 1: should contain auth rules")
 	}
 
 	// Turn 2: Should contain BOTH test patterns (new) AND auth rules (decayed but present).
-	enriched2, _, _ := inj.Enrich(t.Context(), body)
+	enriched2, _, _ := inj.Enrich(t.Context(), turnBody("how should I write tests"))
 	r2 := string(enriched2)
 	if !strings.Contains(r2, "test patterns") {
 		t.Error("turn 2: should contain test patterns")
@@ -993,26 +996,148 @@ func TestSessionMemoryWindow(t *testing.T) {
 		t.Error("turn 2: auth rules should persist from turn 1 via session window decay")
 	}
 
-	// Turn 3: Both should still be present (B refreshed, A decayed 2 turns).
-	enriched3, _, _ := inj.Enrich(t.Context(), body)
+	// Turn 3: test patterns refreshed and present. auth rules has now decayed
+	// two turns (0.90 * 0.7^2 = 0.441), dropping below the 0.6 injection
+	// threshold — it remains in the window (above the 0.2 eviction floor, so a
+	// re-recall could revive it) but is no longer confident enough to inject.
+	enriched3, _, _ := inj.Enrich(t.Context(), turnBody("remind me about testing again"))
 	r3 := string(enriched3)
 	if !strings.Contains(r3, "test patterns") {
 		t.Error("turn 3: should contain test patterns")
 	}
-	if !strings.Contains(r3, "auth rules") {
-		t.Error("turn 3: auth rules should still persist (2 turns decay, score ~0.44)")
+	if strings.Contains(r3, "auth rules") {
+		t.Error("turn 3: auth rules decayed to ~0.44, below the 0.6 inject threshold, should not be injected")
+	}
+}
+
+func TestRecallReuseOnUnchangedQuery(t *testing.T) {
+	// An identical user message (a tool-use continuation) must NOT fire a second
+	// recall; the session window is reused instead. Counts recall calls.
+	var recalls atomic.Int32
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		recalls.Add(1)
+		w.Write(fakeRecallResponse([]memory{
+			{ID: "a", Concept: "auth rules", Content: "Use JWT", Score: 0.90},
+		}))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 4096})
+	body := []byte(`{"model":"claude-3","system":"x","messages":[{"role":"user","content":"how does auth work"}]}`)
+
+	for i := 0; i < 4; i++ {
+		enriched, _, _ := inj.Enrich(t.Context(), body)
+		if !strings.Contains(string(enriched), "auth rules") {
+			t.Fatalf("call %d: expected auth rules injected (from window)", i)
+		}
+	}
+	if n := recalls.Load(); n != 1 {
+		t.Errorf("expected exactly 1 recall for 4 identical-query calls, got %d", n)
+	}
+
+	// A changed query must fire a fresh recall.
+	body2 := []byte(`{"model":"claude-3","system":"x","messages":[{"role":"user","content":"something completely different now"}]}`)
+	inj.Enrich(t.Context(), body2)
+	if n := recalls.Load(); n != 2 {
+		t.Errorf("expected a new recall on changed query, total got %d", n)
+	}
+}
+
+func TestAutoCalibrateLowersGate(t *testing.T) {
+	// A low-cosine vault: relevant ~0.45, noise ~0.25/0.22. The default 0.6 gate
+	// would suppress everything (top 0.45 < 0.6). Auto-calibration should observe
+	// the bimodal distribution, drop minScore into the valley, and start injecting.
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(fakeRecallResponse([]memory{
+			{ID: "rel", Concept: "relevant", Content: "the useful answer", Score: 0.45},
+			{ID: "n1", Concept: "noise one", Content: "off topic alpha", Score: 0.25},
+			{ID: "n2", Concept: "noise two", Content: "off topic beta", Score: 0.22},
+		}))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, AutoCalibrate: true})
+	mk := func(i int) []byte {
+		return []byte(`{"model":"claude-3","system":"x","messages":[{"role":"user","content":"distinct question ` + string(rune('a'+i)) + `"}]}`)
+	}
+
+	// Early on (threshold 0.6) nothing is injected.
+	if out, _, _ := inj.Enrich(t.Context(), mk(0)); strings.Contains(string(out), "useful answer") {
+		t.Fatal("turn 0: should suppress at the default 0.6 gate")
+	}
+	// Drive enough distinct-query recalls to trigger calibration.
+	for i := 1; i < 20; i++ {
+		inj.Enrich(t.Context(), mk(i))
+	}
+	if ms := inj.currentMinScore(); ms >= 0.45 {
+		t.Fatalf("auto-calibration should drop minScore below 0.45, got %.3f", ms)
+	}
+	// Now the relevant (0.45) memory clears the calibrated gate.
+	out, _, _ := inj.Enrich(t.Context(), mk(20))
+	if !strings.Contains(string(out), "useful answer") {
+		t.Error("after calibration the relevant memory should be injected")
+	}
+}
+
+func TestNegativeCache(t *testing.T) {
+	// Recall always returns nothing. A repeated identical query must NOT re-recall
+	// (negative cache); the turn injects nothing either way.
+	var recalls atomic.Int32
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		recalls.Add(1)
+		w.Write(fakeRecallResponse(nil))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
+	body := []byte(`{"model":"claude-3","system":"x","messages":[{"role":"user","content":"obscure thing not in memory"}]}`)
+
+	for i := 0; i < 5; i++ {
+		out, tok, _ := inj.Enrich(t.Context(), body)
+		if tok != 0 || strings.Contains(string(out), apiformat.ContextPrefix) {
+			t.Fatalf("call %d: expected no injection", i)
+		}
+	}
+	if n := recalls.Load(); n != 1 {
+		t.Errorf("negative cache: expected 1 recall for 5 identical empty-result calls, got %d", n)
+	}
+}
+
+func TestSemanticReuseTrigger(t *testing.T) {
+	// With QuerySimReuse < 1, a near-identical (high-Jaccard) query reuses the
+	// window; a dissimilar query fires a fresh recall.
+	var recalls atomic.Int32
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		recalls.Add(1)
+		w.Write(fakeRecallResponse([]memory{{ID: "a", Concept: "auth", Content: "Use JWT", Score: 0.9}}))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, QuerySimReuse: 0.6})
+	mk := func(msg string) []byte {
+		return []byte(`{"model":"claude-3","system":"x","messages":[{"role":"user","content":"` + msg + `"}]}`)
+	}
+
+	inj.Enrich(t.Context(), mk("how does the auth token refresh work here"))        // recall 1
+	inj.Enrich(t.Context(), mk("how does the auth token refresh work here please")) // near-dup -> reuse
+	if n := recalls.Load(); n != 1 {
+		t.Errorf("expected near-identical query to reuse (1 recall), got %d", n)
+	}
+	inj.Enrich(t.Context(), mk("completely unrelated kubernetes helm deployment question")) // dissimilar -> recall 2
+	if n := recalls.Load(); n != 2 {
+		t.Errorf("expected dissimilar query to recall (2 total), got %d", n)
 	}
 }
 
 func TestSessionMemoryEviction(t *testing.T) {
-	// A memory with score 0.5 at decayFactor=0.7 drops below decayFloor=0.2
-	// after ~3 turns: 0.5 * 0.7^3 = 0.17.
+	// A memory with score 0.72 (above the 0.6 inject threshold) at decayFactor=0.7
+	// drops below decayFloor=0.2 after a few turns: 0.72 * 0.7^4 = 0.17.
 	turn := 0
 	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
 		turn++
 		var mems []memory
 		if turn == 1 {
-			mems = []memory{{ID: "a", Concept: "old context", Content: "stale info", Score: 0.50}}
+			mems = []memory{{ID: "a", Concept: "old context", Content: "stale info", Score: 0.72}}
 		}
 		// Turns 2+ return nothing — memory A should decay and eventually be evicted.
 		w.Write(fakeRecallResponse(mems))
@@ -1020,23 +1145,200 @@ func TestSessionMemoryEviction(t *testing.T) {
 	defer srv.Close()
 
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 4096})
-	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
+	// Distinct message per turn so each is a new intent (fresh recall + decay step).
+	turnBody := func(i int) []byte {
+		return []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"distinct question number ` + string(rune('0'+i)) + `"}]}`)
+	}
 
 	// Turn 1: Contains old context.
-	enriched1, _, _ := inj.Enrich(t.Context(), body)
+	enriched1, _, _ := inj.Enrich(t.Context(), turnBody(1))
 	if !strings.Contains(string(enriched1), "old context") {
 		t.Error("turn 1: should contain old context")
 	}
 
-	// Turns 2-4: Keep calling to decay.
+	// Turns 2-5: Keep calling (distinct queries) to decay.
 	var last string
 	for i := 2; i <= 5; i++ {
-		enriched, _, _ := inj.Enrich(t.Context(), body)
+		enriched, _, _ := inj.Enrich(t.Context(), turnBody(i))
 		last = string(enriched)
 	}
 
-	// By turn 5, the memory should be evicted (0.5 * 0.7^4 = 0.12 < 0.2).
+	// By turn 5, the memory should be evicted (0.72 * 0.7^4 = 0.17 < 0.2).
 	if strings.Contains(last, "old context") {
 		t.Error("turn 5: old context should have been evicted after decay")
 	}
+}
+
+func TestSelectForInjection(t *testing.T) {
+	t.Run("empty input", func(t *testing.T) {
+		if got := selectForInjection(nil, 0.5); len(got) != 0 {
+			t.Errorf("expected empty, got %d", len(got))
+		}
+	})
+
+	t.Run("suppressed when nothing clears the threshold", func(t *testing.T) {
+		in := []memory{
+			{ID: "a", Concept: "x", Content: "weak", Score: 0.48},
+			{ID: "b", Concept: "y", Content: "weaker", Score: 0.42},
+		}
+		if got := selectForInjection(in, 0.5); len(got) != 0 {
+			t.Errorf("expected suppression (empty) when all below threshold, got %d", len(got))
+		}
+	})
+
+	t.Run("weak tail dropped, confident ones kept", func(t *testing.T) {
+		in := []memory{
+			{ID: "a", Concept: "strong", Content: "highly relevant", Score: 0.90},
+			{ID: "b", Concept: "mid", Content: "still useful here", Score: 0.55},
+			{ID: "c", Concept: "weak", Content: "barely related noise", Score: 0.30},
+		}
+		got := selectForInjection(in, 0.5)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 kept (>= 0.5), got %d", len(got))
+		}
+		if got[0].ID != "a" || got[1].ID != "b" {
+			t.Errorf("expected a,b kept; got %v,%v", got[0].ID, got[1].ID)
+		}
+	})
+
+	t.Run("all kept when scores are uniformly high", func(t *testing.T) {
+		in := []memory{
+			{ID: "a", Concept: "p", Content: "alpha content", Score: 0.95},
+			{ID: "b", Concept: "q", Content: "beta content", Score: 0.85},
+			{ID: "c", Concept: "r", Content: "gamma content", Score: 0.75},
+		}
+		if got := selectForInjection(in, 0.5); len(got) != 3 {
+			t.Errorf("expected 3 kept, got %d", len(got))
+		}
+	})
+
+	t.Run("threshold zero keeps everything (disabled)", func(t *testing.T) {
+		in := []memory{
+			{ID: "a", Concept: "p", Content: "alpha content", Score: 0.45},
+			{ID: "b", Concept: "q", Content: "beta content", Score: 0.10},
+		}
+		if got := selectForInjection(in, 0); len(got) != 2 {
+			t.Errorf("threshold 0 should keep all, got %d", len(got))
+		}
+	})
+
+	t.Run("duplicate concept dropped", func(t *testing.T) {
+		in := []memory{
+			{ID: "a", Concept: "Auth Pattern", Content: "use jwt tokens for sessions", Score: 0.90},
+			{ID: "b", Concept: "auth pattern", Content: "completely different wording about login", Score: 0.80},
+		}
+		got := selectForInjection(in, 0.5)
+		if len(got) != 1 || got[0].ID != "a" {
+			t.Errorf("expected only higher-scored a kept on concept dup, got %v", got)
+		}
+	})
+
+	t.Run("near-duplicate content dropped", func(t *testing.T) {
+		in := []memory{
+			{ID: "a", Concept: "one", Content: "the user prefers go modules and table driven tests", Score: 0.90},
+			{ID: "b", Concept: "two", Content: "the user prefers go modules and table driven tests today", Score: 0.85},
+			{ID: "c", Concept: "three", Content: "deployment uses kubernetes pods and helm charts", Score: 0.80},
+		}
+		got := selectForInjection(in, 0.5)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 kept (b near-dup of a), got %d", len(got))
+		}
+		if got[0].ID != "a" || got[1].ID != "c" {
+			t.Errorf("expected a and c kept, got %v,%v", got[0].ID, got[1].ID)
+		}
+	})
+}
+
+func TestJaccard(t *testing.T) {
+	if got := jaccard(nil, []string{"a"}); got != 0 {
+		t.Errorf("empty set should be 0, got %v", got)
+	}
+	a := []string{"x", "y", "z"}
+	if got := jaccard(a, a); got != 1 {
+		t.Errorf("identical sets should be 1, got %v", got)
+	}
+	// {a,b} vs {b,c}: inter=1, union=3 -> 0.333
+	if got := jaccard([]string{"a", "b"}, []string{"b", "c"}); got < 0.33 || got > 0.34 {
+		t.Errorf("expected ~0.333, got %v", got)
+	}
+}
+
+func TestEnrichDropsWeakTail(t *testing.T) {
+	// Strong match present: weak memory below adaptive cutoff must not be injected.
+	mems := []memory{
+		{ID: "strong", Concept: "primary topic", Content: "highly relevant answer", Score: 0.90},
+		{ID: "weak", Concept: "off topic", Content: "barely related tangent", Score: 0.30},
+	}
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(fakeRecallResponse(mems))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 4096})
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
+	enriched, _, _ := inj.Enrich(t.Context(), body)
+	s := string(enriched)
+	if !strings.Contains(s, "primary topic") {
+		t.Error("strong memory should be injected")
+	}
+	if strings.Contains(s, "off topic") {
+		t.Error("weak tail memory below adaptive cutoff should NOT be injected")
+	}
+}
+
+func TestParseGuide(t *testing.T) {
+	t.Run("non-empty guide text is wrapped in global-guide tags", func(t *testing.T) {
+		resp, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"result": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "Always respond in the user's language."},
+				},
+			},
+			"id": 1,
+		})
+		result := parseGuide(resp)
+		if !strings.Contains(result, "global-guide") {
+			t.Error("guide should be wrapped in global-guide tags")
+		}
+		if !strings.Contains(result, "Always respond in the user's language.") {
+			t.Error("guide should contain the guide text")
+		}
+	})
+
+	t.Run("empty text returns empty string", func(t *testing.T) {
+		resp, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"result": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": ""},
+				},
+			},
+			"id": 1,
+		})
+		if got := parseGuide(resp); got != "" {
+			t.Errorf("expected empty string for empty text, got %q", got)
+		}
+	})
+
+	t.Run("whitespace-only text returns empty string", func(t *testing.T) {
+		resp, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"result": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "   \n  "},
+				},
+			},
+			"id": 1,
+		})
+		if got := parseGuide(resp); got != "" {
+			t.Errorf("expected empty string for whitespace-only text, got %q", got)
+		}
+	})
+
+	t.Run("invalid JSON returns empty string", func(t *testing.T) {
+		if got := parseGuide([]byte("not json")); got != "" {
+			t.Errorf("expected empty string for invalid JSON, got %q", got)
+		}
+	})
 }

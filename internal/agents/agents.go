@@ -17,18 +17,19 @@ var ReservedCommands = map[string]bool{
 	"status": true, "completion": true,
 }
 
-// mscSentinel is set in the child's environment so Resolve() can detect
-// nested msc invocations and avoid reading back the proxy URL as upstream.
+// mscSentinel is set in the child's environment by BuildEnv() so Resolve()
+// can detect nested msc invocations and read the real upstream instead of
+// the inner proxy's address.
 const mscSentinel = "MSC_UPSTREAM"
 
 func init() {
 	if os.Getenv("MSC_EXPERIMENTAL_ANTIGRAVITY") == "1" {
 		Registry["antigravity"] = Agent{
-			Command:      "antigravity",
-			EnvKey:       "CODE_ASSIST_ENDPOINT",
-			ExtraEnvKeys: []string{"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
-			DetectEnv:    []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
-			DefaultURL:   "https://cloudcode-pa.googleapis.com",
+			Command:        "antigravity",
+			EnvKey:         "CODE_ASSIST_ENDPOINT",
+			ExtraEnvKeys:   []string{"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
+			DetectEnv:      []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
+			DefaultURL:     "https://cloudcode-pa.googleapis.com",
 			AltDefaultCond: "GEMINI_API_KEY",
 			AltDefaultURL:  "https://generativelanguage.googleapis.com",
 			WaitArgs:       []string{"--wait"},
@@ -57,12 +58,19 @@ type Agent struct {
 	ExtraEnvKeys   []string // additional env vars to also set to the proxy URL
 	DetectEnv      []string // env vars to check (in order) for the real upstream
 	DefaultURL     string   // fallback upstream when none of DetectEnv are set
-	AltDefaultCond string   // if this env var is set, use AltDefaultURL instead
+	AltDefaultCond string   // if this env var is set and no DetectEnv vars are set, use AltDefaultURL instead
 	AltDefaultURL  string   // alternative upstream for a different auth mode
-	WaitArgs       []string // flags to append when executing the agent to prevent it from backgrounding
+	WaitArgs       []string // flags to prepend when executing the agent to prevent it from backgrounding
 	CapturePaths   []string // path substrings that identify LLM traffic to capture
 	ExcludePaths   []string // path substrings that exclude from capture (checked first)
 }
+
+// openAIDefaultURL and openAICapturePaths are shared by all OpenAI-compatible
+// agents (codex, opencode, aider). Centralised here so a single edit covers
+// all agents if the paths or upstream URL ever change.
+const openAIDefaultURL = "https://api.openai.com"
+
+var openAICapturePaths = []string{"/v1/chat/completions", "/v1/completions", "/responses"}
 
 // Registry maps short names to their agent definitions. Add new agents here.
 // The map key is the canonical name used in logs, tags, and CLI arguments.
@@ -78,8 +86,8 @@ var Registry = map[string]Agent{
 	"gemini": {
 		Command:      "gemini",
 		EnvKey:       "CODE_ASSIST_ENDPOINT",
-		ExtraEnvKeys: []string{"GOOGLE_GEMINI_BASE_URL"},
-		DetectEnv:    []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL"},
+		ExtraEnvKeys: []string{"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
+		DetectEnv:    []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
 		DefaultURL:   "https://cloudcode-pa.googleapis.com",
 		// API key auth uses the standard Gemini API instead of Code Assist.
 		AltDefaultCond: "GEMINI_API_KEY",
@@ -90,28 +98,30 @@ var Registry = map[string]Agent{
 		Command:      "codex",
 		EnvKey:       "OPENAI_BASE_URL",
 		DetectEnv:    []string{"OPENAI_BASE_URL", "OPENAI_API_BASE"},
-		DefaultURL:   "https://api.openai.com",
-		CapturePaths: []string{"/v1/chat/completions", "/v1/completions", "/responses"},
+		DefaultURL:   openAIDefaultURL,
+		CapturePaths: openAICapturePaths,
 	},
 	"opencode": {
 		Command:      "opencode",
 		EnvKey:       "OPENAI_BASE_URL",
 		DetectEnv:    []string{"OPENAI_BASE_URL", "OPENAI_API_BASE"},
-		DefaultURL:   "https://api.openai.com",
-		CapturePaths: []string{"/v1/chat/completions", "/v1/completions", "/responses"},
+		DefaultURL:   openAIDefaultURL,
+		CapturePaths: openAICapturePaths,
 	},
 	"aider": {
 		Command:      "aider",
 		EnvKey:       "OPENAI_API_BASE",
 		DetectEnv:    []string{"OPENAI_API_BASE", "OPENAI_BASE_URL"},
-		DefaultURL:   "https://api.openai.com",
-		CapturePaths: []string{"/v1/chat/completions", "/v1/completions", "/responses"},
+		DefaultURL:   openAIDefaultURL,
+		CapturePaths: openAICapturePaths,
 	},
 }
 
 // Resolve discovers the real upstream URL by checking the user's environment
-// in DetectEnv order. Falls back to DefaultURL if nothing is set. The trailing
-// slash is stripped to prevent double-slash issues in the reverse proxy.
+// in DetectEnv order. If AltDefaultCond is set and its env var is present,
+// AltDefaultURL is used instead of DefaultURL. Falls back to DefaultURL if
+// nothing is set. The trailing slash is stripped to prevent double-slash
+// issues in the reverse proxy.
 //
 // If MSC_UPSTREAM is set (by a parent msc process), it takes priority over
 // DetectEnv to prevent an infinite proxy loop where a nested msc reads back
@@ -126,9 +136,9 @@ func (a Agent) Resolve() string {
 		}
 	}
 	if a.AltDefaultCond != "" && os.Getenv(a.AltDefaultCond) != "" {
-		return a.AltDefaultURL
+		return strings.TrimRight(a.AltDefaultURL, "/")
 	}
-	return a.DefaultURL
+	return strings.TrimRight(a.DefaultURL, "/")
 }
 
 // BuildEnv constructs the child process environment. It copies the current env,
@@ -166,8 +176,10 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 }
 
 // Exec resolves the agent binary via PATH, builds the modified environment,
-// and runs the child process. stdin/stdout/stderr are inherited so the user
-// interacts with the agent normally. Returns the child's exit error, if any.
+// and runs the child process. WaitArgs (if any) are prepended to args to
+// prevent the agent from running in the background. stdin/stdout/stderr are
+// inherited so the user interacts with the agent normally. Returns the
+// child's exit error, if any.
 func (a Agent) Exec(proxyURL, upstream string, args []string) error {
 	binary, err := exec.LookPath(a.Command)
 	if err != nil {

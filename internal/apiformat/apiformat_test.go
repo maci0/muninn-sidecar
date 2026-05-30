@@ -86,6 +86,16 @@ func TestDetectFormat(t *testing.T) {
 			want: GeminiCloudCode,
 		},
 		{
+			name: "openai responses string input",
+			json: `{"model":"gpt-4o","input":"Hello world"}`,
+			want: OpenAIResponses,
+		},
+		{
+			name: "openai responses array input",
+			json: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"hello"}]}`,
+			want: OpenAIResponses,
+		},
+		{
 			name: "unknown",
 			json: `{"prompt":"hello","max_tokens":100}`,
 			want: "",
@@ -95,12 +105,24 @@ func TestDetectFormat(t *testing.T) {
 			json: `{}`,
 			want: "",
 		},
+		{
+			name: "openai multimodal without system",
+			json: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"text","text":"describe this"},{"type":"image_url","image_url":{"url":"https://example.com/img.png"}}]}]}`,
+			want: OpenAI,
+		},
+		{
+			name: "openai multimodal with system",
+			json: `{"model":"gpt-4","messages":[{"role":"system","content":"You are helpful"},{"role":"user","content":[{"type":"text","text":"describe this"},{"type":"image_url","image_url":{"url":"https://example.com/img.png"}}]}]}`,
+			want: OpenAI,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var doc map[string]any
-			json.Unmarshal([]byte(tt.json), &doc)
+			if err := json.Unmarshal([]byte(tt.json), &doc); err != nil {
+				t.Fatalf("invalid test JSON: %v", err)
+			}
 			if got := DetectFormat(doc); got != tt.want {
 				t.Errorf("DetectFormat() = %q, want %q", got, tt.want)
 			}
@@ -133,6 +155,21 @@ func TestExtractUserMessage(t *testing.T) {
 			name: "gemini",
 			body: `{"contents":[{"role":"user","parts":[{"text":"hello gemini"}]}]}`,
 			want: "hello gemini",
+		},
+		{
+			name: "openai responses string input",
+			body: `{"model":"gpt-4o","input":"hello responses"}`,
+			want: "hello responses",
+		},
+		{
+			name: "openai responses array input",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"first"},{"type":"message","role":"assistant","content":"reply"},{"type":"message","role":"user","content":"second"}]}`,
+			want: "second",
+		},
+		{
+			name: "openai responses array content parts",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"part1"},{"type":"input_text","text":"part2"}]}]}`,
+			want: "part1part2",
 		},
 		{
 			name: "empty",
@@ -201,6 +238,18 @@ func TestExtractUserQuery(t *testing.T) {
 			want:   "hello cc",
 		},
 		{
+			name:   "openai responses string input",
+			json:   `{"model":"gpt-4o","input":"hello responses"}`,
+			format: OpenAIResponses,
+			want:   "hello responses",
+		},
+		{
+			name:   "openai responses array input last user",
+			json:   `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"first"},{"type":"message","role":"assistant","content":"reply"},{"type":"message","role":"user","content":"second"}]}`,
+			format: OpenAIResponses,
+			want:   "second",
+		},
+		{
 			name:   "unknown format",
 			json:   `{}`,
 			format: "",
@@ -211,7 +260,9 @@ func TestExtractUserQuery(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var doc map[string]any
-			json.Unmarshal([]byte(tt.json), &doc)
+			if err := json.Unmarshal([]byte(tt.json), &doc); err != nil {
+				t.Fatalf("invalid test JSON: %v", err)
+			}
 			if got := ExtractUserQuery(doc, tt.format); got != tt.want {
 				t.Errorf("ExtractUserQuery() = %q, want %q", got, tt.want)
 			}
@@ -226,19 +277,69 @@ func TestExtractAssistantMessage(t *testing.T) {
 		want string
 	}{
 		{
-			name: "anthropic",
+			name: "anthropic text only",
 			body: `{"content":[{"type":"text","text":"I can help with that."}]}`,
 			want: "I can help with that.",
 		},
 		{
-			name: "openai",
+			name: "anthropic tool_use only",
+			body: `{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
+			want: "[Read /src/main.go]",
+		},
+		{
+			name: "anthropic text plus tool_use",
+			body: `{"content":[{"type":"text","text":"Let me read that file."},{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
+			want: "Let me read that file.\n[Read /src/main.go]",
+		},
+		{
+			name: "anthropic multiple tools",
+			body: `{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a.go"}},{"type":"tool_use","name":"Edit","input":{"file_path":"/b.go"}}]}`,
+			want: "[Read /a.go] [Edit /b.go]",
+		},
+		{
+			name: "anthropic tool with command input",
+			body: `{"content":[{"type":"tool_use","name":"Bash","input":{"command":"go test ./..."}}]}`,
+			want: "[Bash go test ./...]",
+		},
+		{
+			name: "openai text only",
 			body: `{"choices":[{"message":{"role":"assistant","content":"Sure thing."}}]}`,
 			want: "Sure thing.",
 		},
 		{
-			name: "gemini",
+			name: "openai tool_calls only",
+			body: `{"choices":[{"message":{"role":"assistant","tool_calls":[{"function":{"name":"read_file"}}]}}]}`,
+			want: "[read_file]",
+		},
+		{
+			name: "openai text plus tool_calls",
+			body: `{"choices":[{"message":{"role":"assistant","content":"Let me check.","tool_calls":[{"function":{"name":"read_file"}}]}}]}`,
+			want: "Let me check.\n[read_file]",
+		},
+		{
+			name: "gemini text only",
 			body: `{"candidates":[{"content":{"parts":[{"text":"Here you go."}]}}]}`,
 			want: "Here you go.",
+		},
+		{
+			name: "gemini functionCall",
+			body: `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"readFile"}}]}}]}`,
+			want: "[readFile]",
+		},
+		{
+			name: "openai responses text only",
+			body: `{"output":[{"type":"message","content":[{"type":"output_text","text":"Hello from responses!"}]}]}`,
+			want: "Hello from responses!",
+		},
+		{
+			name: "openai responses function_call only",
+			body: `{"output":[{"type":"function_call","name":"read_file","arguments":"{}","call_id":"call_1"}]}`,
+			want: "[read_file]",
+		},
+		{
+			name: "openai responses text plus function_call",
+			body: `{"output":[{"type":"message","content":[{"type":"output_text","text":"Let me check."}]},{"type":"function_call","name":"read_file","arguments":"{}","call_id":"call_1"}]}`,
+			want: "Let me check.\n[read_file]",
 		},
 		{
 			name: "empty",
@@ -282,12 +383,104 @@ func TestTruncateText(t *testing.T) {
 	}
 }
 
+func TestExtractRecentContext(t *testing.T) {
+	tests := []struct {
+		name   string
+		json   string
+		format string
+		turns  int
+		want   string
+	}{
+		{
+			name:   "anthropic single turn",
+			json:   `{"messages":[{"role":"user","content":"hello"}]}`,
+			format: Anthropic,
+			turns:  3,
+			want:   "user: hello",
+		},
+		{
+			name:   "anthropic last 2 of 3 turns",
+			json:   `{"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"a1"},{"role":"user","content":"second"}]}`,
+			format: Anthropic,
+			turns:  2,
+			want:   "assistant: a1\nuser: second",
+		},
+		{
+			name:   "anthropic all 3 turns",
+			json:   `{"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"a1"},{"role":"user","content":"second"}]}`,
+			format: Anthropic,
+			turns:  3,
+			want:   "user: first\nassistant: a1\nuser: second",
+		},
+		{
+			name:   "openai last 1 turn",
+			json:   `{"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"a1"},{"role":"user","content":"second"}]}`,
+			format: OpenAI,
+			turns:  1,
+			want:   "user: second",
+		},
+		{
+			name:   "gemini last 2 turns",
+			json:   `{"contents":[{"role":"user","parts":[{"text":"q1"}]},{"role":"model","parts":[{"text":"a1"}]},{"role":"user","parts":[{"text":"q2"}]}]}`,
+			format: Gemini,
+			turns:  2,
+			want:   "model: a1\nuser: q2",
+		},
+		{
+			name:   "gemini cloudcode",
+			json:   `{"request":{"contents":[{"role":"user","parts":[{"text":"question"}]}]}}`,
+			format: GeminiCloudCode,
+			turns:  3,
+			want:   "user: question",
+		},
+		{
+			name:   "openai responses string input",
+			json:   `{"input":"hello world"}`,
+			format: OpenAIResponses,
+			turns:  3,
+			want:   "user: hello world",
+		},
+		{
+			name:   "openai responses array last 2",
+			json:   `{"input":[{"type":"message","role":"user","content":"q1"},{"type":"message","role":"assistant","content":"a1"},{"type":"message","role":"user","content":"q2"}]}`,
+			format: OpenAIResponses,
+			turns:  2,
+			want:   "assistant: a1\nuser: q2",
+		},
+		{
+			name:   "unknown format returns empty",
+			json:   `{}`,
+			format: "",
+			turns:  3,
+			want:   "",
+		},
+		{
+			name:   "zero turns returns empty",
+			json:   `{"messages":[{"role":"user","content":"hello"}]}`,
+			format: Anthropic,
+			turns:  0,
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(tt.json), &doc); err != nil {
+				t.Fatalf("invalid test JSON: %v", err)
+			}
+			if got := ExtractRecentContext(doc, tt.format, tt.turns); got != tt.want {
+				t.Errorf("ExtractRecentContext() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTruncateQuery(t *testing.T) {
 	tests := []struct {
 		name     string
 		query    string
 		maxRunes int
-		wantLen  bool
 		want     string
 	}{
 		{
@@ -303,10 +496,13 @@ func TestTruncateQuery(t *testing.T) {
 			want:     "hello",
 		},
 		{
+			// maxRunes=16: search window is [12,15]; position 15 is the
+			// space between "beautiful" and "world", so word-boundary cut
+			// yields "hello beautiful" (15 runes, no trailing space).
 			name:     "word boundary truncation",
 			query:    "hello beautiful world today",
-			maxRunes: 20,
-			wantLen:  true,
+			maxRunes: 16,
+			want:     "hello beautiful",
 		},
 		{
 			name:     "hard truncation when no space",
@@ -319,12 +515,7 @@ func TestTruncateQuery(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := TruncateQuery(tt.query, tt.maxRunes)
-			if tt.wantLen {
-				runes := []rune(got)
-				if len(runes) > tt.maxRunes {
-					t.Errorf("TruncateQuery() rune len = %d, want <= %d", len(runes), tt.maxRunes)
-				}
-			} else if got != tt.want {
+			if got != tt.want {
 				t.Errorf("TruncateQuery() = %q, want %q", got, tt.want)
 			}
 		})

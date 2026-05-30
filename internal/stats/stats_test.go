@@ -20,8 +20,8 @@ func TestSummaryBasic(t *testing.T) {
 	s.TokensOut.Store(500)
 
 	got := s.Summary()
-	if !strings.Contains(got, "5 flushed") {
-		t.Fatalf("expected '5 flushed' in summary: %q", got)
+	if !strings.Contains(got, "5 saved") {
+		t.Fatalf("expected '5 saved' in summary: %q", got)
 	}
 	if !strings.Contains(got, "1000 in") {
 		t.Fatalf("expected '1000 in' in summary: %q", got)
@@ -42,8 +42,8 @@ func TestSummaryWithDropsAndErrors(t *testing.T) {
 	if !strings.Contains(got, "3 dropped") {
 		t.Fatalf("expected '3 dropped' in summary: %q", got)
 	}
-	if !strings.Contains(got, "2 errors") {
-		t.Fatalf("expected '2 errors' in summary: %q", got)
+	if !strings.Contains(got, "2 save errors") {
+		t.Fatalf("expected '2 save errors' in summary: %q", got)
 	}
 }
 
@@ -111,6 +111,12 @@ func TestModelsSortedByCount(t *testing.T) {
 	if models[0].Name != "c" || models[0].Count != 3 {
 		t.Fatalf("expected c(3) first, got %s(%d)", models[0].Name, models[0].Count)
 	}
+	if models[1].Name != "b" || models[1].Count != 2 {
+		t.Fatalf("expected b(2) second, got %s(%d)", models[1].Name, models[1].Count)
+	}
+	if models[2].Name != "a" || models[2].Count != 1 {
+		t.Fatalf("expected a(1) third, got %s(%d)", models[2].Name, models[2].Count)
+	}
 }
 
 func TestSummaryWithInjections(t *testing.T) {
@@ -120,12 +126,22 @@ func TestSummaryWithInjections(t *testing.T) {
 	s.Injections.Store(8)
 	s.InjectedTokens.Store(6400)
 
+	s.Suppressed.Store(2)
+	s.Recalls.Store(7)
+	s.RecallsSkipped.Store(3)
+
 	got := s.Summary()
-	if !strings.Contains(got, "8 enriched") {
-		t.Fatalf("expected '8 enriched' in summary: %q", got)
+	if !strings.Contains(got, "8 injected") {
+		t.Fatalf("expected '8 injected' in summary: %q", got)
 	}
-	if !strings.Contains(got, "6400 tokens injected") {
-		t.Fatalf("expected '6400 tokens injected' in summary: %q", got)
+	if !strings.Contains(got, "2 suppressed") {
+		t.Fatalf("expected '2 suppressed' in summary: %q", got)
+	}
+	if !strings.Contains(got, "~6400 tokens") {
+		t.Fatalf("expected '~6400 tokens' in summary: %q", got)
+	}
+	if !strings.Contains(got, "7 queried, 3 reused") {
+		t.Fatalf("expected recall line in summary: %q", got)
 	}
 }
 
@@ -137,8 +153,8 @@ func TestSummaryInjectionTokensFormatted(t *testing.T) {
 	s.InjectedTokens.Store(15000)
 
 	got := s.Summary()
-	if !strings.Contains(got, "15.0K tokens injected") {
-		t.Fatalf("expected '15.0K tokens injected' in summary: %q", got)
+	if !strings.Contains(got, "~15.0K tokens") {
+		t.Fatalf("expected '~15.0K tokens' in summary: %q", got)
 	}
 }
 
@@ -149,8 +165,8 @@ func TestSummaryWithDeduped(t *testing.T) {
 	s.Flushed.Store(7)
 
 	got := s.Summary()
-	if !strings.Contains(got, "7 flushed") {
-		t.Fatalf("expected '7 flushed' in summary: %q", got)
+	if !strings.Contains(got, "7 saved") {
+		t.Fatalf("expected '7 saved' in summary: %q", got)
 	}
 	if !strings.Contains(got, "3 deduped") {
 		t.Fatalf("expected '3 deduped' in summary: %q", got)

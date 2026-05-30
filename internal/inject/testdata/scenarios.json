@@ -1,0 +1,83 @@
+[
+  {
+    "name": "strong-match-with-noise",
+    "desc": "A dominant on-topic memory plus marginal recall noise below the injection threshold. Keep the strong matches, drop the weak tail.",
+    "should_inject": true,
+    "candidates": [
+      {"id": "a", "concept": "auth jwt refresh", "content": "Access tokens expire after 15m; refresh tokens rotate on use and are stored hashed.", "score": 0.88, "relevant": true},
+      {"id": "b", "concept": "auth session store", "content": "Sessions live in Redis keyed by user id with a 30 day TTL.", "score": 0.74, "relevant": true},
+      {"id": "c", "concept": "logging format", "content": "Use structured slog with request_id on every line.", "score": 0.47, "relevant": false},
+      {"id": "d", "concept": "ci cache", "content": "GitHub Actions caches the go build cache keyed on go.sum.", "score": 0.44, "relevant": false}
+    ]
+  },
+  {
+    "name": "sparse-topic-moderate-scores",
+    "desc": "A niche topic: two moderately-confident matches just above the threshold plus sub-threshold noise. Should inject both relevant ones and drop the noise.",
+    "should_inject": true,
+    "candidates": [
+      {"id": "a", "concept": "obscure flag", "content": "MSC_UPSTREAM sentinel prevents nested-proxy infinite loops.", "score": 0.68, "relevant": true},
+      {"id": "b", "concept": "nesting guard", "content": "A child msc reads the real upstream from the sentinel env var.", "score": 0.65, "relevant": true},
+      {"id": "c", "concept": "unrelated", "content": "The frontend uses Tailwind for styling.", "score": 0.47, "relevant": false}
+    ]
+  },
+  {
+    "name": "duplicate-heavy",
+    "desc": "The same fact recalled three ways. Near-duplicate removal should keep one and not waste budget on restatements.",
+    "should_inject": true,
+    "candidates": [
+      {"id": "a", "concept": "go test style", "content": "the user prefers table driven tests with subtests and t dot run", "score": 0.86, "relevant": true},
+      {"id": "b", "concept": "testing preference", "content": "the user prefers table driven tests with subtests and t dot run always", "score": 0.84, "relevant": false},
+      {"id": "c", "concept": "go testing", "content": "the user prefers table driven tests with subtests and t dot run for everything", "score": 0.82, "relevant": false},
+      {"id": "d", "concept": "deploy target", "content": "production runs on kubernetes with helm managed releases", "score": 0.80, "relevant": true}
+    ]
+  },
+  {
+    "name": "all-noise",
+    "desc": "Recall surfaced only marginally-relevant memories, all below the confidence threshold. The right answer is to inject NOTHING this turn.",
+    "should_inject": false,
+    "candidates": [
+      {"id": "a", "concept": "random fact one", "content": "The office wifi password rotates monthly.", "score": 0.50, "relevant": false},
+      {"id": "b", "concept": "random fact two", "content": "Coffee machine is on the third floor.", "score": 0.46, "relevant": false}
+    ]
+  },
+  {
+    "name": "mixed-relevance-tight-budget",
+    "desc": "Several relevant memories but a tight budget. Budget packing should spend tokens on the highest-scored relevant memories first.",
+    "should_inject": true,
+    "budget": 120,
+    "candidates": [
+      {"id": "a", "concept": "db schema", "content": "The exchanges table partitions by day and indexes (vault, created_at). This is the primary read path for recall.", "score": 0.90, "relevant": true},
+      {"id": "b", "concept": "db retention", "content": "Rows older than 90 days are pruned nightly by a cron job that batches deletes in chunks of 10k.", "score": 0.85, "relevant": true},
+      {"id": "c", "concept": "db backups", "content": "Daily logical dumps to object storage retained for 30 days; restore tested weekly.", "score": 0.80, "relevant": true},
+      {"id": "d", "concept": "off topic", "content": "The mobile app uses React Native.", "score": 0.46, "relevant": false}
+    ]
+  },
+  {
+    "name": "clean-high-relevance",
+    "desc": "Everything recalled is relevant and distinct. Selection should keep all of them; precision and recall both 1.",
+    "should_inject": true,
+    "candidates": [
+      {"id": "a", "concept": "proxy flow", "content": "msc intercepts in ServeHTTP and buffers the body when the path matches capture paths.", "score": 0.90, "relevant": true},
+      {"id": "b", "concept": "stream capture", "content": "SSE responses tee through streamCapture while accumulating text deltas.", "score": 0.86, "relevant": true},
+      {"id": "c", "concept": "async store", "content": "Exchanges enqueue to a buffered channel and a worker batches up to 10 every 2s.", "score": 0.82, "relevant": true}
+    ]
+  },
+  {
+    "name": "cold-open-no-signal",
+    "desc": "A generic opening question with no relevant stored memory; recall returns only low-cosine chatter. Injecting anything is pure noise — the gate should suppress.",
+    "should_inject": false,
+    "candidates": [
+      {"id": "a", "concept": "greeting habit", "content": "The user sometimes says hi before asking.", "score": 0.45, "relevant": false},
+      {"id": "b", "concept": "weather smalltalk", "content": "It rained last Tuesday.", "score": 0.40, "relevant": false}
+    ]
+  },
+  {
+    "name": "single-strong-hit",
+    "desc": "Exactly one clearly relevant memory well above the threshold. Should inject just that one.",
+    "should_inject": true,
+    "candidates": [
+      {"id": "a", "concept": "rate limit rule", "content": "The API enforces 100 req/min per token with a sliding window.", "score": 0.86, "relevant": true},
+      {"id": "b", "concept": "color palette", "content": "Brand primary is #1a73e8.", "score": 0.46, "relevant": false}
+    ]
+  }
+]

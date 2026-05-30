@@ -2,17 +2,20 @@ package proxy
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 	"github.com/maci0/muninn-sidecar/internal/store"
@@ -87,7 +90,9 @@ func TestProxyForwardsAndCaptures(t *testing.T) {
 
 	// Verify response was forwarded.
 	var respData map[string]any
-	json.NewDecoder(resp.Body).Decode(&respData)
+	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if respData["id"] != "msg_123" {
 		t.Fatalf("expected id=msg_123, got %v", respData["id"])
 	}
@@ -149,23 +154,38 @@ func TestCapturePathFiltering(t *testing.T) {
 	base := "http://" + addr
 
 	// Should be captured: matches "GenerateContent" (OAuth mode, camelCase)
-	resp, _ := http.Post(base+"/v1internal:streamGenerateContent", "application/json", strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"gemini q1"}]}]}`))
+	resp, err := http.Post(base+"/v1internal:streamGenerateContent", "application/json", strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"gemini q1"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 
 	// Should be captured: matches "GenerateContent" case-insensitively (API key mode, lowercase)
-	resp, _ = http.Post(base+"/v1beta/models/gemini-pro:generateContent", "application/json", strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"gemini q2"}]}]}`))
+	resp, err = http.Post(base+"/v1beta/models/gemini-pro:generateContent", "application/json", strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"gemini q2"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 
 	// Should be captured: matches "/v1/messages"
-	resp, _ = http.Post(base+"/v1/messages", "application/json", strings.NewReader(`{"messages":[{"role":"user","content":"claude q1"}]}`))
+	resp, err = http.Post(base+"/v1/messages", "application/json", strings.NewReader(`{"messages":[{"role":"user","content":"claude q1"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 
 	// Should NOT be captured: no match
-	resp, _ = http.Post(base+"/loadCodeAssist", "application/json", strings.NewReader(`{}`))
+	resp, err = http.Post(base+"/loadCodeAssist", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 
 	// Should NOT be captured: no match
-	resp, _ = http.Post(base+"/retrieveUserQuota", "application/json", strings.NewReader(`{}`))
+	resp, err = http.Post(base+"/retrieveUserQuota", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 
 	st.Drain()
@@ -243,11 +263,17 @@ func TestExcludePaths(t *testing.T) {
 	base := "http://" + addr
 
 	// Should be captured: matches /v1/messages, not excluded.
-	resp, _ := http.Post(base+"/v1/messages", "application/json", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
+	resp, err := http.Post(base+"/v1/messages", "application/json", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 
 	// Should NOT be captured: matches exclude /count_tokens.
-	resp, _ = http.Post(base+"/v1/messages/count_tokens", "application/json", strings.NewReader(`{"messages":[{"role":"user","content":"count"}]}`))
+	resp, err = http.Post(base+"/v1/messages/count_tokens", "application/json", strings.NewReader(`{"messages":[{"role":"user","content":"count"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
 
 	st.Drain()
@@ -355,10 +381,20 @@ func TestCapturePathStreamingSSE(t *testing.T) {
 
 	mu.Lock()
 	n := len(captured)
+	combined := strings.Join(captured, " ")
 	mu.Unlock()
 
 	if n != 1 {
 		t.Fatalf("expected exactly 1 captured SSE exchange, got %d", n)
+	}
+	// Verify the captured exchange contains the user message and the
+	// accumulated SSE text. A bug in SSE text accumulation would cause
+	// "Hello" to be absent (exchange captured via lastData fallback only).
+	if !strings.Contains(combined, "stream test") {
+		t.Error("captured exchange should contain the user message")
+	}
+	if !strings.Contains(combined, "Hello") {
+		t.Error("captured exchange should contain accumulated SSE text")
 	}
 	t.Logf("correctly captured 1 SSE stream, skipped 1 non-matching path")
 }
@@ -373,6 +409,21 @@ func fakeWhereLeftOffEmpty() []byte {
 		"result": map[string]any{
 			"content": []map[string]any{
 				{"type": "text", "text": string(inner)},
+			},
+		},
+		"id": 1,
+	})
+	return resp
+}
+
+// fakeEmptyGuideResponse returns a JSON-RPC response for muninn_guide with
+// empty text content, simulating a server that has no guide to provide.
+func fakeEmptyGuideResponse() []byte {
+	resp, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": ""},
 			},
 		},
 		"id": 1,
@@ -432,7 +483,7 @@ func TestProxyInjectionE2E(t *testing.T) {
 
 	// MuninnDB: handle both recall (from injector) and remember (from store).
 	var (
-		storeMu   sync.Mutex
+		storeMu    sync.Mutex
 		storeCalls []string // MCP calls for storing memories
 	)
 	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -509,7 +560,9 @@ func TestProxyInjectionE2E(t *testing.T) {
 
 	// Verify response was forwarded correctly.
 	var respData map[string]any
-	json.NewDecoder(resp.Body).Decode(&respData)
+	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if respData["id"] != "msg_enriched" {
 		t.Fatalf("expected id=msg_enriched, got %v", respData["id"])
 	}
@@ -573,7 +626,7 @@ func TestProxyInjectionStrippedFromCapture(t *testing.T) {
 	defer upstream.Close()
 
 	var (
-		storeMu   sync.Mutex
+		storeMu    sync.Mutex
 		storeCalls []string
 	)
 	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -967,10 +1020,15 @@ func TestProxyInjectionTimeout(t *testing.T) {
 		}
 		json.Unmarshal(body, &rpc)
 
-		if rpc.Params.Name == "muninn_recall" || rpc.Params.Name == "muninn_where_left_off" {
+		switch rpc.Params.Name {
+		case "muninn_recall", "muninn_where_left_off":
 			time.Sleep(500 * time.Millisecond) // exceed timeout
+			w.Write(fakeWhereLeftOffEmpty())
+		case "muninn_guide":
+			w.Write(fakeEmptyGuideResponse())
+		default:
+			w.Write(fakeWhereLeftOffEmpty())
 		}
-		w.Write(fakeWhereLeftOffEmpty())
 	}))
 	defer muninn.Close()
 
@@ -1079,9 +1137,9 @@ func TestExtractStreamDelta(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractStreamDelta([]byte(tt.data))
+			got := apiformat.ExtractSSEDelta(parseSSEDoc([]byte(tt.data)))
 			if got != tt.want {
-				t.Errorf("extractStreamDelta() = %q, want %q", got, tt.want)
+				t.Errorf("extractDeltaFromDoc() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -1220,24 +1278,6 @@ func TestStreamCaptureAccumulatesText(t *testing.T) {
 func TestStreamCapturePreservesUsage(t *testing.T) {
 	// Verify that usage metadata from SSE events is preserved in the
 	// synthetic response body and correctly extracted into token counts.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		flusher, _ := w.(http.Flusher)
-		w.WriteHeader(200)
-
-		events := []string{
-			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}`,
-			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}`,
-			`data: {"type":"message_stop"}`,
-			`data: [DONE]`,
-		}
-		for _, e := range events {
-			w.Write([]byte(e + "\n\n"))
-		}
-		flusher.Flush()
-	}))
-	defer upstream.Close()
-
 	// Test buildSyntheticResp directly by examining the streamCapture output.
 	sc := &streamCapture{
 		ReadCloser: io.NopCloser(strings.NewReader("")),
@@ -1286,6 +1326,145 @@ func TestStreamCapturePreservesUsage(t *testing.T) {
 	}
 }
 
+func TestExtractStreamToolName(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "anthropic content_block_start",
+			data: `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_1","name":"Read"}}`,
+			want: "Read",
+		},
+		{
+			name: "anthropic text block (not tool)",
+			data: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			want: "",
+		},
+		{
+			name: "openai chat tool_calls delta",
+			data: `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","function":{"name":"Edit","arguments":""}}]}}]}`,
+			want: "Edit",
+		},
+		{
+			name: "openai chat tool_calls argument chunk (no name)",
+			data: `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"file\":"}}]}}]}`,
+			want: "",
+		},
+		{
+			name: "openai responses function_call",
+			data: `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"Bash"}}`,
+			want: "Bash",
+		},
+		{
+			name: "openai responses non-function item",
+			data: `{"type":"response.output_item.added","item":{"type":"message","content":"hello"}}`,
+			want: "",
+		},
+		{
+			name: "gemini functionCall",
+			data: `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"search_files","args":{"query":"test"}}}]}}]}`,
+			want: "search_files",
+		},
+		{
+			name: "gemini text only (no tool)",
+			data: `{"candidates":[{"content":{"parts":[{"text":"just text"}]}}]}`,
+			want: "",
+		},
+		{
+			name: "empty input",
+			data: ``,
+			want: "",
+		},
+		{
+			name: "non-json",
+			data: `not json at all`,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := apiformat.ExtractSSEToolName(parseSSEDoc([]byte(tt.data)))
+			if got != tt.want {
+				t.Errorf("extractToolNameFromDoc() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStreamCaptureToolNamesMultiFormat(t *testing.T) {
+	// Verify that tool names are captured from SSE streams across all formats.
+	tests := []struct {
+		name      string
+		events    []string
+		wantTools []string // expected tool names in streamCapture.toolNames
+	}{
+		{
+			name: "anthropic tool_use",
+			events: []string{
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"Read"}}`,
+				`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu2","name":"Edit"}}`,
+				`data: [DONE]`,
+			},
+			wantTools: []string{"Read", "Edit"},
+		},
+		{
+			name: "openai chat tool_calls",
+			events: []string{
+				`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"Bash","arguments":""}}]}}]}`,
+				`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"ls\"}"}}]}}]}`,
+				`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_2","function":{"name":"Read","arguments":""}}]}}]}`,
+				`data: [DONE]`,
+			},
+			wantTools: []string{"Bash", "Read"},
+		},
+		{
+			name: "openai responses function_call",
+			events: []string{
+				`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc1","name":"Write"}}`,
+				`data: {"type":"response.function_call_arguments.delta","delta":"{\"path\":\"foo.go\"}"}`,
+				`data: [DONE]`,
+			},
+			wantTools: []string{"Write"},
+		},
+		{
+			name: "gemini functionCall",
+			events: []string{
+				`data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"search","args":{}}}]}}]}`,
+				`data: [DONE]`,
+			},
+			wantTools: []string{"search"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := &streamCapture{
+				ReadCloser: io.NopCloser(strings.NewReader("")),
+				ctx:        &captureCtx{start: time.Now()},
+				statusCode: 200,
+			}
+
+			var stream strings.Builder
+			for _, e := range tt.events {
+				stream.WriteString(e + "\n\n")
+			}
+			sc.processChunk([]byte(stream.String()))
+
+			if len(sc.toolNames) != len(tt.wantTools) {
+				t.Fatalf("got %d tool names %v, want %d %v", len(sc.toolNames), sc.toolNames, len(tt.wantTools), tt.wantTools)
+			}
+			for i, want := range tt.wantTools {
+				if sc.toolNames[i] != want {
+					t.Errorf("toolNames[%d] = %q, want %q", i, sc.toolNames[i], want)
+				}
+			}
+		})
+	}
+}
+
 func TestStreamCaptureCRLFLineEndings(t *testing.T) {
 	// Verify that \r\n line endings (valid per SSE spec) are handled correctly.
 	// Before the fix, [DONE] wouldn't be detected and data lines would have
@@ -1319,3 +1498,376 @@ func TestStreamCaptureCRLFLineEndings(t *testing.T) {
 		t.Errorf("lastData should not contain \\r, got %q", sc.lastData)
 	}
 }
+
+func TestSanitizeJSON(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []byte
+		want  string
+	}{
+		{
+			name:  "empty input returns null",
+			input: []byte{},
+			want:  "null",
+		},
+		{
+			name:  "valid JSON object unchanged",
+			input: []byte(`{"key":"value"}`),
+			want:  `{"key":"value"}`,
+		},
+		{
+			name:  "invalid JSON wrapped as string",
+			input: []byte(`plain text error page`),
+			want:  `"plain text error page"`,
+		},
+		{
+			name:  "valid JSON array unchanged",
+			input: []byte(`[1,2,3]`),
+			want:  `[1,2,3]`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeJSON(tt.input)
+			if string(got) != tt.want {
+				t.Errorf("sanitizeJSON() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldCapture(t *testing.T) {
+	tests := []struct {
+		name         string
+		capturePaths []string
+		excludePaths []string
+		path         string
+		want         bool
+	}{
+		{
+			name:         "empty capturePaths captures everything",
+			capturePaths: nil,
+			path:         "/anything",
+			want:         true,
+		},
+		{
+			name:         "matching capture path",
+			capturePaths: []string{"/v1/messages"},
+			path:         "/v1/messages",
+			want:         true,
+		},
+		{
+			name:         "non-matching capture path",
+			capturePaths: []string{"/v1/messages"},
+			path:         "/v1/other",
+			want:         false,
+		},
+		{
+			name:         "case-insensitive match",
+			capturePaths: []string{"generatecontent"},
+			path:         "/v1beta/models/gemini-pro:generateContent",
+			want:         true,
+		},
+		{
+			name:         "exclude takes priority over capture match",
+			capturePaths: []string{"/v1/messages"},
+			excludePaths: []string{"count_tokens"},
+			path:         "/v1/messages/count_tokens",
+			want:         false,
+		},
+		{
+			name:         "exclude with empty capturePaths",
+			capturePaths: nil,
+			excludePaths: []string{"health"},
+			path:         "/health",
+			want:         false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Proxy{
+				capturePaths: toLowerSlice(tt.capturePaths),
+				excludePaths: toLowerSlice(tt.excludePaths),
+			}
+			if got := p.shouldCapture(tt.path); got != tt.want {
+				t.Errorf("shouldCapture(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSingleJoiningSlash(t *testing.T) {
+	tests := []struct {
+		a, b, want string
+	}{
+		{"/base", "/path", "/base/path"},
+		{"/base/", "/path", "/base/path"},
+		{"/base", "path", "/base/path"},
+		{"/base/", "path", "/base/path"},
+	}
+	for _, tt := range tests {
+		got := singleJoiningSlash(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("singleJoiningSlash(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestExtractModelAndTokens(t *testing.T) {
+	tests := []struct {
+		name      string
+		reqBody   string
+		respBody  string
+		wantModel string
+		wantIn    int
+		wantOut   int
+		wantCache int
+	}{
+		{
+			name:      "anthropic with cache tokens",
+			reqBody:   `{"model":"claude-3-opus","messages":[]}`,
+			respBody:  `{"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":20,"cache_read_input_tokens":10}}`,
+			wantModel: "claude-3-opus",
+			wantIn:    100,
+			wantOut:   50,
+			wantCache: 20,
+		},
+		{
+			name:      "openai prompt/completion tokens",
+			reqBody:   `{"model":"gpt-4","messages":[]}`,
+			respBody:  `{"usage":{"prompt_tokens":200,"completion_tokens":100}}`,
+			wantModel: "gpt-4",
+			wantIn:    200,
+			wantOut:   100,
+		},
+		{
+			name:      "gemini usageMetadata and modelVersion",
+			reqBody:   `{"contents":[]}`,
+			respBody:  `{"usageMetadata":{"promptTokenCount":300,"candidatesTokenCount":150},"modelVersion":"gemini-1.5-pro"}`,
+			wantModel: "gemini-1.5-pro",
+			wantIn:    300,
+			wantOut:   150,
+		},
+		{
+			name:      "model falls back to response body",
+			reqBody:   `{"messages":[]}`,
+			respBody:  `{"model":"claude-3-haiku","usage":{"input_tokens":50,"output_tokens":25}}`,
+			wantModel: "claude-3-haiku",
+			wantIn:    50,
+			wantOut:   25,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ex := &store.CapturedExchange{
+				ReqBody:  json.RawMessage(tt.reqBody),
+				RespBody: json.RawMessage(tt.respBody),
+			}
+			extractModelAndTokens(ex)
+			if ex.Model != tt.wantModel {
+				t.Errorf("Model = %q, want %q", ex.Model, tt.wantModel)
+			}
+			if ex.TokensIn != tt.wantIn {
+				t.Errorf("TokensIn = %d, want %d", ex.TokensIn, tt.wantIn)
+			}
+			if ex.TokensOut != tt.wantOut {
+				t.Errorf("TokensOut = %d, want %d", ex.TokensOut, tt.wantOut)
+			}
+			if tt.wantCache > 0 && ex.CacheWrite != tt.wantCache {
+				t.Errorf("CacheWrite = %d, want %d", ex.CacheWrite, tt.wantCache)
+			}
+		})
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	tests := []struct {
+		rawURL string
+		want   string
+	}{
+		{
+			rawURL: "https://api.example.com/v1/messages",
+			want:   "https://api.example.com/v1/messages",
+		},
+		{
+			rawURL: "https://generativelanguage.googleapis.com/v1/models/gemini:generateContent?key=supersecret",
+			want:   "https://generativelanguage.googleapis.com/v1/models/gemini:generateContent?[redacted]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.rawURL, func(t *testing.T) {
+			u, err := url.Parse(tt.rawURL)
+			if err != nil {
+				t.Fatalf("failed to parse URL: %v", err)
+			}
+			if got := redactURL(u); got != tt.want {
+				t.Errorf("redactURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestProxyAutoCalibrationE2E drives the full proxy stack (proxy → injector →
+// fake MuninnDB → upstream) on a LOW-COSINE vault where the relevant memory
+// (0.45) sits below the default 0.6 gate. It verifies the sidecar self-improves
+// end-to-end: early requests are suppressed (upstream sees no injected context),
+// and after auto-calibration lowers the threshold, later requests are enriched.
+func TestProxyAutoCalibrationE2E(t *testing.T) {
+	var (
+		upMu   sync.Mutex
+		upBody string
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upMu.Lock()
+		upBody = string(b)
+		upMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "m", "model": "claude-3",
+			"content": []map[string]string{{"type": "text", "text": "ok"}},
+			"usage":   map[string]any{"input_tokens": 10, "output_tokens": 5},
+		})
+	}))
+	defer upstream.Close()
+
+	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct{ Name string } `json:"params"`
+		}
+		json.Unmarshal(body, &rpc)
+		switch rpc.Params.Name {
+		case "muninn_where_left_off":
+			w.Write(fakeWhereLeftOffEmpty())
+		case "muninn_recall":
+			// Low-cosine: relevant 0.45 (below default 0.6), noise 0.25/0.22.
+			w.Write(fakeRecallResponse([]map[string]any{
+				{"id": "rel", "concept": "answer", "content": "the special answer token", "vector_score": 0.45, "score": 0.45},
+				{"id": "n1", "concept": "noise one", "content": "off topic alpha", "vector_score": 0.25, "score": 0.25},
+				{"id": "n2", "concept": "noise two", "content": "off topic beta", "vector_score": 0.22, "score": 0.22},
+			}))
+		default:
+			w.WriteHeader(200)
+			w.Write([]byte(`{"jsonrpc":"2.0","result":{},"id":1}`))
+		}
+	}))
+	defer muninn.Close()
+
+	stats0 := &stats.Stats{}
+	st := store.New(muninn.URL, "", "test", stats0)
+	injector := inject.New(inject.Config{
+		MCPURL: muninn.URL, Vault: "test", Budget: 2048,
+		Timeout: 2 * time.Second, AutoCalibrate: true, Stats: stats0,
+	})
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0", Upstream: upstream.URL, AgentName: "claude",
+		Store: st, CapturePaths: []string{"/v1/messages"}, Injector: injector,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	send := func(msg string) string {
+		body := `{"model":"claude-3","system":"s","messages":[{"role":"user","content":"` + msg + `"}]}`
+		resp, err := http.Post("http://"+addr+"/v1/messages", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+		upMu.Lock()
+		defer upMu.Unlock()
+		return upBody
+	}
+
+	// Turn 0: default 0.6 gate suppresses the 0.45 memory — upstream sees no inject.
+	if got := send("first distinct question alpha"); strings.Contains(got, "special answer token") {
+		t.Fatal("turn 0: low-cosine memory should be suppressed at the 0.6 prior")
+	}
+
+	// Drive distinct queries so recall fires each time and calibration accrues.
+	for i := 0; i < 18; i++ {
+		send("distinct question " + string(rune('a'+i)))
+	}
+
+	// After calibration, the relevant memory clears the lowered gate and reaches upstream.
+	last := send("final distinct question zeta")
+	if !strings.Contains(last, "special answer token") {
+		t.Errorf("after auto-calibration the relevant memory should reach upstream; upstream body did not contain it")
+	}
+	if !strings.Contains(last, "retrieved-context") {
+		t.Error("enriched upstream request should carry a retrieved-context block")
+	}
+	if stats0.Suppressed.Load() == 0 {
+		t.Error("expected some early turns to be suppressed before calibration")
+	}
+	if stats0.Injections.Load() == 0 {
+		t.Error("expected injections after calibration")
+	}
+	t.Logf("e2e auto-calibration: suppressed=%d injected=%d recalls=%d", stats0.Suppressed.Load(), stats0.Injections.Load(), stats0.Recalls.Load())
+}
+
+func TestWriteJSONError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSONError(rec, http.StatusBadGateway, "upstream request failed")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type %q", ct)
+	}
+	var out struct {
+		Error struct{ Message, Type string } `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if out.Error.Message != "upstream request failed" || out.Error.Type != "proxy_error" {
+		t.Errorf("unexpected body: %+v", out.Error)
+	}
+}
+
+func TestErrorHandler(t *testing.T) {
+	p := &Proxy{agentName: "claude"}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	p.errorHandler(rec, req, errorsNew("boom"))
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("expected 502, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "upstream request failed") {
+		t.Errorf("body: %s", rec.Body.String())
+	}
+}
+
+func TestListenAddrAndShutdown(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	defer up.Close()
+	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: up.URL, AgentName: "claude", Store: store.New(up.URL, "", "v", nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ListenAddr() != addr || addr == "" {
+		t.Errorf("ListenAddr mismatch: %q vs %q", p.ListenAddr(), addr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Errorf("shutdown: %v", err)
+	}
+}
+
+func errorsNew(s string) error { return &strErr{s} }
+
+type strErr struct{ s string }
+
+func (e *strErr) Error() string { return e.s }

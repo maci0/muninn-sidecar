@@ -1,60 +1,80 @@
-// Package inject provides automatic memory retrieval and injection into
-// LLM API requests. It recalls relevant memories from MuninnDB and injects
-// them as system-level context before forwarding requests upstream.
+// This file contains format-specific injection logic: how to insert a context
+// block into each supported API format (Anthropic, OpenAI, Gemini, etc.) and
+// how to format the context block itself within a token budget.
 package inject
 
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
 )
 
-// contextPrefix is the marker used to identify injected context blocks.
-// proxy/filter.go's hasInjectedMarker must match this prefix for
-// stripInjectedContextDoc to remove injected content before capturing
-// exchanges, preventing recursive reinforcement.
-const contextPrefix = "<retrieved-context source=\"muninn\">"
-const contextSuffix = "</retrieved-context>"
+// entryChars estimates the character length a memory contributes to a context
+// block without allocating an intermediate string. Format is
+// "[" + concept + "] (relevance: X.XX)\n" + content + "\n\n"; the fixed overhead
+// is 23 chars since the "%.2f" score is always 4 chars for values in [0,1].
+func entryChars(m memory) int {
+	return len(m.Concept) + len(m.Content) + 23
+}
 
-// memory represents a recalled memory from MuninnDB.
-type memory struct {
-	ID      string
-	Concept string
-	Content string
-	Score   float64
+// withinBudget returns the longest score-ordered prefix of memories whose
+// combined context-block size fits the token budget. The first memory is always
+// included even if it alone exceeds the budget, matching formatContextBlock's
+// guarantee that something relevant is injected when anything qualifies.
+// Memories are expected to be pre-sorted by score (descending).
+func withinBudget(memories []memory, budget int) []memory {
+	if len(memories) == 0 {
+		return memories
+	}
+
+	budgetChars := budget * charPerToken
+	totalChars := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
+
+	kept := make([]memory, 0, len(memories))
+	for _, m := range memories {
+		entryLen := entryChars(m)
+		if totalChars+entryLen > budgetChars && len(kept) > 0 {
+			break
+		}
+		kept = append(kept, m)
+		totalChars += entryLen
+	}
+	return kept
 }
 
 // formatContextBlock formats memories into a retrieved-context XML block,
-// greedily including memories by score within the token budget. Returns the
-// formatted block and estimated token count (4 chars ≈ 1 token).
+// greedily including memories within the token budget (memories are expected
+// to be pre-sorted by score). The first memory is always included even if it
+// alone exceeds the budget. Returns the formatted block and estimated token
+// count (4 chars ≈ 1 token).
 func formatContextBlock(memories []memory, budget int) (string, int) {
-	if len(memories) == 0 {
+	kept := withinBudget(memories, budget)
+	if len(kept) == 0 {
 		return "", 0
 	}
 
 	var sb strings.Builder
-	sb.WriteString(contextPrefix)
+	sb.WriteString(apiformat.ContextPrefix)
 	sb.WriteString("\n")
 
-	totalChars := len(contextPrefix) + len(contextSuffix) + 2 // newlines
-	budgetChars := budget * 4                                  // 4 chars per token
-
-	included := 0
-	for _, m := range memories {
-		entry := fmt.Sprintf("[%s] (relevance: %.2f)\n%s\n\n", m.Concept, m.Score, m.Content)
-		if totalChars+len(entry) > budgetChars && included > 0 {
-			break
-		}
-		sb.WriteString(entry)
-		totalChars += len(entry)
-		included++
+	totalChars := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
+	for _, m := range kept {
+		sb.WriteByte('[')
+		sb.WriteString(m.Concept)
+		sb.WriteString("] (relevance: ")
+		sb.WriteString(strconv.FormatFloat(m.Score, 'f', 2, 64))
+		sb.WriteString(")\n")
+		sb.WriteString(m.Content)
+		sb.WriteString("\n\n")
+		totalChars += entryChars(m)
 	}
 
-	sb.WriteString(contextSuffix)
+	sb.WriteString(apiformat.ContextSuffix)
 
-	tokens := totalChars / 4
+	tokens := totalChars / charPerToken
 	if tokens == 0 && totalChars > 0 {
 		tokens = 1
 	}
@@ -77,6 +97,8 @@ func InjectContext(doc map[string]any, format, block string) ([]byte, error) {
 			return nil, fmt.Errorf("gemini-cloudcode missing request field")
 		}
 		injectGeminiContext(req, block)
+	case apiformat.OpenAIResponses:
+		injectOpenAIResponsesContext(doc, block)
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", format)
 	}
@@ -99,7 +121,6 @@ func injectAnthropicContext(doc map[string]any, block string) {
 
 	switch v := sys.(type) {
 	case string:
-		// Convert string system to array format.
 		doc["system"] = []any{
 			map[string]any{"type": "text", "text": v},
 			contextBlock,
@@ -112,7 +133,8 @@ func injectAnthropicContext(doc map[string]any, block string) {
 	}
 }
 
-// injectOpenAIContext inserts a system message after existing system messages.
+// injectOpenAIContext inserts a system message after existing system messages,
+// or at position 0 if none exist. Creates the messages array if absent.
 func injectOpenAIContext(doc map[string]any, block string) {
 	messages, ok := doc["messages"].([]any)
 	if !ok {
@@ -122,7 +144,6 @@ func injectOpenAIContext(doc map[string]any, block string) {
 		return
 	}
 
-	// Find the last system message index.
 	insertAt := 0
 	for i, msg := range messages {
 		m, ok := msg.(map[string]any)
@@ -136,7 +157,6 @@ func injectOpenAIContext(doc map[string]any, block string) {
 
 	sysMsg := map[string]any{"role": "system", "content": block}
 
-	// Insert after last system message.
 	result := make([]any, 0, len(messages)+1)
 	result = append(result, messages[:insertAt]...)
 	result = append(result, sysMsg)
@@ -172,4 +192,14 @@ func injectGeminiContext(doc map[string]any, block string) {
 	}
 
 	siMap["parts"] = append(parts, part)
+}
+
+// injectOpenAIResponsesContext appends a context block to the instructions
+// field used by the OpenAI Responses API as the system prompt.
+func injectOpenAIResponsesContext(doc map[string]any, block string) {
+	if instructions, ok := doc["instructions"].(string); ok {
+		doc["instructions"] = instructions + "\n\n" + block
+	} else {
+		doc["instructions"] = block
+	}
 }

@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,40 +23,11 @@ import (
 
 // Build-time variables, set via -ldflags:
 //
-//	go build -ldflags "-X main.version=1.0.0 -X main.commit=abc1234 -X main.date=2026-03-10"
+//	go build -ldflags "-X main.version=1.0.0 -X main.commit=abc1234 -X main.date=2026-03-10T12:34:56Z"
 var (
 	version = "0.1.0"
 	commit  = "dev"
 	date    = "unknown"
-)
-
-// opts holds the parsed command-line options. Flags are parsed before the
-// first positional argument (the agent name); everything after the agent
-// name is passed through to the child process unmodified.
-type opts struct {
-	vault        string
-	mcpURL       string
-	token        string
-	debug        bool
-	quiet        bool
-	dryRun       bool
-	asJSON       bool
-	force        bool
-	noInject     bool
-	injectBudget int // max tokens to inject per request (0 = default)
-}
-
-// parseAction signals a special action from parseFlags instead of os.Exit.
-type parseAction int
-
-const (
-	actionNone parseAction = iota
-	actionHelp
-	actionVersion
-)
-
-const (
-	exitUsage = 2 // usage/config errors
 )
 
 func main() {
@@ -80,6 +48,7 @@ func run() int {
 	remaining, action, err := parseFlags(os.Args[1:], o)
 	if err != nil {
 		logerr("%v", err)
+		logf("Run 'msc --help' for usage.")
 		return exitUsage
 	}
 
@@ -88,8 +57,7 @@ func run() int {
 		usage(os.Stdout)
 		return 0
 	case actionVersion:
-		printVersion(o)
-		return 0
+		return printVersion(o)
 	}
 
 	if len(remaining) == 0 {
@@ -104,7 +72,14 @@ func run() int {
 	if o.debug {
 		level = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	handlerOpts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	if o.logJSON {
+		handler = slog.NewJSONHandler(os.Stderr, handlerOpts)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, handlerOpts)
+	}
+	slog.SetDefault(slog.New(handler))
 
 	cmd := remaining[0]
 	agentArgs := remaining[1:]
@@ -114,40 +89,87 @@ func run() int {
 		usage(os.Stdout)
 		return 0
 	case "version":
-		printVersion(o)
-		return 0
+		if len(agentArgs) > 0 {
+			logerr("version does not accept arguments")
+			return exitUsage
+		}
+		return printVersion(o)
 	case "list":
+		if len(agentArgs) > 0 {
+			logerr("list does not accept arguments")
+			return exitUsage
+		}
 		return cmdList(o)
 	case "status":
+		if len(agentArgs) > 0 {
+			logerr("status does not accept arguments")
+			return exitUsage
+		}
 		return cmdStatus(o)
 	case "completion":
 		if len(agentArgs) == 0 {
 			logerr("missing shell argument: msc completion <bash|zsh|fish>")
-			logf("e.g. source <(msc completion zsh)")
+			shell := "zsh"
+			if s := os.Getenv("SHELL"); s != "" {
+				switch {
+				case strings.HasSuffix(s, "bash"):
+					shell = "bash"
+				case strings.HasSuffix(s, "fish"):
+					shell = "fish"
+				}
+			}
+			logf("example: source <(msc completion %s)", shell)
+			return exitUsage
+		}
+		if len(agentArgs) > 1 {
+			logerr("completion takes exactly one argument: msc completion <bash|zsh|fish>")
 			return exitUsage
 		}
 		return cmdCompletion(agentArgs[0])
 	}
 
-	// Look up agent.
 	agent, ok := agents.Registry[cmd]
 	if !ok {
 		names := agents.ListSorted()
-		allNames := append(names, "list", "status", "version", "help", "completion")
+		allNames := make([]string, 0, len(names)+5)
+		allNames = append(allNames, names...)
+		allNames = append(allNames, "list", "status", "version", "help", "completion")
 		if suggestion := closestMatch(cmd, allNames); suggestion != "" {
 			logerr("unknown command: %s. Did you mean %q?", cmd, suggestion)
 		} else {
 			logerr("unknown command: %s", cmd)
 		}
-		logf("known agents: %s", strings.Join(names, ", "))
+		logf("agents: %s", strings.Join(names, ", "))
+		logf("commands: list, status, version, completion, help")
 		return exitUsage
+	}
+
+	if o.asJSON && !o.quiet {
+		logf("-j/--json has no effect when running an agent (use with list, status, version, or --dry-run)")
 	}
 
 	// Resolve MuninnDB connection (flags > env > defaults).
 	mcpURL, token, vault := resolveConfig(o)
 
+	// Warn when a bearer token would be transmitted in plaintext over a
+	// non-loopback HTTP connection. Localhost is exempt because the traffic
+	// never leaves the machine.
+	if token != "" {
+		if u, err := url.Parse(mcpURL); err == nil && u.Scheme == "http" {
+			h := u.Hostname()
+			if h != "127.0.0.1" && h != "localhost" && h != "::1" {
+				slog.Warn("bearer token will be sent over unencrypted HTTP; use HTTPS for remote MuninnDB endpoints",
+					"mcp_url", mcpURL)
+			}
+		}
+	}
+
 	sessionStats := &stats.Stats{}
 	muninn := store.New(mcpURL, token, vault, sessionStats)
+	// Ensure the background worker is always stopped on exit, even for
+	// early returns (dry-run, health check failure). The store's drainOnce
+	// makes the second call from the normal shutdown path a no-op.
+	defer muninn.Drain()
 
 	// Health check: verify MuninnDB is reachable before launching the agent.
 	// The whole point of msc is to capture traffic — silently dropping captures
@@ -158,58 +180,31 @@ func run() int {
 		healthErr = muninn.HealthCheck()
 		if healthErr != nil && !o.dryRun {
 			logerr("MuninnDB at %s is unreachable: %v", mcpURL, healthErr)
-			logf("captures will be lost. Use --force to launch anyway.")
+			logf("Captures will be lost. Use --force to launch anyway.")
 			return 1
 		}
 	}
 
-	// Resolve upstream.
 	upstream := agent.Resolve()
 	slog.Debug("resolved upstream", "agent", cmd, "upstream", upstream)
 
 	// --dry-run: show what would happen without launching anything.
 	if o.dryRun {
-		binary, _ := exec.LookPath(agent.Command)
-		if binary == "" {
-			binary = "(not found in PATH)"
-		}
-		fmt.Fprintf(os.Stdout, "Agent:    %s\n", cmd)
-		fmt.Fprintf(os.Stdout, "Binary:   %s\n", binary)
-		fmt.Fprintf(os.Stdout, "Upstream: %s\n", upstream)
-		fmt.Fprintf(os.Stdout, "Env:      %s=http://127.0.0.1:<port>\n", agent.EnvKey)
-		for _, k := range agent.ExtraEnvKeys {
-			fmt.Fprintf(os.Stdout, "          %s=http://127.0.0.1:<port>\n", k)
-		}
-		fmt.Fprintf(os.Stdout, "Vault:    %s\n", vault)
-		fmt.Fprintf(os.Stdout, "MuninnDB: %s", mcpURL)
-		if o.force {
-			fmt.Fprintln(os.Stdout, " (not checked)")
-		} else if healthErr == nil {
-			fmt.Fprintln(os.Stdout, " (reachable)")
-		} else {
-			fmt.Fprintln(os.Stdout, " (unreachable)")
-		}
-		if !o.noInject {
-			budget := o.injectBudget
-			if budget <= 0 {
-				budget = 2048
-			}
-			fmt.Fprintf(os.Stdout, "Inject:   enabled (vault=%s, budget=%d tokens)\n", vault, budget)
-		} else {
-			fmt.Fprintln(os.Stdout, "Inject:   disabled")
-		}
-		return 0
+		return printDryRun(o, cmd, agent, upstream, mcpURL, vault, healthErr)
 	}
 
 	// Create injector unless --no-inject is set.
 	var injector *inject.Injector
 	if !o.noInject {
 		injector = inject.New(inject.Config{
-			MCPURL: mcpURL,
-			Token:  token,
-			Vault:  vault,
-			Budget: o.injectBudget,
-			Stats:  sessionStats,
+			MCPURL:        mcpURL,
+			Token:         token,
+			Vault:         vault,
+			Budget:        o.injectBudget,
+			MinScore:      o.minScore,
+			RecallMode:    o.recallMode,
+			AutoCalibrate: !o.noAutoCalibrate, // self-tune the gate by default
+			Stats:         sessionStats,
 		})
 	}
 
@@ -237,7 +232,10 @@ func run() int {
 	proxyURL := fmt.Sprintf("http://%s", addr)
 	if !o.quiet {
 		logf("proxying %s traffic via %s -> %s", cmd, proxyURL, upstream)
-		logf("dumping to muninn vault=%q", vault)
+		logf("storing in vault %q", vault)
+		if o.force {
+			logf("warning: MuninnDB check skipped (--force); captures may be lost if unreachable")
+		}
 	}
 
 	// Trap signals for graceful shutdown: stop the proxy, drain pending
@@ -270,7 +268,7 @@ func run() int {
 	case result = <-doneCh:
 		// Agent exited on its own.
 	case sig := <-sigCh:
-		slog.Debug("received signal", "signal", sig)
+		slog.Warn("received signal, shutting down", "signal", sig)
 		// Wait briefly for the agent to also receive the signal and exit.
 		select {
 		case result = <-doneCh:
@@ -299,469 +297,107 @@ func run() int {
 		if errors.As(result.err, &pathErr) {
 			logerr("%s not found in PATH", cmd)
 		} else {
-			slog.Debug("agent exited with error", "err", result.err)
+			slog.Error("agent exited with error", "err", result.err)
 		}
 	}
 	return result.code
 }
 
-// parseFlags extracts msc's global flags from args and returns the remaining
-// positional arguments. Parsing stops at the first non-flag argument (unless
-// it is an internal command like 'list' or 'status', in which case flag parsing
-// continues). This mimics the behavior of env(1) and similar wrapper tools.
-//
-// Returns a parseAction if a special flag (--help, --version) was encountered,
-// or an error for invalid input. This avoids os.Exit inside the parser,
-// keeping run() as the single exit point.
-func parseFlags(args []string, o *opts) (remaining []string, action parseAction, err error) {
-	i := 0
-	isInternalCmd := false
-
-	for i < len(args) {
-		arg := args[i]
-
-		if !strings.HasPrefix(arg, "-") {
-			// If it's an internal command, record it and continue parsing flags.
-			if len(remaining) == 0 && agents.ReservedCommands[arg] {
-				isInternalCmd = true
-				remaining = append(remaining, arg)
-				i++
-				continue
-			}
-
-			// If it's not an internal command, OR we already saw a non-flag,
-			// we stop parsing flags ONLY IF we aren't currently processing flags for an internal command.
-			if !isInternalCmd {
-				break
-			} else {
-				remaining = append(remaining, arg)
-				i++
-				continue
-			}
-		}
-
-		if arg == "--" {
-			i++
-			break
-		}
-
-		// Handle --flag=value syntax.
-		key := arg
-		var val string
-		hasVal := false
-		if k, v, ok := strings.Cut(arg, "="); ok {
-			key = k
-			val = v
-			hasVal = true
-		}
-
-		switch key {
-		case "-h", "--help":
-			action = actionHelp
-			i++
-			continue
-		case "-v", "--version":
-			action = actionVersion
-			i++
-			continue
-		case "-d", "--debug":
-			o.debug = true
-			i++
-			continue
-		case "-q", "--quiet":
-			o.quiet = true
-			i++
-			continue
-		case "-n", "--dry-run":
-			o.dryRun = true
-			i++
-			continue
-		case "-j", "--json":
-			o.asJSON = true
-			i++
-			continue
-		case "-f", "--force":
-			o.force = true
-			i++
-			continue
-		case "--no-inject":
-			o.noInject = true
-			i++
-			continue
-		case "--inject-budget":
-			v := val
-			if !hasVal {
-				i++
-				if i >= len(args) {
-					return nil, actionNone, fmt.Errorf("%s requires a value", key)
-				}
-				v = args[i]
-			}
-			n, err := strconv.Atoi(v)
-			if err != nil || n <= 0 {
-				return nil, actionNone, fmt.Errorf("--inject-budget must be a positive integer")
-			}
-			o.injectBudget = n
-			i++
-			continue
-		case "--vault", "--mcp-url", "--token":
-			v := val
-			if !hasVal {
-				i++
-				if i >= len(args) {
-					return nil, actionNone, fmt.Errorf("%s requires a value", key)
-				}
-				v = args[i]
-			}
-			if v == "" {
-				return nil, actionNone, fmt.Errorf("%s requires a non-empty value", key)
-			}
-			switch key {
-			case "--vault":
-				o.vault = v
-			case "--mcp-url":
-				o.mcpURL = v
-			case "--token":
-				o.token = v
-			}
-			i++
-			continue
-		default:
-			return nil, actionNone, fmt.Errorf("unknown flag: %s\nrun 'msc --help' for usage", arg)
-		}
+// printDryRun outputs a preview of what msc would do without launching anything.
+// Called when --dry-run is set, before any proxy or agent is started.
+func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vault string, healthErr error) int {
+	binary, _ := exec.LookPath(agent.Command)
+	if binary == "" {
+		binary = "(not found in PATH)"
 	}
-
-	if i < len(args) {
-		remaining = append(remaining, args[i:]...)
-	}
-
-	return remaining, action, nil
-}
-
-// resolveConfig resolves MuninnDB connection parameters from flags, env, and defaults.
-func resolveConfig(o *opts) (mcpURL, token, vault string) {
-	mcpURL = o.mcpURL
-	if mcpURL == "" {
-		mcpURL = store.DefaultMCPURL()
-	}
-	token = o.token
-	if token == "" {
-		token = store.DefaultToken()
-	}
-	vault = o.vault
-	if vault == "" {
-		if v := os.Getenv("MSC_VAULT"); v != "" {
-			vault = v
-		} else {
-			// Default to the name of the current working directory.
-			cwd, err := os.Getwd()
-			if err == nil {
-				if base := filepath.Base(cwd); base != "." && base != "/" {
-					vault = base
-				}
-			}
-			if vault == "" {
-				vault = "sidecar"
-			}
-		}
-	}
-	return
-}
-
-func cmdList(o *opts) int {
-	names := agents.ListSorted()
 
 	if o.asJSON {
-		type agentInfo struct {
-			Name         string   `json:"name"`
-			EnvKey       string   `json:"env_key"`
-			ExtraEnvKeys []string `json:"extra_env_keys,omitempty"`
-			DefaultURL   string   `json:"default_url"`
+		type dryRunInfo struct {
+			Agent        string            `json:"agent"`
+			Binary       string            `json:"binary"`
+			Upstream     string            `json:"upstream"`
+			Env          map[string]string `json:"env"`
+			Vault        string            `json:"vault"`
+			MuninnURL    string            `json:"muninn_url"`
+			MuninnStatus string            `json:"muninn_status"`
+			MuninnError  string            `json:"muninn_error,omitempty"`
+			Inject       bool              `json:"inject"`
+			InjectBudget int               `json:"inject_budget,omitempty"`
 		}
-		list := make([]agentInfo, 0, len(names))
-		for _, n := range names {
-			a := agents.Registry[n]
-			list = append(list, agentInfo{
-				Name:         n,
-				EnvKey:       a.EnvKey,
-				ExtraEnvKeys: a.ExtraEnvKeys,
-				DefaultURL:   a.DefaultURL,
-			})
+		envMap := map[string]string{agent.EnvKey: "http://127.0.0.1:<port>"}
+		for _, k := range agent.ExtraEnvKeys {
+			envMap[k] = "http://127.0.0.1:<port>"
+		}
+		info := dryRunInfo{
+			Agent:     cmd,
+			Binary:    binary,
+			Upstream:  upstream,
+			Env:       envMap,
+			Vault:     vault,
+			MuninnURL: mcpURL,
+			Inject:    !o.noInject,
+		}
+		if o.force {
+			info.MuninnStatus = "unchecked"
+		} else if healthErr == nil {
+			info.MuninnStatus = "reachable"
+		} else {
+			info.MuninnStatus = "unreachable"
+			info.MuninnError = healthErr.Error()
+		}
+		if !o.noInject {
+			budget := o.injectBudget
+			if budget <= 0 {
+				budget = 2048
+			}
+			info.InjectBudget = budget
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		if err := enc.Encode(list); err != nil {
+		if err := enc.Encode(info); err != nil {
 			logerr("failed to encode JSON: %v", err)
 			return 1
 		}
 		return 0
 	}
 
-	fmt.Println("Supported agents:")
-	for _, n := range names {
-		a := agents.Registry[n]
-		fmt.Printf("  %-12s  %s -> %s\n", n, a.EnvKey, a.DefaultURL)
+	fmt.Fprintf(os.Stdout, "Agent:    %s\n", cmd)
+	fmt.Fprintf(os.Stdout, "Binary:   %s\n", binary)
+	fmt.Fprintf(os.Stdout, "Upstream: %s\n", upstream)
+	fmt.Fprintf(os.Stdout, "Env:      %s=http://127.0.0.1:<port>\n", agent.EnvKey)
+	for _, k := range agent.ExtraEnvKeys {
+		fmt.Fprintf(os.Stdout, "          %s=http://127.0.0.1:<port>\n", k)
 	}
-	return 0
-}
-
-// cmdStatus checks MuninnDB connectivity without launching an agent.
-func cmdStatus(o *opts) int {
-	mcpURL, token, vault := resolveConfig(o)
-
-	s := store.New(mcpURL, token, vault, nil)
-	err := s.HealthCheck()
-	s.Drain()
-
-	if o.asJSON {
-		out := map[string]string{
-			"mcp_url": mcpURL,
-			"vault":   vault,
-		}
-		if err != nil {
-			out["status"] = "unreachable"
-			out["error"] = err.Error()
-		} else {
-			out["status"] = "reachable"
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if encErr := enc.Encode(out); encErr != nil {
-			logerr("failed to encode JSON: %v", encErr)
-			return 1
-		}
-		if err != nil {
-			return 1
-		}
-		return 0
-	}
-
-	fmt.Printf("MuninnDB: %s", mcpURL)
-	if err == nil {
-		fmt.Println(" (reachable)")
+	fmt.Fprintf(os.Stdout, "Vault:    %s\n", vault)
+	var muninnStatus string
+	if o.force {
+		muninnStatus = "(not checked)"
+	} else if healthErr == nil {
+		muninnStatus = "(reachable)"
 	} else {
-		fmt.Println(" (unreachable)")
+		muninnStatus = fmt.Sprintf("(unreachable: %v)", healthErr)
 	}
-	fmt.Printf("Vault:    %s\n", vault)
-
-	if err != nil {
-		return 1
+	fmt.Fprintf(os.Stdout, "MuninnDB: %s %s\n", mcpURL, muninnStatus)
+	if !o.noInject {
+		budget := o.injectBudget
+		if budget <= 0 {
+			budget = 2048
+		}
+		minScore := o.minScore
+		if minScore <= 0 {
+			minScore = 0.6
+		}
+		mode := o.recallMode
+		if mode == "" {
+			mode = "semantic"
+		}
+		calib := "auto-calibrated"
+		if o.noAutoCalibrate {
+			calib = "fixed"
+		}
+		fmt.Fprintf(os.Stdout, "Inject:   enabled (budget=%d tokens, min-score=%.2f %s, recall-mode=%s)\n", budget, minScore, calib, mode)
+	} else {
+		fmt.Fprintln(os.Stdout, "Inject:   disabled")
 	}
 	return 0
-}
-
-func cmdCompletion(shell string) int {
-	names := agents.ListSorted()
-	agentList := strings.Join(names, " ")
-
-	switch shell {
-	case "bash":
-		fmt.Printf(`_msc() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    local prev="${COMP_WORDS[COMP_CWORD-1]}"
-
-    if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "-h --help -v --version -d --debug -q --quiet -n --dry-run -j --json -f --force --no-inject --inject-budget --vault --mcp-url --token" -- "$cur"))
-        return
-    fi
-
-    # Complete agent names and subcommands for the first positional arg.
-    local commands="%s list status version help completion"
-    COMPREPLY=($(compgen -W "$commands" -- "$cur"))
-}
-complete -F _msc msc
-`, agentList)
-
-	case "zsh":
-		fmt.Printf(`#compdef msc
-
-_msc() {
-    local -a agents=(%s)
-    local -a commands=(list status version help completion)
-    local -a flags=(
-        {-h,--help}'[Show help]'
-        {-v,--version}'[Show version]'
-        {-d,--debug}'[Enable debug logging]'
-        {-q,--quiet}'[Suppress msc output]'
-        {-n,--dry-run}'[Show what would happen]'
-        {-j,--json}'[Output as JSON]'
-        {-f,--force}'[Skip health check]'
-        '--no-inject[Disable memory injection]'
-        '--inject-budget[Max tokens to inject per request]:budget:'
-        '--vault[MuninnDB vault name]:vault:'
-        '--mcp-url[MuninnDB MCP endpoint]:url:'
-        '--token[MuninnDB bearer token]:token:'
-    )
-
-    _arguments -s \
-        $flags \
-        '1:command:(${agents} ${commands})' \
-        '*::arg:->args'
-}
-
-_msc "$@"
-`, agentList)
-
-	case "fish":
-		fmt.Printf(`complete -c msc -f
-complete -c msc -l help -s h -d "Show help"
-complete -c msc -l version -s v -d "Show version"
-complete -c msc -l debug -s d -d "Enable debug logging (structured slog output)"
-complete -c msc -l quiet -s q -d "Suppress msc output"
-complete -c msc -l dry-run -s n -d "Show what would happen"
-complete -c msc -l json -s j -d "Output as JSON"
-complete -c msc -l force -s f -d "Skip health check"
-complete -c msc -l no-inject -d "Disable memory injection"
-complete -c msc -l inject-budget -r -d "Max tokens to inject per request"
-complete -c msc -l vault -r -d "MuninnDB vault name"
-complete -c msc -l mcp-url -r -d "MuninnDB MCP endpoint"
-complete -c msc -l token -r -d "MuninnDB bearer token"
-`)
-		for _, n := range names {
-			fmt.Printf("complete -c msc -a %s -d \"Proxy %s API traffic\"\n", n, n)
-		}
-		fmt.Println(`complete -c msc -a list -d "List supported agents"`)
-		fmt.Println(`complete -c msc -a status -d "Check MuninnDB connectivity"`)
-		fmt.Println(`complete -c msc -a version -d "Show version"`)
-		fmt.Println(`complete -c msc -a help -d "Show help"`)
-		fmt.Println(`complete -c msc -a completion -d "Generate shell completions"`)
-
-	default:
-		logerr("unsupported shell: %s (use bash, zsh, or fish)", shell)
-		return exitUsage
-	}
-	return 0
-}
-
-func printVersion(o *opts) {
-	if o.asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(map[string]string{
-			"version": version,
-			"commit":  commit,
-			"date":    date,
-			"go":      runtime.Version(),
-			"os":      runtime.GOOS,
-			"arch":    runtime.GOARCH,
-		}); err != nil {
-			logerr("failed to encode JSON: %v", err)
-		}
-		return
-	}
-	fmt.Printf("msc %s (%s %s) %s %s/%s\n",
-		version, commit, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-}
-
-// closestMatch returns the best match from candidates if it's within a
-// reasonable edit distance (<=2), or "" if nothing is close enough. Used
-// for "did you mean?" suggestions on typos.
-func closestMatch(input string, candidates []string) string {
-	best := ""
-	bestDist := 3 // only suggest if distance <= 2
-	for _, c := range candidates {
-		d := levenshtein(input, c)
-		if d < bestDist {
-			bestDist = d
-			best = c
-		}
-	}
-	return best
-}
-
-func levenshtein(a, b string) int {
-	if len(a) == 0 {
-		return len(b)
-	}
-	if len(b) == 0 {
-		return len(a)
-	}
-	prev := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		curr := make([]int, len(b)+1)
-		curr[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			curr[j] = min(curr[j-1]+1, min(prev[j]+1, prev[j-1]+cost))
-		}
-		prev = curr
-	}
-	return prev[len(b)]
-}
-
-// logf prints a human-friendly message to stderr with the msc: prefix.
-func logf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "msc: "+format+"\n", args...)
-}
-
-// logerr prints a human-friendly error to stderr with the msc: error: prefix.
-func logerr(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "msc: error: "+format+"\n", args...)
-}
-
-func usage(w io.Writer) {
-	names := agents.ListSorted()
-
-	fmt.Fprintf(w, `msc - muninn sidecar %s
-
-Usage: msc [flags] <agent> [agent-args...]
-
-Transparently proxy coding agent API traffic through MuninnDB.
-LLM completion traffic is captured and stored as memories.
-
-Flags must come before the agent name. Everything after it is passed
-through to the agent unmodified. Use -- to separate if needed.
-
-Agents:
-`, version)
-
-	for _, n := range names {
-		a := agents.Registry[n]
-		fmt.Fprintf(w, "  %-12s  %s -> %s\n", n, a.EnvKey, a.DefaultURL)
-	}
-
-	fmt.Fprintf(w, `
-Commands:
-  list           List supported agents (use --json for machine output)
-  status         Check MuninnDB connectivity
-  version        Show version information (use --json for machine output)
-  completion     Generate shell completions (bash, zsh, fish)
-
-Flags:
-  -h, --help             Show this help
-  -v, --version          Show version
-  -d, --debug            Enable debug logging (structured slog output)
-  -q, --quiet            Suppress msc's own output
-  -n, --dry-run          Show resolved config without launching
-  -j, --json             Machine-readable output (for list, status, version)
-  -f, --force            Launch even if MuninnDB is unreachable (captures lost)
-      --no-inject         Disable memory injection (enabled by default)
-      --inject-budget N   Max tokens to inject per request (default: 2048)
-      --vault NAME        MuninnDB vault name (default: current directory name, fallback: sidecar)
-      --mcp-url URL       MuninnDB MCP endpoint (default: http://127.0.0.1:8750/mcp)
-      --token TOKEN       MuninnDB bearer token (default: ~/.muninn/mcp.token)
-
-Examples:
-  msc claude                    Launch Claude Code with API capture
-  msc gemini                    Launch Gemini CLI with API capture
-  msc codex                     Launch Codex with API capture
-  msc --vault myproject claude  Capture into a specific vault
-  msc --dry-run opencode        Preview config without launching
-  msc --quiet aider --model x   Suppress msc output, pass args to aider
-  msc --json list               Machine-readable agent list
-  msc status                    Check if MuninnDB is reachable
-  msc -- claude --weird-flag    Use -- to pass flags starting with -
-  msc completion zsh > ~/.zsh_functions/_msc  Save zsh completions
-
-Environment (flags take precedence):
-  MUNINN_MCP_URL   MuninnDB MCP endpoint
-  MUNINN_TOKEN     MuninnDB bearer token
-  MSC_VAULT        MuninnDB vault name
-`)
 }

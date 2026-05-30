@@ -40,7 +40,12 @@ func TestFilterAnthropicToolUse(t *testing.T) {
 		t.Fatalf("expected 4 messages after filtering, got %d", len(messages))
 	}
 
-	// Check that the assistant message lost its tool_use block.
+	// messages[0]: user("hello") — unchanged.
+	if messages[0].(map[string]any)["content"] != "hello" {
+		t.Fatal("first message should be user hello")
+	}
+
+	// messages[1]: assistant with text + tool_use → tool_use stripped, text kept.
 	assistantMsg := messages[1].(map[string]any)
 	content := assistantMsg["content"].([]any)
 	if len(content) != 1 {
@@ -49,6 +54,24 @@ func TestFilterAnthropicToolUse(t *testing.T) {
 	block := content[0].(map[string]any)
 	if block["type"] != "text" {
 		t.Fatalf("expected text block, got %v", block["type"])
+	}
+	if block["text"] != "Let me check my memory." {
+		t.Fatalf("expected original assistant text, got %v", block["text"])
+	}
+
+	// messages[2]: assistant("Based on context, here is my answer.") — unchanged.
+	assistant2 := messages[2].(map[string]any)
+	content2 := assistant2["content"].([]any)
+	if len(content2) != 1 {
+		t.Fatalf("expected 1 content block in second assistant message, got %d", len(content2))
+	}
+	if content2[0].(map[string]any)["type"] != "text" {
+		t.Fatal("second assistant message should be text")
+	}
+
+	// messages[3]: user("thanks") — unchanged.
+	if messages[3].(map[string]any)["content"] != "thanks" {
+		t.Fatal("last message should be user thanks")
 	}
 }
 
@@ -89,6 +112,9 @@ func TestFilterOpenAIToolCalls(t *testing.T) {
 	if messages[1].(map[string]any)["content"] != "Here is my answer." {
 		t.Fatal("second message should be assistant answer")
 	}
+	if messages[2].(map[string]any)["content"] != "thanks" {
+		t.Fatal("third message should be user thanks")
+	}
 }
 
 func TestFilterPreservesNonMuninnTools(t *testing.T) {
@@ -109,7 +135,9 @@ func TestFilterPreservesNonMuninnTools(t *testing.T) {
 	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
-	json.Unmarshal(result, &doc)
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
 	messages := doc["messages"].([]any)
 
 	if len(messages) != 2 {
@@ -189,7 +217,9 @@ func TestFilterToolDefinitions(t *testing.T) {
 	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
-	json.Unmarshal(result, &doc)
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
 
 	tools := doc["tools"].([]any)
 	if len(tools) != 2 {
@@ -221,7 +251,9 @@ func TestFilterAnthropicResponse(t *testing.T) {
 	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
-	json.Unmarshal(result, &doc)
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
 
 	content := doc["content"].([]any)
 	if len(content) != 1 {
@@ -252,7 +284,9 @@ func TestStripInjectedContextAnthropicArray(t *testing.T) {
 	result := cleanRequest(body, nil)
 
 	var doc map[string]any
-	json.Unmarshal(result, &doc)
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
 
 	sys := doc["system"].([]any)
 	if len(sys) != 1 {
@@ -273,7 +307,9 @@ func TestStripInjectedContextAnthropicString(t *testing.T) {
 	result := cleanRequest(body, nil)
 
 	var doc map[string]any
-	json.Unmarshal(result, &doc)
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, exists := doc["system"]; exists {
 		t.Error("system field should be removed when it's entirely injected context")
@@ -293,7 +329,9 @@ func TestStripInjectedContextOpenAI(t *testing.T) {
 	result := cleanRequest(body, nil)
 
 	var doc map[string]any
-	json.Unmarshal(result, &doc)
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
 
 	msgs := doc["messages"].([]any)
 	if len(msgs) != 2 {
@@ -321,7 +359,9 @@ func TestStripInjectedContextGemini(t *testing.T) {
 	result := cleanRequest(body, nil)
 
 	var doc map[string]any
-	json.Unmarshal(result, &doc)
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
 
 	si := doc["systemInstruction"].(map[string]any)
 	parts := si["parts"].([]any)
@@ -357,6 +397,137 @@ func TestStripInjectedContextInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestFilterOpenAIResponsesOutput(t *testing.T) {
+	body := json.RawMessage(`{
+		"output": [
+			{"type": "message", "content": [{"type": "output_text", "text": "Answer"}]},
+			{"type": "function_call", "name": "mcp__muninn__muninn_recall", "call_id": "call_1", "arguments": "{}"},
+			{"type": "function_call", "name": "read_file", "call_id": "call_2", "arguments": "{}"}
+		]
+	}`)
+
+	result := cleanResponse(body, []string{"muninn"})
+
+	var doc map[string]any
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	output := doc["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("expected 2 output items (message + read_file), got %d", len(output))
+	}
+	if output[0].(map[string]any)["type"] != "message" {
+		t.Error("first item should be message")
+	}
+	if output[1].(map[string]any)["name"] != "read_file" {
+		t.Error("second item should be read_file")
+	}
+}
+
+func TestFilterOpenAIResponsesInput(t *testing.T) {
+	body := json.RawMessage(`{
+		"input": [
+			{"type": "message", "role": "user", "content": "hello"},
+			{"type": "function_call", "name": "mcp__muninn__muninn_recall", "call_id": "call_1", "arguments": "{}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": "memories"},
+			{"type": "function_call", "name": "read_file", "call_id": "call_2", "arguments": "{}"},
+			{"type": "function_call_output", "call_id": "call_2", "output": "file contents"},
+			{"type": "message", "role": "user", "content": "thanks"}
+		]
+	}`)
+
+	result := cleanRequest(body, []string{"muninn"})
+
+	var doc map[string]any
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	input := doc["input"].([]any)
+	// Should keep: user "hello", read_file call, read_file output, user "thanks"
+	if len(input) != 4 {
+		t.Fatalf("expected 4 input items, got %d", len(input))
+	}
+	if input[0].(map[string]any)["content"] != "hello" {
+		t.Error("first should be user hello")
+	}
+	if input[1].(map[string]any)["name"] != "read_file" {
+		t.Error("second should be read_file")
+	}
+}
+
+func TestStripInjectedContextOpenAIResponses(t *testing.T) {
+	body := json.RawMessage(`{
+		"model":"gpt-4o",
+		"input":"hello",
+		"instructions":"Be helpful\n\n<retrieved-context source=\"muninn\">\nsome memory\n</retrieved-context>"
+	}`)
+
+	result := cleanRequest(body, nil)
+
+	var doc map[string]any
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	if doc["instructions"] != "Be helpful" {
+		t.Errorf("original instructions should be preserved, got %q", doc["instructions"])
+	}
+	if doc["input"] != "hello" {
+		t.Error("input should be preserved")
+	}
+}
+
+func TestStripInjectedContextOpenAIResponsesOnlyBlock(t *testing.T) {
+	// When there were no original instructions, the whole field should be removed.
+	body := json.RawMessage(`{
+		"model":"gpt-4o",
+		"instructions":"<retrieved-context source=\"muninn\">\nsome memory\n</retrieved-context>"
+	}`)
+
+	result := cleanRequest(body, nil)
+
+	var doc map[string]any
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, exists := doc["instructions"]; exists {
+		t.Error("instructions should be removed when it contains only injected context")
+	}
+}
+
+func TestFilterSyntheticToolUseWithoutID(t *testing.T) {
+	// Synthetic tool_use blocks from streaming captures lack an "id" field.
+	// filterContentBlocks must still remove them by name pattern match.
+	body := json.RawMessage(`{
+		"content": [
+			{"type": "text", "text": "Checking memory..."},
+			{"type": "tool_use", "name": "mcp__muninn__muninn_recall", "input": {}},
+			{"type": "tool_use", "name": "Read", "input": {}}
+		]
+	}`)
+
+	result := cleanResponse(body, []string{"muninn"})
+
+	var doc map[string]any
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	content := doc["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content blocks after filtering (text + Read), got %d", len(content))
+	}
+	if content[0].(map[string]any)["type"] != "text" {
+		t.Fatal("expected first block to be text")
+	}
+	if content[1].(map[string]any)["name"] != "Read" {
+		t.Fatal("expected second block to be Read tool_use")
+	}
+}
+
 func TestFilterCaseInsensitive(t *testing.T) {
 	body := json.RawMessage(`{
 		"messages": [
@@ -372,7 +543,9 @@ func TestFilterCaseInsensitive(t *testing.T) {
 	result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
-	json.Unmarshal(result, &doc)
+	if err := json.Unmarshal(result, &doc); err != nil {
+		t.Fatal(err)
+	}
 
 	messages := doc["messages"].([]any)
 	if len(messages) != 0 {
