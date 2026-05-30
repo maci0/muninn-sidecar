@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,6 +92,7 @@ func run() error {
 		groundMod   = flag.String("ground-model", "qwen2.5:7b-instruct", "grounding model name (for -ground-url)")
 		groundKey   = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
 		groundTopK  = flag.Int("ground-topk", 5, "ground only the top-K recalled passages per question")
+		injectFmt   = flag.String("inject-format", "bare", "injected context presentation: bare | labeled | scored (scored = live proxy format)")
 	)
 	flag.Parse()
 
@@ -119,14 +121,18 @@ func run() error {
 	prep := make([]prepared, len(questions))
 	var coverage, groundCalls, groundPassages int
 	for i, q := range questions {
-		cands := recallCandidates(ctx, mcp, *vault, q.Question, *minScore, *multiRecall)
-		inj := strings.Join(cands, "\n")
+		scands := recallStructured(ctx, mcp, *vault, q.Question, *minScore, *multiRecall)
+		inj := formatInjected(scands, *injectFmt)
+		contents := make([]string, len(scands))
+		for j, c := range scands {
+			contents[j] = c.Content
+		}
 		dis := recallContext(ctx, mcp, *vault, "unrelated trivia about cooking and weather", *minScore, false)
 		grounded := ""
-		if grd != nil && len(cands) > 0 {
+		if grd != nil && len(scands) > 0 {
 			groundCalls++ // one listwise judge call per question
-			groundPassages += min(*groundTopK, len(cands))
-			grounded = strings.Join(grounding.Filter(ctx, grd, q.Question, cands, *groundTopK), "\n")
+			groundPassages += min(*groundTopK, len(scands))
+			grounded = strings.Join(grounding.Filter(ctx, grd, q.Question, contents, *groundTopK), "\n")
 		}
 		prep[i] = prepared{q: q, injected: inj, distract: dis, grounded: grounded}
 		if containsAnswer(inj, q.Answers) {
@@ -284,20 +290,40 @@ func splitQueryQA(q string) []string {
 	return subs
 }
 
+// cand is a gated recall candidate with the metadata the production injection
+// format carries (concept + effective cosine), so the harness can reproduce the
+// real `[concept] (relevance: X.XX)\ncontent` block, not just bare content.
+type cand struct {
+	Concept string
+	Content string
+	Score   float64 // effective cosine used as the relevance shown to the reader
+}
+
 func recallContext(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) string {
 	return strings.Join(recallCandidates(ctx, mcp, vault, query, minScore, multi), "\n")
 }
 
-// recallCandidates returns the gated recall passages (cosine >= minScore),
-// highest-scored first, as a slice — so callers can ground-filter before joining.
+// recallCandidates returns the gated recall passages' content, highest-scored
+// first (bare content — used for grounding and the distractor arm).
 func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) []string {
+	cands := recallStructured(ctx, mcp, vault, query, minScore, multi)
+	out := make([]string, len(cands))
+	for i, c := range cands {
+		out[i] = c.Content
+	}
+	return out
+}
+
+// recallStructured returns the gated recall candidates (cosine >= minScore) with
+// concept and relevance, highest-scored first.
+func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) []cand {
 	if multi {
 		seen := map[string]bool{}
-		var parts []string
+		var parts []cand
 		for _, sub := range splitQueryQA(query) {
-			for _, c := range recallCandidates(ctx, mcp, vault, sub, minScore, false) {
-				if c != "" && !seen[c] {
-					seen[c] = true
+			for _, c := range recallStructured(ctx, mcp, vault, sub, minScore, false) {
+				if c.Content != "" && !seen[c.Content] {
+					seen[c.Content] = true
 					parts = append(parts, c)
 				}
 			}
@@ -326,6 +352,7 @@ func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query s
 		}
 		var inner struct {
 			Memories []struct {
+				Concept     string  `json:"concept"`
 				Content     string  `json:"content"`
 				VectorScore float64 `json:"vector_score"`
 				Score       float64 `json:"score"`
@@ -334,19 +361,50 @@ func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query s
 		if json.Unmarshal([]byte(c.Text), &inner) != nil {
 			return nil
 		}
-		var parts []string
+		var parts []cand
 		for _, m := range inner.Memories {
 			rel := m.VectorScore
 			if rel == 0 {
 				rel = m.Score
 			}
 			if rel >= minScore { // the gate
-				parts = append(parts, m.Content)
+				parts = append(parts, cand{Concept: m.Concept, Content: m.Content, Score: rel})
 			}
 		}
 		return parts
 	}
 	return nil
+}
+
+// formatInjected renders gated candidates into the context body for a given
+// presentation mode: "bare" joins raw content; "scored" reproduces the live
+// proxy's per-entry format ("[concept] (relevance: X.XX)\ncontent"); "labeled"
+// keeps the concept header but drops the relevance number.
+func formatInjected(cands []cand, mode string) string {
+	if len(cands) == 0 {
+		return ""
+	}
+	switch mode {
+	case "scored", "labeled":
+		var sb strings.Builder
+		for i, c := range cands {
+			if i > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString("[" + c.Concept + "]")
+			if mode == "scored" {
+				sb.WriteString(" (relevance: " + strconv.FormatFloat(c.Score, 'f', 2, 64) + ")")
+			}
+			sb.WriteString("\n" + c.Content)
+		}
+		return sb.String()
+	default: // "bare"
+		parts := make([]string, len(cands))
+		for i, c := range cands {
+			parts[i] = c.Content
+		}
+		return strings.Join(parts, "\n")
+	}
 }
 
 // answerer is a reader backend: given a question and an optional injected

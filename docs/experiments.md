@@ -397,6 +397,34 @@ sidecar (`--no-auto-calibrate` to disable); off for direct `New()` callers so
 tests stay deterministic. Tested: `TestCalibrateThreshold` (bimodal high/low +
 unimodal fallback), `TestAutoCalibrateLowersGate` (end-to-end gate drop).
 
+## G — Injection format/presentation (the shipped format, validated downstream)
+
+Every prior downstream eval (§E, §B4) injected **bare content**, but the live
+proxy wraps each memory as `[concept] (relevance: 0.XX)\ncontent`
+(`formatContextBlock`). So the shipped presentation was never actually tested —
+the concept label and relevance number could help the reader weight memories or
+distract it. Added `msc-qa -inject-format {bare|labeled|scored}` (scored = live
+format) and compared on advqa (N=40, concepts are arbitrary `adv-N`, the
+worst case for labels), inj F1:
+
+| reader | bare | labeled | scored |
+|---|---|---|---|
+| gemma2:2b (small) | **0.39** | 0.38 | 0.33 |
+| qwen2.5:7b (capable) | 0.34 | 0.36 | **0.40** |
+
+Two clean effects: (1) the **concept label is neutral** — bare ≈ labeled for both
+models, so naming a memory in-context neither helps nor hurts (even when the
+concept is meaningless). (2) the **relevance number is model-dependent** — it
+*distracts* the small model (gemma2 0.39→0.33, −0.06) but *helps* the capable one
+(qwen7b 0.34→0.40, +0.06), which can use the confidence signal to weight
+competing memories.
+
+**Decision:** keep the shipped `scored` format. The sidecar's real readers are
+capable agent models (claude/gpt/etc.), for which the relevance signal is
+net-positive; only sub-3B local models see mild noise from it. Previously assumed,
+now measured. The `-inject-format` flag stays for tuning a deployment dominated by
+small local models (where `bare`/`labeled` would shave the score-noise).
+
 ## G20 — Performance
 
 `msc-bench` reports recall latency: **avg ~71 ms/call** against the local
