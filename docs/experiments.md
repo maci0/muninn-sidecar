@@ -375,6 +375,29 @@ mitigation. This closes the recall side as the grounding work closed the
 precision side: frontier models help injection precision in-flight, but do not
 improve single-shot recall on reasoning-chain queries.
 
+## Staleness & contradiction resolution — validated end-to-end (live proxy)
+
+A dedicated `msc-freshness` vault (seeded via the MuninnDB MCP) validates the
+metadata-driven selection on the real recall→inject path, not just unit tests:
+
+- **Supersession (same concept):** seeded "auth uses MySQL" (Jan) and "auth
+  migrated to PostgreSQL" (May). MuninnDB returns the current version for a
+  natural query and flags the old one `stale:true` under `annotate:true`. Through
+  `msc --vault msc-freshness claude -p`, only the current fact is injected.
+- **Contradiction (same concept):** "deploys to AWS" vs "never AWS, only GCP"
+  (same concept) → the newer side wins via same-concept dedup; the agent answered
+  "GCP", uncontradicted.
+- **Contradiction (cross concept):** "production runs in us-east-1" vs
+  "production runs only in eu-west-1; no US region" (distinct concepts, linked by
+  a `contradicts` edge) → `conflicts_with` drives `resolveConflicts`, debug logs
+  `dropped contradicted memory` (us-east-1 dropped), and the agent answered
+  "eu-west-1. Only region. No US production region."
+
+In every case the proxy injects a single coherent current fact instead of feeding
+the agent stale or mutually-exclusive memories — the anti-staleness/contradiction
+behavior working through the production path. (`annotate:true` adds 0ms — recall
+latency is 11.4ms with or without it.)
+
 ## ⚠️ Recall floor must sit below the gate's calibration floor (bug fixed)
 
 MuninnDB's recall `threshold` filters on its **composite `score`** (recency/graph-
