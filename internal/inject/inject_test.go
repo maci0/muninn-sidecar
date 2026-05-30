@@ -951,6 +951,38 @@ func TestParseRecallResponseFormats(t *testing.T) {
 
 }
 
+// TestWindowPreservesInjectMetadata locks in a non-obvious correctness property:
+// the injection-fitness signals (State/Trust/CreatedAt) survive the session-window
+// round-trip via trackedMemory, so the dead/untrusted filter and the
+// fresher-wins dedup work on the live recall path (selectForInjection runs on
+// mergeMemories' output), not only when selectForInjection is called directly.
+// If trackedMemory ever stops embedding the full memory, this fails loudly.
+func TestWindowPreservesInjectMetadata(t *testing.T) {
+	inj := New(Config{MCPURL: "http://unused"})
+	recalled := []memory{
+		{ID: "dead", Concept: "x", Content: "retired decision", Score: 0.95, State: "archived"},
+		{ID: "live", Concept: "y", Content: "current fact", Score: 0.80, State: "active", Trust: "verified", CreatedAt: "2026-05-01T00:00:00Z"},
+	}
+	merged := inj.mergeMemories(recalled)
+
+	byID := map[string]memory{}
+	for _, m := range merged {
+		byID[m.ID] = m
+	}
+	if byID["dead"].State != "archived" {
+		t.Fatalf("window stripped State: got %q", byID["dead"].State)
+	}
+	if byID["live"].CreatedAt == "" || byID["live"].Trust != "verified" {
+		t.Fatalf("window stripped CreatedAt/Trust: %+v", byID["live"])
+	}
+
+	// The fitness filter must then apply to the merged window output.
+	kept := selectForInjection(merged, 0.5)
+	if len(kept) != 1 || kept[0].ID != "live" {
+		t.Fatalf("expected only the live memory injected from the window (archived dropped), got %+v", kept)
+	}
+}
+
 func TestSessionMemoryWindow(t *testing.T) {
 	// Simulate 3 turns where different memories are recalled each time.
 	// Turn 1: recall A. Turn 2: recall B (A should persist via decay).
