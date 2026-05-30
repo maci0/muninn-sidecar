@@ -47,6 +47,26 @@ type memory struct {
 	// near-duplicate memories so an updated fact wins over the stale one it
 	// supersedes (anti-staleness; see selectForInjection).
 	CreatedAt string `json:"created_at"`
+	// State is the MuninnDB lifecycle state (planning|active|paused|blocked|
+	// completed|cancelled|archived, or "" if unset). Trust is the reliability
+	// level (verified|inferred|external|untrusted). Explicitly-dead or untrusted
+	// memories are excluded from injection (see injectable).
+	State string `json:"state"`
+	Trust string `json:"trust"`
+}
+
+// injectable reports whether a recalled memory is fit to inject. It excludes
+// memories MuninnDB has marked as explicitly dead — `archived` (retired) or
+// `cancelled` (abandoned) — and `untrusted` ones (flagged unreliable). Surfacing
+// any of these as current context misleads the agent. `completed` is kept: a
+// finished task's decisions/facts remain relevant. Empty/unrecognized values are
+// kept, so vaults that don't populate these fields see no change.
+func injectable(m memory) bool {
+	switch m.State {
+	case "archived", "cancelled":
+		return false
+	}
+	return m.Trust != "untrusted"
 }
 
 // normalizeRelevance rewrites each memory's Score to the gating/ranking signal:
@@ -709,6 +729,11 @@ func selectForInjection(merged []memory, minScore float64) []memory {
 	for _, m := range merged {
 		if minScore > 0 && m.Score < minScore {
 			break // sorted descending — nothing after this clears the threshold
+		}
+
+		if !injectable(m) {
+			slog.Debug("inject: skipped unfit memory", "id", m.ID, "state", m.State, "trust", m.Trust)
+			continue
 		}
 
 		concept := normalizeConcept(m.Concept)

@@ -1285,6 +1285,46 @@ func TestSelectForInjection(t *testing.T) {
 			t.Errorf("with no timestamps, higher-cosine a should win, got %v", got)
 		}
 	})
+
+	t.Run("dead and untrusted memories excluded", func(t *testing.T) {
+		in := []memory{
+			{ID: "arch", Concept: "a", Content: "retired decision", Score: 0.95, State: "archived"},
+			{ID: "canc", Concept: "b", Content: "abandoned plan", Score: 0.93, State: "cancelled"},
+			{ID: "untr", Concept: "c", Content: "unreliable claim", Score: 0.92, Trust: "untrusted"},
+			{ID: "ok", Concept: "d", Content: "current verified fact", Score: 0.70, State: "active", Trust: "verified"},
+			{ID: "done", Concept: "e", Content: "completed task decision", Score: 0.65, State: "completed"},
+		}
+		got := selectForInjection(in, 0.5)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 kept (active + completed), got %d: %+v", len(got), got)
+		}
+		ids := map[string]bool{got[0].ID: true, got[1].ID: true}
+		if !ids["ok"] || !ids["done"] {
+			t.Errorf("expected 'ok' and 'done' kept (archived/cancelled/untrusted dropped), got %v", ids)
+		}
+	})
+}
+
+func TestInjectable(t *testing.T) {
+	cases := []struct {
+		m    memory
+		want bool
+	}{
+		{memory{}, true},                              // empty fields → keep
+		{memory{State: "active", Trust: "verified"}, true},
+		{memory{State: "completed"}, true},            // finished but still relevant
+		{memory{State: "planning"}, true},
+		{memory{State: "archived"}, false},            // retired
+		{memory{State: "cancelled"}, false},           // abandoned
+		{memory{Trust: "untrusted"}, false},           // flagged unreliable
+		{memory{Trust: "external"}, true},             // external is still usable
+		{memory{State: "archived", Trust: "verified"}, false}, // dead state wins
+	}
+	for _, c := range cases {
+		if got := injectable(c.m); got != c.want {
+			t.Errorf("injectable(state=%q trust=%q) = %v, want %v", c.m.State, c.m.Trust, got, c.want)
+		}
+	}
 }
 
 func TestJaccard(t *testing.T) {
