@@ -169,7 +169,7 @@ granite −0.09, gemma3:1b ~0). Distractor is ≤0 for every model. This 4th reg
 fits the unifying law cleanly: **benefit ≈ retrieval accuracy × the model's
 in-context-reasoning ability**, and a wrong injection never helps.
 
-## Five regimes, one law
+## Seven regimes, one law
 
 | regime | retrieval R@1 | typical Δinj F1 | takeaway |
 |---|---|---|---|
@@ -178,11 +178,23 @@ in-context-reasoning ability**, and a wrong injection never helps.
 | BoolQ (yes/no reasoning) | 0.35 | +0.3…+0.45 (capable models) | helps when passage retrieved |
 | HotpotQA (multi-hop) | 0.05 | ≤0 (ungated) | single-shot recall misses hops; gate suppresses |
 | adversarial QA (hard extractive) | 0.70 | +0.09…+0.37 (incl. frontier CLIs) | adversarial phrasing caps reader lift; distractor ≤0 |
+| sciq (science QA, support passage) | 0.49 | **+0.38…+0.61** | support passage carries the answer term; large lift |
+| FEVER (claim verification) | 0.40 | +0.12 / +0.04 / **−0.12** | ungated injects often-wrong evidence; helps weak, hurts strong |
 
 **Memory injection's value ≈ retrieval accuracy × the agent model's ability to
 use context; a wrong injection never beats a right one.** So the sidecar's two
 jobs — recall accurately and *gate* (inject confident recalls, suppress the rest)
 — are exactly what turns this into a net win across regimes.
+
+The two HuggingFace additions (seeded via `scripts/fetch_hf_datasets.py`) confirm
+both poles of the law on fresh data: **sciq** has answer-bearing support passages,
+so injection lifts every model hugely (+0.38…+0.61, distractor ≤ baseline);
+**FEVER** verification has low retrieval (R@1 0.40), so ungated injection feeds the
+reader the *wrong* evidence — marginally helping a weak model (qwen3b +0.12) but
+*hurting* a strong one (qwen7b −0.12), exactly like HotpotQA. The gate is what
+keeps FEVER safe. (FEVER answers are labels, not spans, so it is scored with
+`msc-qa -answer-hint "SUPPORTS, REFUTES"`; the default extractive prompt scores it
+a spurious 0.)
 
 ## Adversarial QA (hard extractive) — 5th regime
 

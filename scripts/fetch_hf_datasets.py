@@ -116,12 +116,54 @@ def conv_wikiqa(pages):
     return out
 
 
+def conv_narrativeqa(pages):
+    """deepmind/narrativeqa — long-narrative QA in the *summary* setting (the
+    full text is ~75k words; the human summary is the seedable context). One
+    article per document (summaries repeat across a book's questions)."""
+    out = []
+    seen = set()
+    for r in _fetch("deepmind/narrativeqa", "default", "validation", pages):
+        doc = r.get("document") or {}
+        summ = doc.get("summary") or {}
+        text = (summ.get("text") or "").strip()
+        did = doc.get("id")
+        if len(text) < 40 or did in seen:
+            continue
+        seen.add(did)
+        q = r.get("question") or {}
+        qt = (q.get("text") or "").strip() if isinstance(q, dict) else str(q)
+        ans = r.get("answers") or []
+        at = (ans[0].get("text") or "").strip() if ans and isinstance(ans[0], dict) else ""
+        if not qt or not at:
+            continue
+        out.append(_article(len(out), "narrativeqa", text, qt, at))
+    return out
+
+
+def conv_medical(pages):
+    """lavita/medical-qa-datasets — medical-domain QA; keep doctor-answer items
+    (input = patient question, output = answer)."""
+    out = []
+    for r in _fetch("lavita/medical-qa-datasets", "all-processed", "train", pages):
+        instr = (r.get("instruction") or "").lower()
+        if "answer the medical question" not in instr:
+            continue
+        q = (r.get("input") or "").strip()
+        a = (r.get("output") or "").strip()
+        if len(a) < 30 or len(q) < 10:
+            continue
+        out.append(_article(len(out), "medical", a, q, a[:60]))
+    return out
+
+
 CONVERTERS = {
     "sciq": conv_sciq,
     "fever": conv_fever,
     "scifact": conv_scifact,
     "dolly": conv_dolly,
     "wikiqa": conv_wikiqa,
+    "narrativeqa": conv_narrativeqa,
+    "medical": conv_medical,
 }
 
 

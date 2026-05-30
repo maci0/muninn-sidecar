@@ -93,8 +93,10 @@ func run() error {
 		groundKey   = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
 		groundTopK  = flag.Int("ground-topk", 5, "ground only the top-K recalled passages per question")
 		injectFmt   = flag.String("inject-format", "bare", "injected context presentation: bare | labeled | scored (scored = live proxy format)")
+		answerHintF = flag.String("answer-hint", "", "constrain answers to a fixed label set (e.g. \"SUPPORTS, REFUTES\") for classification regimes like FEVER; empty = extractive span")
 	)
 	flag.Parse()
+	answerHint = *answerHintF
 
 	questions, err := loadDataset(*dataset, *squadFile, *n)
 	if err != nil {
@@ -431,7 +433,7 @@ func (m *modelClient) label() string { return m.model }
 // eval measures the production injection path, not an ad-hoc user-prefix.
 func (m *modelClient) answer(ctx context.Context, question, contextBlock string) (string, error) {
 	msgs := []map[string]string{
-		{"role": "system", "content": "Answer with the shortest exact span that answers the question. If unknown, reply 'unknown'."},
+		{"role": "system", "content": answerInstruction()},
 	}
 	if contextBlock != "" {
 		msgs = append(msgs, map[string]string{
@@ -503,7 +505,7 @@ func (c *cliClient) answer(ctx context.Context, question, contextBlock string) (
 // <retrieved-context> markers, then the question.
 func buildCLIPrompt(question, contextBlock string) string {
 	var sb strings.Builder
-	sb.WriteString("Answer with the shortest exact span that answers the question. If unknown, reply 'unknown'. Output only the answer, nothing else.\n")
+	sb.WriteString(answerInstruction() + " Output only the answer, nothing else.\n")
 	if contextBlock != "" {
 		sb.WriteString("\n")
 		sb.WriteString(apiformat.ContextPrefix + "\n" + contextBlock + "\n" + apiformat.ContextSuffix)
@@ -511,6 +513,19 @@ func buildCLIPrompt(question, contextBlock string) string {
 	}
 	sb.WriteString("\nQuestion: " + question + "\nAnswer:")
 	return sb.String()
+}
+
+// answerHint, when set via -answer-hint, constrains the answer to a fixed label
+// set (e.g. "SUPPORTS, REFUTES" for claim verification). The default extractive
+// "shortest span" instruction does not elicit label tokens, so classification
+// regimes like FEVER score 0 spuriously without it.
+var answerHint string
+
+func answerInstruction() string {
+	if answerHint != "" {
+		return "Answer with exactly one of: " + answerHint + ". Output only that label."
+	}
+	return "Answer with the shortest exact span that answers the question. If unknown, reply 'unknown'."
 }
 
 // lastNonEmptyLine returns the final non-blank line of s, trimmed.

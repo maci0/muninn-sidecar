@@ -36,3 +36,16 @@ func TestFormatInjected(t *testing.T) {
 		t.Error("empty candidates → empty string")
 	}
 }
+
+func TestAnswerInstruction(t *testing.T) {
+	answerHint = ""
+	if !strings.Contains(answerInstruction(), "shortest exact span") {
+		t.Errorf("default should be extractive: %q", answerInstruction())
+	}
+	answerHint = "SUPPORTS, REFUTES"
+	defer func() { answerHint = "" }()
+	got := answerInstruction()
+	if !strings.Contains(got, "SUPPORTS, REFUTES") || !strings.Contains(got, "exactly one of") {
+		t.Errorf("hinted instruction should constrain to the label set: %q", got)
+	}
+}
