@@ -276,6 +276,8 @@ auto-calibration (§F) rather than a fixed threshold:
 | msc-sciq | allenai/sciq | science exam QA (support passage) | 0.49 | 0.70 | 0.99 |
 | msc-fever | copenlu/fever_gold_evidence | claim verification (claim→evidence) | 0.40 | 0.625 | 0.97 |
 | msc-scifact | BeIR/scifact-generated-queries | scientific abstract retrieval | 0.39 | 0.70 | 0.84 |
+| msc-medical | lavita/medical-qa | medical Q→answer | 0.45 | 0.75 | 0.85 |
+| msc-narrativeqa | deepmind/narrativeqa (summary) | long-narrative QA | 0.89 | 0.575 | 0.83 |
 
 Findings: (1) retrieval difficulty is regime-dependent — instruction+context with
 distinct contexts is trivial (R@1 1.0), while claim/abstract retrieval is hard
@@ -287,7 +289,22 @@ topically dense, so an absent claim partially matches seeded abstracts — the s
 "on-topic-but-wrong" wall, now observed in a real domain vault rather than a
 constructed instrument. (4) These low-cosine vaults are exactly where the recall
 floor fix (0.4→0.05, §recall floor) matters — the old floor would have withheld
-the moderate-cosine evidence the calibrated gate wants.
+the moderate-cosine evidence the calibrated gate wants. (5) **Long-narrative
+summaries retrieve well** (narrativeqa R@1 0.89): a plot question matches its
+dense summary strongly, and the ~820-token summaries seed fine (exercising the
+budget path) — long-document recall is not a problem in the *summary* setting.
+
+**Grounding is grader-domain-dependent (scifact negative).** Running the listwise
+answer-grounding rerank (§B4) on scifact's *natural* hard negatives with a general
+qwen2.5:7b grader **collapsed** suppression (0.84 → 0.12): the 7b judge can't tell
+"does this scientific abstract answer the query?" and over-accepts same-topic
+abstracts, so it injects the very near-misses the cosine gate was correctly
+suppressing. On a specialized domain the cosine gate *beats* a general grounder.
+This sharpens §B3/§B4: grounding only helps when the judge is competent in the
+vault's domain — a frontier judge or a domain-tuned one. It is rightly **opt-in
+and default-off**; a mediocre or domain-mismatched grader makes precision worse,
+not better. (Reconfirms grounding quality = grader quality, now on a real
+specialized-domain vault.)
 
 ## Multi-recall for multi-hop — tried, REJECTED (no-LLM constraint)
 
