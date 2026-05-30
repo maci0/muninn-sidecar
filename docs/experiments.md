@@ -55,6 +55,8 @@ distributions) comparing gate variants. **Held-out F1:**
 |---|---|---|
 | absolute (single threshold) | **0.983** | production |
 | absolute + cap-N | 0.983 | cap adds nothing (≤ few relevant/turn) |
+| absolute + sep-gate | 0.983 | separation signal tunes to off |
+| absolute + z-gate | 0.983 | adaptive shape signal tunes to off |
 | absfloor + margin | 0.945 | relative-to-top band worse |
 | absfloor + relative | 0.956 | |
 | relative-only / top-k | 0.84 / 0.72 | can't suppress |
@@ -62,6 +64,27 @@ distributions) comparing gate variants. **Held-out F1:**
 **Decision:** keep the single absolute `vector_score ≥ MinScore` gate; cap-N and
 margin variants give no benefit. (Threshold value 0.6 justified in
 [recall-and-injection.md](recall-and-injection.md).)
+
+### B1 — Per-query *shape* gates for the WHEN decision — tried, REJECTED
+
+Hypothesis: a query *with* a relevant memory should have a top hit that stands
+clear of the noise floor, while a query with *nothing* relevant has scores
+bunched low — so the **separation** (top1−top2) or an **adaptive z-score** of the
+top hit could cut false injects that a flat threshold lets through. Added both as
+candidates layered on `absolute` (`absolute+sepgate`, `absolute+zgate`); each
+reduces to plain `absolute` at its degenerate param (sep=0 / z=0), so CV can only
+reveal upside.
+
+**Result:** both tie `absolute` bit-for-bit (F1 0.983, 99% gate, 1% wasted, 1.98
+inj) — cross-validation tunes the shape knob to **off**. The signal is confounded
+by the generative reality the synthetic set models faithfully: (1) when several
+relevant memories are recalled, top1−top2 is *small* (the good case looks like the
+bunched-noise case), and (2) a tight noise-only cluster has *low* variance, which
+*inflates* the top hit's z — so neither separation nor z-score distinguishes
+"relevant present" from "noise only" better than the absolute level does. The
+absolute cosine level remains the single best discriminator; vault-level noise
+drift is handled by auto-calibration (§F), not per-query shape. Kept permanently
+in the study as regression-tested evidence.
 
 ## C — Recall trigger (when to ask)
 

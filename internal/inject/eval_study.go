@@ -85,6 +85,8 @@ type studyParams struct {
 	rel    float64 // relative cutoff as a fraction of the top score
 	floor  float64 // turn-level suppression floor on the top score
 	margin float64 // keep memories within this score gap below the top
+	sep    float64 // min gap between top1 and top2 required to inject (separation gate)
+	z      float64 // min z-score of top1 over the candidate set required to inject
 	k      int     // max items
 }
 
@@ -175,7 +177,69 @@ func candidateMethods() []studySelector {
 			},
 			grid: paramsFloorMargin(floors, frange(0.05, 0.30, 0.05)),
 		},
+		{
+			// absolute WHEN-gate plus a separation requirement: even if top1 clears
+			// the bar, suppress unless it stands clear of top2 by `sep`. Tests
+			// whether "the top hit must visibly win" cuts false injects that a flat
+			// threshold lets through. WHAT is unchanged (keep >= abs).
+			name: "absolute+sepgate",
+			sel: func(s []studyCand, p studyParams) []studyCand {
+				if len(s) == 0 || s[0].score < p.abs {
+					return nil
+				}
+				if len(s) > 1 && s[0].score-s[1].score < p.sep {
+					return nil
+				}
+				return keepAbove(s, p.abs)
+			},
+			grid: paramsAbsSep(frange(0.50, 0.66, 0.02), frange(0.0, 0.15, 0.03)),
+		},
+		{
+			// absolute WHEN-gate plus an adaptive z-score requirement: suppress
+			// unless top1 is at least `z` standard deviations above the candidate
+			// set's mean. This reads the per-query score *shape* (does the top hit
+			// stand out from its own neighbourhood?) rather than a flat level.
+			name: "absolute+zgate",
+			sel: func(s []studyCand, p studyParams) []studyCand {
+				if len(s) == 0 || s[0].score < p.abs {
+					return nil
+				}
+				if topZScore(s) < p.z {
+					return nil
+				}
+				return keepAbove(s, p.abs)
+			},
+			grid: paramsAbsZ(frange(0.50, 0.66, 0.02), frange(0.0, 1.5, 0.25)),
+		},
 	}
+}
+
+// topZScore returns how many standard deviations the top (first) score sits
+// above the mean of all candidate scores. A lone candidate, or an all-equal set
+// (zero variance), returns +Inf so the z-gate never suppresses on shape alone
+// there — the absolute floor remains the sole arbiter.
+func topZScore(s []studyCand) float64 {
+	if len(s) < 2 {
+		return math.Inf(1)
+	}
+	var sum float64
+	for _, c := range s {
+		sum += c.score
+	}
+	mean := sum / float64(len(s))
+	var ss float64
+	for _, c := range s {
+		d := c.score - mean
+		ss += d * d
+	}
+	std := math.Sqrt(ss / float64(len(s)))
+	// Treat a near-zero spread as no shape signal: all scores are effectively
+	// equal, so the z-gate must not fire (float rounding can leave std a tiny
+	// positive instead of exactly 0, which would otherwise yield a meaningless z).
+	if std < 1e-9 {
+		return math.Inf(1)
+	}
+	return (s[0].score - mean) / std
 }
 
 func paramsAbsK(abss []float64, ks []int) []studyParams {
@@ -183,6 +247,26 @@ func paramsAbsK(abss []float64, ks []int) []studyParams {
 	for _, a := range abss {
 		for _, k := range ks {
 			out = append(out, studyParams{abs: a, k: k})
+		}
+	}
+	return out
+}
+
+func paramsAbsSep(abss, seps []float64) []studyParams {
+	var out []studyParams
+	for _, a := range abss {
+		for _, s := range seps {
+			out = append(out, studyParams{abs: a, sep: s})
+		}
+	}
+	return out
+}
+
+func paramsAbsZ(abss, zs []float64) []studyParams {
+	var out []studyParams
+	for _, a := range abss {
+		for _, z := range zs {
+			out = append(out, studyParams{abs: a, z: z})
 		}
 	}
 	return out
