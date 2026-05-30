@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
 // stubGrounder accepts passages containing "ANSWER"; one call per batch.
@@ -57,6 +59,24 @@ func TestGroundMemoriesTopK(t *testing.T) {
 	// Top-3 all rejected (no "ANSWER"), tail kept untouched.
 	if len(got) != 1 || got[0].ID != "4" {
 		t.Fatalf("expected only the untouched tail kept, got %+v", got)
+	}
+}
+
+func TestGroundMemoriesStats(t *testing.T) {
+	st := &stats.Stats{}
+	g := &stubGrounder{}
+	inj := New(Config{MCPURL: "http://unused", Grounder: g, GroundTopK: 5, Stats: st})
+	mems := []memory{
+		{ID: "1", Content: "has the ANSWER", Score: 0.9},
+		{ID: "2", Content: "no answer", Score: 0.8},
+		{ID: "3", Content: "also none", Score: 0.7},
+	}
+	inj.groundMemories(context.Background(), "q", mems)
+	if st.GroundingRuns.Load() != 1 {
+		t.Errorf("expected GroundingRuns=1, got %d", st.GroundingRuns.Load())
+	}
+	if st.GroundDropped.Load() != 2 {
+		t.Errorf("expected GroundDropped=2, got %d", st.GroundDropped.Load())
 	}
 }
 

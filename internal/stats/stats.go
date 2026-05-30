@@ -29,6 +29,8 @@ type Stats struct {
 	Suppressed      atomic.Int64 // requests where the gate chose to inject nothing (no memory cleared the threshold)
 	Recalls         atomic.Int64 // recall calls actually fired to MuninnDB
 	RecallsSkipped  atomic.Int64 // recalls avoided by reusing the session window (unchanged-query continuations)
+	GroundingRuns   atomic.Int64 // turns the answer-grounding rerank ran (one listwise judge call each)
+	GroundDropped   atomic.Int64 // candidates the grounding rerank dropped (judged not to answer the query)
 
 	models sync.Map // model name → *atomic.Int64
 }
@@ -130,6 +132,9 @@ func (s *Stats) Summary() string {
 		}
 		if recalls > 0 || recallsSkipped > 0 {
 			sb.WriteString(fmt.Sprintf("\nrecall: %d queried, %d reused (window)", recalls, recallsSkipped))
+		}
+		if gruns := s.GroundingRuns.Load(); gruns > 0 {
+			sb.WriteString(fmt.Sprintf("\ngrounding: %d turns judged, %d candidates dropped", gruns, s.GroundDropped.Load()))
 		}
 	}
 

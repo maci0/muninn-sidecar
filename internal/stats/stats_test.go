@@ -145,6 +145,31 @@ func TestSummaryWithInjections(t *testing.T) {
 	}
 }
 
+func TestSummaryWithGrounding(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(1)
+	s.Flushed.Store(1)
+	s.Injections.Store(4)
+	s.GroundingRuns.Store(4)
+	s.GroundDropped.Store(6)
+
+	got := s.Summary()
+	if !strings.Contains(got, "4 turns judged, 6 candidates dropped") {
+		t.Fatalf("expected grounding line in summary: %q", got)
+	}
+}
+
+func TestSummaryNoGroundingLineWhenUnused(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(1)
+	s.Flushed.Store(1)
+	s.Injections.Store(2)
+
+	if strings.Contains(s.Summary(), "grounding:") {
+		t.Fatalf("grounding line should be absent when grounding never ran: %q", s.Summary())
+	}
+}
+
 func TestSummaryInjectionTokensFormatted(t *testing.T) {
 	s := &Stats{}
 	s.Captured.Store(1)

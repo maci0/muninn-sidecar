@@ -735,6 +735,12 @@ func (inj *Injector) groundMemories(ctx context.Context, query string, mems []me
 		kept = append(kept, m)
 	}
 	slog.Debug("inject: grounding rerank", "judged", n, "dropped", dropped, "kept", len(kept), "judge", inj.grounder.Label())
+	if inj.stats != nil {
+		inj.stats.GroundingRuns.Add(1)
+		if dropped > 0 {
+			inj.stats.GroundDropped.Add(int64(dropped))
+		}
+	}
 	return kept
 }
 
