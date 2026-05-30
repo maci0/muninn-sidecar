@@ -1,0 +1,21 @@
+[
+  {
+    "name": "auth-recall",
+    "query": "how do refresh tokens work in our auth flow?",
+    "seed": [
+      {"concept": "auth jwt refresh", "content": "Access tokens expire after 15m; refresh tokens rotate on use and are stored hashed in the sessions table."},
+      {"concept": "auth session store", "content": "Sessions live in Redis keyed by user id with a 30 day TTL."},
+      {"concept": "frontend styling", "content": "The web app uses Tailwind CSS with a custom design token palette."}
+    ],
+    "expected_concepts": ["auth jwt refresh", "auth session store"]
+  },
+  {
+    "name": "deploy-recall",
+    "query": "where does production run and how are releases managed?",
+    "seed": [
+      {"concept": "deploy target", "content": "Production runs on Kubernetes with Helm-managed releases promoted through staging."},
+      {"concept": "ci pipeline", "content": "GitHub Actions builds, tests, and pushes images to the registry on tag."}
+    ],
+    "expected_concepts": ["deploy target"]
+  }
+]

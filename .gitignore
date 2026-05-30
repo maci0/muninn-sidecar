@@ -15,9 +15,9 @@ cover.out
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Application binaries
-msc
-testmsc
+# Application binaries (anchored to repo root so they don't match cmd/* source dirs)
+/msc
+/testmsc
 
 # Profiling and coverage artifacts
 *.prof
@@ -36,6 +36,6 @@ dist/
 .idea/
 .vscode/
 *.swp
-msc-bench
-msc-eval
-msc-qa
+/msc-bench
+/msc-eval
+/msc-qa
