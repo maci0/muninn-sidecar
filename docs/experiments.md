@@ -119,6 +119,19 @@ msc use case this is benign-leaning: injecting a same-topic project memory that
 lacks the exact answer is closer to useful context than to the off-topic
 distractor arm — but it is not free, so it sets the agenda for retrieval precision.
 
+**Chunk granularity does not break the ceiling.** Re-running hard negatives with
+sentence-level seeding (`-hard-neg -chunk sentence`) is slightly *worse*, not
+better: best gate F1 0.60 (vs 0.64 paragraph), suppress@neg 0.41 (vs 0.49),
+inject@should 0.69 (vs 0.71), same lockstep. A lone answer sentence carries less
+context, so its cosine to the question is noisier and *lower*, while same-article
+sibling sentences still occupy the band. So neither finer chunks (here) nor
+score-shape gating (§B1) separates same-topic-right from same-topic-wrong — the
+ceiling is a **bi-encoder retrieval limit**, invariant to granularity and
+threshold. The only lever left is a cross-encoder / answer-grounding reranker that
+jointly scores (query, passage) — a model-based step, deliberately not added here
+because its cost/latency must be weighed against a false-inject that is
+benign-leaning in the live use case.
+
 ## C — Recall trigger (when to ask)
 
 **Shipped:** (1) **negative cache** — a repeated intent that already recalled

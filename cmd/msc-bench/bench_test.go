@@ -195,7 +195,7 @@ func TestGenSquadHardNeg(t *testing.T) {
 	    {"context":"Freemen of the city have grazing rights on the moor.","qas":[{"question":"who has grazing rights?","is_impossible":false,"answers":[{"text":"Freemen"}]}]}
 	  ]}
 	]}`), 0o644)
-	items, present, hardNeg, err := genSquadHardNeg(squad, 1, 10, 5, 5)
+	items, present, hardNeg, err := genSquadHardNeg(squad, 1, 10, 5, 5, "paragraph")
 	if err != nil {
 		t.Fatalf("genSquadHardNeg: %v", err)
 	}
@@ -220,8 +220,17 @@ func TestGenSquadHardNeg(t *testing.T) {
 			t.Errorf("present probe missing answer: %+v", p)
 		}
 	}
+	// Sentence chunking: the two seeded paragraphs (0 and 2) are single sentences
+	// each, so still 2 items, but the hard negative is unchanged.
+	itS, _, hnS, err := genSquadHardNeg(squad, 1, 10, 5, 5, "sentence")
+	if err != nil || len(itS) == 0 {
+		t.Fatalf("genSquadHardNeg sentence: err=%v items=%d", err, len(itS))
+	}
+	if len(hnS) != 1 {
+		t.Errorf("sentence chunk: expected 1 hard negative, got %d", len(hnS))
+	}
 	// Missing file errors.
-	if _, _, _, err := genSquadHardNeg(filepath.Join(dir, "nope.json"), 1, 1, 1, 1); err == nil {
+	if _, _, _, err := genSquadHardNeg(filepath.Join(dir, "nope.json"), 1, 1, 1, 1, "paragraph"); err == nil {
 		t.Error("expected error on missing file")
 	}
 }

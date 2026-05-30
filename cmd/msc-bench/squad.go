@@ -128,7 +128,10 @@ func genSquad(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk 
 // memory answers them, so a correct gate must still suppress. This is the one
 // suppression case the synthetic study cannot model (its noise is a cleanly
 // separated low-score cluster). Present probes come from the seeded even paragraphs.
-func genSquadHardNeg(path string, seedArticles, maxItems, nPresent, nAbsent int) ([]item, []probe, []probe, error) {
+// chunk ("paragraph"|"sentence") controls seed granularity, so the precision
+// ceiling can be measured against finer chunks (does localizing the answer
+// separate the answer-bearing chunk from same-article siblings?).
+func genSquadHardNeg(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk string) ([]item, []probe, []probe, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read squad file: %w", err)
@@ -157,14 +160,31 @@ func genSquadHardNeg(path string, seedArticles, maxItems, nPresent, nAbsent int)
 					continue
 				}
 				seenContent[para.Context] = true
-				concept := fmt.Sprintf("%s#%d", slug(art.Title), pi)
-				items = append(items, item{Concept: concept, Content: para.Context})
+				base := fmt.Sprintf("%s#%d", slug(art.Title), pi)
+				if chunk == "sentence" {
+					for si, s := range splitSentences(para.Context) {
+						if len(items) >= maxItems {
+							break
+						}
+						items = append(items, item{Concept: fmt.Sprintf("%s#%d", base, si), Content: s})
+					}
+				} else {
+					items = append(items, item{Concept: base, Content: para.Context})
+				}
 				if len(present) < nPresent {
 					for _, qa := range para.QAs {
 						if qa.IsImpossible || qa.Question == "" || len(qa.Answers) == 0 {
 							continue
 						}
-						present = append(present, probe{Query: qa.Question, Gold: concept, Answer: qa.Answers[0].Text, Present: true})
+						gold := base
+						if chunk == "sentence" {
+							si := sentenceContaining(para.Context, qa.Answers[0].Text)
+							if si < 0 {
+								continue
+							}
+							gold = fmt.Sprintf("%s#%d", base, si)
+						}
+						present = append(present, probe{Query: qa.Question, Gold: gold, Answer: qa.Answers[0].Text, Present: true})
 						break
 					}
 				}

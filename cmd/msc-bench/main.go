@@ -79,7 +79,7 @@ func run() error {
 	case "squad":
 		var err error
 		if *hardNeg {
-			items, presentProbes, absentProbes, err = genSquadHardNeg(*squadFile, *squadArts, *n, *present, *absent)
+			items, presentProbes, absentProbes, err = genSquadHardNeg(*squadFile, *squadArts, *n, *present, *absent, *chunk)
 		} else {
 			items, presentProbes, absentProbes, err = genSquad(*squadFile, *squadArts, *n, *present, *absent, *chunk)
 		}
