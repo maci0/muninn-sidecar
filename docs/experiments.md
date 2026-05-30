@@ -311,6 +311,20 @@ mitigation. This closes the recall side as the grounding work closed the
 precision side: frontier models help injection precision in-flight, but do not
 improve single-shot recall on reasoning-chain queries.
 
+## ⚠️ Recall floor must sit below the gate's calibration floor (bug fixed)
+
+MuninnDB's recall `threshold` filters on its **composite `score`** (recency/graph-
+inflated), a *different axis* from the `vector_score` cosine the gate uses.
+Verified against a live vault: at `threshold=0.4` a memory with cosine **0.449**
+was withheld that `threshold=0.05` returned (its composite was 0.376). Since
+auto-calibration (§F) can lower the cosine gate `MinScore` to as little as 0.10,
+a recall floor of 0.4 would silently withhold high-cosine-but-low-composite
+memories the calibrated gate would have injected — calibration below 0.4 was
+partly moot. **Fix:** the default recall floor is now **0.05** (below
+`calibMinThreshold`=0.10), so the server-side composite pre-filter never pre-empts
+the client-side cosine gate; the gate + calibration do the real suppression.
+`TestRecallFloorBelowCalibrationFloor` guards the invariant.
+
 ## ⚠️ Cross-cutting — the gate threshold is NOT universal (key finding)
 
 Running `msc-qa` build-only (answer-coverage of the gated recall context) on the

@@ -91,7 +91,7 @@ type Config struct {
 	Token         string        // Bearer token for auth
 	Vault         string        // vault to recall from (default: "sidecar")
 	Budget        int           // max approximate tokens to inject (default: 2048)
-	Threshold     float64       // recall floor sent to MuninnDB (default: 0.4)
+	Threshold     float64       // recall floor sent to MuninnDB, on its *composite* score (default: 0.05). Must stay below the gate's calibration floor (calibMinThreshold) so this server-side pre-filter never drops a memory the client-side cosine gate would accept — see New().
 	MinScore      float64       // injection threshold: a memory is injected only if its effective score >= MinScore; a turn where nothing clears it injects nothing (default: 0.6)
 	RecallMode    string        // MuninnDB recall mode: semantic|recent|balanced|deep (default: "semantic")
 	QuerySimReuse float64       // reuse window (skip recall) when query word-set Jaccard vs last query >= this; 1.0 = exact-match only (default)
@@ -229,7 +229,20 @@ func New(cfg Config) *Injector {
 		cfg.Budget = 2048
 	}
 	if cfg.Threshold <= 0 {
-		cfg.Threshold = 0.4
+		// The recall floor filters MuninnDB's *composite* score (recency/graph-
+		// inflated), a different axis from the cosine the gate uses. Keep it below
+		// the gate's calibration floor (calibMinThreshold): otherwise, on a
+		// low-cosine vault where auto-calibration lowers MinScore toward 0.10, this
+		// server-side pre-filter would silently drop high-cosine-but-low-composite
+		// memories the calibrated gate would have injected. The cosine gate
+		// (MinScore) does the real suppression; this just avoids returning obvious
+		// nothing. (Verified: at composite-threshold 0.4 a cosine-0.45 memory was
+		// withheld that 0.05 returned — see docs/experiments.md.)
+		cfg.Threshold = 0.05
+	}
+	if cfg.Threshold > calibMinThreshold {
+		slog.Warn("inject: recall floor exceeds the gate calibration floor; calibration below it cannot inject (server pre-filter caps it)",
+			"recall_floor", cfg.Threshold, "calib_floor", calibMinThreshold)
 	}
 	if cfg.MinScore <= 0 || cfg.MinScore > 1 {
 		cfg.MinScore = defaultMinScore

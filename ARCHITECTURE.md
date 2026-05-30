@@ -213,7 +213,7 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach:
 | Vault name | `--vault` | `MSC_VAULT` | Current directory name (fallback: `sidecar`) |
 | Injection | `--no-inject` | — | Enabled |
 | Injection budget | `--inject-budget` | — | 2048 tokens |
-| Recall threshold | — | — | 0.4 (floor sent to MuninnDB) |
+| Recall threshold | — | — | 0.05 (composite-score floor sent to MuninnDB; kept below the gate's calibration floor so it never pre-empts the cosine gate) |
 | Injection threshold (`MinScore`) | `--inject-min-score` | — | 0.6 prior, then auto-calibrated per vault |
 | Auto-calibrate gate | `--no-auto-calibrate` (disable) | — | On (self-tunes `MinScore` to the score distribution) |
 | Recall mode (`RecallMode`) | `--recall-mode` | — | semantic (best retrieval; real-MuninnDB benchmark) |

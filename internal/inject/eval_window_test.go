@@ -48,6 +48,18 @@ func TestWindowDecayStudy(t *testing.T) {
 	}
 }
 
+// TestRecallFloorBelowCalibrationFloor guards the invariant that the default
+// recall floor (MuninnDB's composite-score pre-filter) sits at or below the
+// gate's cosine calibration floor. If it drifts above, auto-calibration could
+// lower MinScore beneath the recall floor and the server would silently withhold
+// memories the calibrated gate would inject (see docs/experiments.md §recall floor).
+func TestRecallFloorBelowCalibrationFloor(t *testing.T) {
+	inj := New(Config{MCPURL: "http://unused"})
+	if inj.threshold > calibMinThreshold {
+		t.Errorf("default recall floor %.3f exceeds calibration floor %.3f; calibration below it would be moot", inj.threshold, calibMinThreshold)
+	}
+}
+
 func TestScoreWindowEdges(t *testing.T) {
 	// Empty sessions → zero, no panic.
 	if p, r, f := scoreWindow(nil, 0.7, 0.6); p != 0 || r != 0 || f != 0 {
