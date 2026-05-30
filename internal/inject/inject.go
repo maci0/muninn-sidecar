@@ -720,18 +720,21 @@ func (inj *Injector) groundMemories(ctx context.Context, query string, mems []me
 	if n <= 0 || n > len(mems) {
 		n = len(mems)
 	}
+	passages := make([]string, n)
+	for i := 0; i < n; i++ {
+		passages[i] = mems[i].Content
+	}
+	mask := inj.grounder.Relevant(ctx, query, passages) // one listwise call
 	kept := make([]memory, 0, len(mems))
 	dropped := 0
 	for i, m := range mems {
-		if i < n && !inj.grounder.Grounded(ctx, query, m.Content) {
+		if i < n && i < len(mask) && !mask[i] {
 			dropped++
 			continue
 		}
 		kept = append(kept, m)
 	}
-	if dropped > 0 {
-		slog.Debug("inject: grounding dropped candidates", "dropped", dropped, "kept", len(kept), "judge", inj.grounder.Label())
-	}
+	slog.Debug("inject: grounding rerank", "judged", n, "dropped", dropped, "kept", len(kept), "judge", inj.grounder.Label())
 	return kept
 }
 

@@ -204,6 +204,17 @@ threshold at harm-recovery. **Frontier CLIs** (`-ground-cmd`) remain offline-onl
 (~3.5s/judge, §B3) — best for vault audit/curation. The grounding lever is real;
 its place is set by the grader's latency.
 
+**Grounding is listwise (one call per turn), not per-passage.** The judge grades
+all candidates that cleared the gate in a single call (`internal/grounding`,
+shared by the injector and both eval tools). This is what makes even a slow
+grader practical: an inject turn costs *one* round-trip regardless of how many
+candidates survived the gate — measured ~289ms for a local qwen2.5:7b judging 3
+passages (vs ~1.9s when the same judge ran 3 separate calls), and one frontier
+`claude -p` call instead of K. Batching preserved the harm-recovery downstream
+(granite on HotpotQA: grounded F1 0.25 vs cosine-inject 0.10, +0.15). It also
+narrows the frontier-CLI gap: a single ~3.5s call per *inject* turn (the gate
+already suppresses most turns) is borderline-viable in-flight, not only offline.
+
 ## C — Recall trigger (when to ask)
 
 **Shipped:** (1) **negative cache** — a repeated intent that already recalled

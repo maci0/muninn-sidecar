@@ -18,13 +18,17 @@ func TestSortByVecDesc(t *testing.T) {
 	}
 }
 
-// stubGrounder accepts a passage iff it contains "ANSWER".
+// stubGrounder accepts passages containing "ANSWER"; one call per batch.
 type stubGrounder struct{ calls int }
 
 func (s *stubGrounder) Label() string { return "stub" }
-func (s *stubGrounder) Grounded(_ context.Context, _, passage string) bool {
+func (s *stubGrounder) Relevant(_ context.Context, _ string, passages []string) []bool {
 	s.calls++
-	return strings.Contains(passage, "ANSWER")
+	out := make([]bool, len(passages))
+	for i, p := range passages {
+		out[i] = strings.Contains(p, "ANSWER")
+	}
+	return out
 }
 
 func TestApplyGrounding(t *testing.T) {
@@ -40,8 +44,8 @@ func TestApplyGrounding(t *testing.T) {
 	}
 	g := &stubGrounder{}
 	calls := applyGrounding(context.Background(), g, results, 5)
-	if calls != 4 {
-		t.Errorf("expected 4 grounding calls, got %d", calls)
+	if calls != 2 {
+		t.Errorf("expected 2 listwise calls (one per probe), got %d", calls)
 	}
 	if len(results[0].Recalled) != 1 || results[0].Recalled[0].Concept != "g#0" {
 		t.Errorf("present probe should keep only the answer-bearing candidate: %+v", results[0].Recalled)
@@ -61,7 +65,12 @@ func TestApplyGroundingTopK(t *testing.T) {
 		},
 	}}
 	g := &stubGrounder{}
-	if calls := applyGrounding(context.Background(), g, results, 2); calls != 2 {
-		t.Errorf("top-2 should ground 2 candidates, got %d", calls)
+	if calls := applyGrounding(context.Background(), g, results, 2); calls != 1 {
+		t.Errorf("one listwise call per probe expected, got %d", calls)
+	}
+	// topK=2 judges the first two (both rejected) and drops the untouched tail
+	// beyond topK — Filter semantics for the gate measurement.
+	if len(results[0].Recalled) != 0 {
+		t.Errorf("expected all dropped (2 rejected, tail capped out), got %d", len(results[0].Recalled))
 	}
 }

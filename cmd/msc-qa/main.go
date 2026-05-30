@@ -117,14 +117,15 @@ func run() error {
 		injected, distract, grounded string
 	}
 	prep := make([]prepared, len(questions))
-	var coverage, groundCalls int
+	var coverage, groundCalls, groundPassages int
 	for i, q := range questions {
 		cands := recallCandidates(ctx, mcp, *vault, q.Question, *minScore, *multiRecall)
 		inj := strings.Join(cands, "\n")
 		dis := recallContext(ctx, mcp, *vault, "unrelated trivia about cooking and weather", *minScore, false)
 		grounded := ""
-		if grd != nil {
-			groundCalls += min(*groundTopK, len(cands))
+		if grd != nil && len(cands) > 0 {
+			groundCalls++ // one listwise judge call per question
+			groundPassages += min(*groundTopK, len(cands))
 			grounded = strings.Join(grounding.Filter(ctx, grd, q.Question, cands, *groundTopK), "\n")
 		}
 		prep[i] = prepared{q: q, injected: inj, distract: dis, grounded: grounded}
@@ -135,7 +136,7 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "recall context contained the gold answer for %d/%d (%.0f%%)\n",
 		coverage, len(questions), 100*float64(coverage)/float64(max(1, len(questions))))
 	if grd != nil {
-		fmt.Fprintf(os.Stderr, "grounding arm enabled via %s (~%d judge calls)\n", grd.Label(), groundCalls)
+		fmt.Fprintf(os.Stderr, "grounding arm enabled via %s (%d listwise calls judging ~%d passages)\n", grd.Label(), groundCalls, groundPassages)
 	}
 
 	// Assemble reader backends: OpenAI-compatible HTTP models (-model-url) and/or

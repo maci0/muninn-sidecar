@@ -24,10 +24,15 @@ func applyGrounding(ctx context.Context, g grounding.Grounder, results []probeRe
 		if n <= 0 || n > len(mems) {
 			n = len(mems)
 		}
+		passages := make([]string, n)
+		for i := 0; i < n; i++ {
+			passages[i] = mems[i].Content
+		}
+		calls++ // one listwise judge call per probe, regardless of candidate count
+		mask := g.Relevant(ctx, results[ri].Query, passages)
 		kept := make([]recalledMemory, 0, n)
 		for i := 0; i < n; i++ {
-			calls++
-			if g.Grounded(ctx, results[ri].Query, mems[i].Content) {
+			if i >= len(mask) || mask[i] {
 				kept = append(kept, mems[i])
 			}
 		}
