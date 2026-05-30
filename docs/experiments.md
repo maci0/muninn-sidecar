@@ -397,6 +397,35 @@ sidecar (`--no-auto-calibrate` to disable); off for direct `New()` callers so
 tests stay deterministic. Tested: `TestCalibrateThreshold` (bimodal high/low +
 unimodal fallback), `TestAutoCalibrateLowersGate` (end-to-end gate drop).
 
+## H — Session-window decay (validated as precision-favoring; tuning harness)
+
+The multi-turn window decays a non-refreshed memory by `decayFactor` (0.7) per
+turn and evicts below `decayFloor` (0.2). `RunWindowStudy` (eval_window.go)
+simulates multi-turn sessions — memories recalled once, then genuinely relevant
+for a short span while fresh recall no longer surfaces them (the case carry-
+forward exists for) — and sweeps the decay rate at the **production injection
+gate** (decayed score must clear `MinScore` ~0.6 to be injected; `decayFloor`
+only governs window retention for a later refresh, not injection):
+
+| decay | precision | recall | F1 |
+|---|---|---|---|
+| **0.7 (production)** | **0.98** | 0.55 | 0.69 |
+| 0.9 (best on this model) | 0.69 | 0.93 | 0.79 |
+
+**Reading:** gated at 0.6, decay=0.7 makes carry-forward injection very precise
+(0.98 — a re-injected memory is almost always still relevant) but short (a 0.85
+memory falls below 0.6 after ~1 turn), so the window's lasting injection comes
+from *re-recall/refresh*, not pure decay. A slower decay extends carry-forward
+(more recall, less precision).
+
+**Decision: keep 0.7.** The model's relevance-lifespan distribution is principled
+but **uncalibrated** — there is no real multi-turn relevance dataset, unlike the
+gate study whose distribution is fit to observed cosine — so this is a tuning
+*tool*, not a retune mandate. 0.7 is the precision-favoring choice, consistent
+with the sidecar's whole "suppress rather than inject noise" philosophy, and the
+test (`TestWindowDecayStudy`) only asserts it is non-degenerate. The harness is
+ready to retune the moment real session data exists.
+
 ## G — Injection format/presentation (the shipped format, validated downstream)
 
 Every prior downstream eval (§E, §B4) injected **bare content**, but the live
