@@ -668,8 +668,25 @@ const (
 // would suppress everything — without latching onto noise. Returns defaultMinScore
 // for a too-small sample.
 func CalibrateThreshold(scores []float64) float64 {
+	t, _, _, _ := calibrateDetail(scores)
+	return t
+}
+
+// CalibrateThresholdDetail exposes the calibrated threshold together with the
+// two Otsu cluster means and their separation (score units), for the
+// calibration-validation instrument in cmd/msc-bench.
+func CalibrateThresholdDetail(scores []float64) (threshold, noiseMean, relMean, sep float64) {
+	return calibrateDetail(scores)
+}
+
+// calibrateDetail is CalibrateThreshold's core, additionally returning the two
+// Otsu cluster means and their separation (all in score units). Exposed for the
+// calibration-validation instrument (cmd/msc-bench) so the valley's position
+// relative to the relevant cluster can be inspected. threshold is already
+// clamped and falls back to defaultMinScore when not confidently bimodal.
+func calibrateDetail(scores []float64) (threshold, noiseMean, relMean, sep float64) {
 	if len(scores) < 20 {
-		return defaultMinScore
+		return defaultMinScore, 0, 0, 0
 	}
 	const bins = 50
 	hist := make([]int, bins)
@@ -689,7 +706,7 @@ func CalibrateThreshold(scores []float64) float64 {
 
 	var wB int
 	var sumB float64
-	bestVar, bestT, bestSep := -1.0, defaultMinScore, 0.0
+	bestVar, bestT, bestSep, bestMB, bestMF := -1.0, defaultMinScore, 0.0, 0.0, 0.0
 	for t := 0; t < bins; t++ {
 		wB += hist[t]
 		if wB == 0 {
@@ -707,12 +724,13 @@ func CalibrateThreshold(scores []float64) float64 {
 			bestVar = between
 			bestT = (float64(t) + 1) / float64(bins) // upper edge of the noise bin
 			bestSep = (mF - mB) / float64(bins)      // cluster-mean gap in score units
+			bestMB, bestMF = mB/float64(bins), mF/float64(bins)
 		}
 	}
 	if bestSep < calibMinSeparation {
-		return defaultMinScore // not confidently bimodal — keep the prior
+		return defaultMinScore, bestMB, bestMF, bestSep // not confidently bimodal — keep the prior
 	}
-	return math.Max(calibMinThreshold, math.Min(calibMaxThreshold, bestT))
+	return math.Max(calibMinThreshold, math.Min(calibMaxThreshold, bestT)), bestMB, bestMF, bestSep
 }
 
 // selectForInjection is the full inject decision for a turn. It expects input

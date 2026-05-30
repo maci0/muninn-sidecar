@@ -902,9 +902,9 @@ func printReport(rep benchReport, results []probeResult) {
 		}
 	}
 	if len(cosines) > 0 {
-		calT := inject.CalibrateThreshold(cosines)
-		fmt.Printf("AUTO-CALIBRATED gate: T=%.3f (from %d observed cosines; empirical best %.3f, |Δ|=%.3f)\n",
-			calT, len(cosines), rep.BestVec.Threshold, math.Abs(calT-rep.BestVec.Threshold))
+		calT, noiseMean, relMean, sep := inject.CalibrateThresholdDetail(cosines)
+		fmt.Printf("AUTO-CALIBRATED gate: T=%.3f (from %d cosines; best %.3f, |Δ|=%.3f; clusters noise=%.3f rel=%.3f sep=%.3f)\n",
+			calT, len(cosines), rep.BestVec.Threshold, math.Abs(calT-rep.BestVec.Threshold), noiseMean, relMean, sep)
 	}
 }
 
