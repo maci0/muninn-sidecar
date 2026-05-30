@@ -156,6 +156,26 @@ def conv_medical(pages):
     return out
 
 
+def conv_code(pages):
+    """Nan-Do/code-search-net-python — NL→code retrieval: the function source is
+    the memory, its summary/docstring is the query, the function name is the gold
+    answer ("which function implements X?"). The product-relevant regime — a
+    coding agent recalling code by intent — and a distinct embedding domain (code
+    tokens, not prose)."""
+    out = []
+    for r in _fetch("Nan-Do/code-search-net-python", "default", "train", pages):
+        code = (r.get("code") or r.get("original_string") or "").strip()
+        summ = (r.get("summary") or "").strip()
+        if not summ:
+            doc = (r.get("docstring") or "").strip()
+            summ = doc.splitlines()[0].strip() if doc else ""
+        fn = (r.get("func_name") or "").strip()
+        if len(code) < 30 or len(summ) < 8 or not fn:
+            continue
+        out.append(_article(len(out), "code", code, summ, fn))
+    return out
+
+
 CONVERTERS = {
     "sciq": conv_sciq,
     "fever": conv_fever,
@@ -164,6 +184,7 @@ CONVERTERS = {
     "wikiqa": conv_wikiqa,
     "narrativeqa": conv_narrativeqa,
     "medical": conv_medical,
+    "code": conv_code,
 }
 
 

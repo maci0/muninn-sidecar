@@ -278,6 +278,7 @@ auto-calibration (§F) rather than a fixed threshold:
 | msc-scifact | BeIR/scifact-generated-queries | scientific abstract retrieval | 0.39 | 0.70 | 0.84 |
 | msc-medical | lavita/medical-qa | medical Q→answer | 0.45 | 0.75 | 0.85 |
 | msc-narrativeqa | deepmind/narrativeqa (summary) | long-narrative QA | 0.89 | 0.575 | 0.83 |
+| msc-code | Nan-Do/code-search-net-python | NL→code retrieval | 0.39 | 0.70 | 0.93 |
 
 Findings: (1) retrieval difficulty is regime-dependent — instruction+context with
 distinct contexts is trivial (R@1 1.0), while claim/abstract retrieval is hard
@@ -292,7 +293,13 @@ floor fix (0.4→0.05, §recall floor) matters — the old floor would have with
 the moderate-cosine evidence the calibrated gate wants. (5) **Long-narrative
 summaries retrieve well** (narrativeqa R@1 0.89): a plot question matches its
 dense summary strongly, and the ~820-token summaries seed fine (exercising the
-budget path) — long-document recall is not a problem in the *summary* setting.
+budget path) — long-document recall is not a problem in the *summary* setting. (6) **NL→code is
+the product-relevant regime** (a coding agent recalling code by intent): a
+natural-language summary matches stored Python at R@1 0.39 — the embedding handles
+code but the NL↔code gap is real, like the claim↔evidence gap. Its optimal gate is
+higher (0.70) and suppression is clean (0.93), so the sidecar serves its actual
+use case correctly *because* auto-calibration adapts the threshold per vault
+rather than assuming the prose-tuned 0.6.
 
 **Grounding is grader-domain-dependent (scifact negative).** Running the listwise
 answer-grounding rerank (§B4) on scifact's *natural* hard negatives with a general
