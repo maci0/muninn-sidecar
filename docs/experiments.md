@@ -132,6 +132,42 @@ jointly scores (query, passage) — a model-based step, deliberately not added h
 because its cost/latency must be weighed against a false-inject that is
 benign-leaning in the live use case.
 
+### B3 — LLM answer-grounding rerank — built & measured, does NOT beat the gate
+
+Implemented the one remaining lever from §B2: an LLM answer-grounding rerank
+(`msc-bench -ground-url <openai-url>` for a local model, or `-ground-cmd "claude
+-p"` / `"codex exec"` / `"grok -p"` for frontier CLIs). After cosine recall it
+asks the model, per top-K candidate, "does this passage contain a span that
+answers the query?" and drops the no's — exactly the cross-encoder step a
+bi-encoder cosine cannot do. Re-measured on the same hard-negative instrument
+(grounded gate = cosine≥0.30 AND model-accepted):
+
+| grader | inject@should | suppress@neg | note |
+|---|---|---|---|
+| cosine gate (frontier of the curve) | 0.71 / 0.40 | 0.49 / 0.85 | the lockstep baseline (§B2) |
+| qwen2.5:1.5b | 1.00 | 0.00 | accepts everything — useless grader |
+| qwen2.5:7b | 0.42 | 0.82 | lands *on* the cosine frontier |
+| claude -p (strict prompt) | 0.30 | 0.75 | over-rejects true answers |
+| claude -p (extractive prompt) | 0.60 | 0.60 | balanced, still on/below the cosine frontier |
+
+**Conclusion — the precision ceiling is not cheaply breakable in-flight.** Binary
+LLM grounding does not produce an (inject, suppress) point above the cosine
+frontier on this instrument, for three reasons: (1) **grader quality dominates** —
+small models under-reject (1.5b accepts all) or merely match cosine (7b); the
+verdict is only as good as the judge. (2) **Frontier graders are too slow for the
+hot path** — `claude -p` grades clear yes/no cases perfectly but costs ~3.5s per
+(query, passage) call (~7–10s added per recall at top-3), versus an ~11ms cosine
+recall; viable only *offline* (vault curation / eval), never as transparent
+in-flight injection. (3) **Many same-article "hard negatives" are genuinely
+answerable from sibling paragraphs** (encyclopedic text repeats facts), so
+suppressing them is *correct* — part of the 0.49 cosine ceiling is right behavior,
+not gate failure, and no honest grader should push suppression to 1.0.
+
+**Decision:** keep the cosine gate + auto-calibration as the in-flight design; ship
+the grounding rerank as an **offline** precision/curation tool only (the `-ground-*`
+flags). Frontier-CLI grounding is the right instrument for *evaluating* vault
+precision and curating memories, not for the per-request inject decision.
+
 ## C — Recall trigger (when to ask)
 
 **Shipped:** (1) **negative cache** — a repeated intent that already recalled

@@ -56,6 +56,12 @@ func run() error {
 		distractN  = flag.Int("distractors", 2, "number of prior unrelated turns to prepend (query-transform=distractors)")
 		rerank     = flag.String("rerank", "none", "candidate rerank: none | lexical (vector + lambda*token-overlap)")
 		rerankL    = flag.Float64("rerank-lambda", 0.3, "lexical rerank weight")
+		groundCmd  = flag.String("ground-cmd", "", "LLM answer-grounding rerank via a CLI agent (e.g. \"claude -p\"); drops recalled candidates the model says don't answer the query")
+		groundURL  = flag.String("ground-url", "", "LLM answer-grounding rerank via an OpenAI-compatible URL (e.g. http://127.0.0.1:11434/v1)")
+		groundMod  = flag.String("ground-model", "qwen2.5:1.5b-instruct", "grounding model name (for -ground-url)")
+		groundKey  = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
+		groundTopK = flag.Int("ground-topk", 5, "ground only the top-K candidates by cosine per probe (bounds model calls)")
+		groundTO   = flag.Duration("ground-timeout", 60*time.Second, "per grounding-call timeout")
 		multiRec   = flag.Bool("multi-recall", false, "split query into entity spans, recall each, merge (helps multi-hop)")
 		n          = flag.Int("n", 300, "number of labeled memories to seed")
 		absent     = flag.Int("absent", 100, "number of absent-topic probes (should suppress)")
@@ -137,7 +143,60 @@ func run() error {
 		return json.NewEncoder(os.Stdout).Encode(report)
 	}
 	printReport(report, results)
+
+	// Optional LLM answer-grounding rerank: re-measure the gate after dropping
+	// recalled candidates the model says don't answer the query. This is the
+	// cross-encoder precision step the cosine gate can't do (§B2). It mutates a
+	// COPY of the results so the cosine report above is untouched.
+	if g := buildGrounder(*groundCmd, *groundURL, *groundMod, *groundKey, *groundTO); g != nil {
+		grounded := deepCopyResults(results)
+		fmt.Fprintf(os.Stderr, "grounding rerank via %s (top-%d/probe)...\n", g.label(), *groundTopK)
+		t0 := time.Now()
+		calls := applyGrounding(ctx, g, grounded, *groundTopK)
+		fmt.Fprintf(os.Stderr, "grounding: %d model calls in %s\n", calls, time.Since(t0).Round(time.Millisecond))
+		// Split AFTER grounding so the partitions see the filtered Recalled sets.
+		gp, ga := splitPresentAbsent(grounded)
+		reportGroundedGate(g.label(), gp, ga)
+	}
 	return nil
+}
+
+// splitPresentAbsent partitions probe results by their Present label.
+func splitPresentAbsent(results []probeResult) (present, absent []probeResult) {
+	for _, r := range results {
+		if r.Present {
+			present = append(present, r)
+		} else {
+			absent = append(absent, r)
+		}
+	}
+	return present, absent
+}
+
+// deepCopyResults copies results with independent Recalled slices so grounding
+// can filter them without disturbing the cosine-gate report.
+func deepCopyResults(results []probeResult) []probeResult {
+	out := make([]probeResult, len(results))
+	copy(out, results)
+	for i := range out {
+		out[i].Recalled = append([]recalledMemory(nil), results[i].Recalled...)
+	}
+	return out
+}
+
+// reportGroundedGate prints the gate metric after grounding. Because grounding
+// already removes non-answering candidates, the gate is reported at a permissive
+// cosine floor (0.30) — suppression now comes from grounding, not the threshold.
+func reportGroundedGate(label string, present, absent []probeResult) {
+	vec := func(m recalledMemory) float64 { return m.VectorScore }
+	pts := gateSweep(present, absent, []float64{0.30}, vec)
+	if len(pts) == 0 {
+		return
+	}
+	p := pts[0]
+	fmt.Printf("\nGROUNDED GATE (%s, cosine>=0.30 AND model says the passage answers the query)\n", label)
+	fmt.Printf("  acc=%.2f f1=%.2f inject@should=%.2f suppress@absent=%.2f what=%.2f\n",
+		p.GateAcc, p.GateF1, p.InjectWhenS, p.SuppressOK, p.WhatCorrect)
 }
 
 // --- dataset ---
