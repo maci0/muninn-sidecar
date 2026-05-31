@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/mitm"
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
 
@@ -76,6 +77,8 @@ type Proxy struct {
 	injector       Enricher               // optional memory injector (nil = disabled)
 	server         *http.Server           // underlying HTTP server
 	reverseProxy   *httputil.ReverseProxy // stdlib reverse proxy with our hooks
+	ca             *mitm.CA               // non-nil enables TLS-MITM of CONNECT tunnels
+	mitmTransport  *http.Transport        // TLS transport to real upstream hosts (MITM)
 }
 
 // Config holds the parameters for creating a Proxy.
@@ -88,6 +91,7 @@ type Config struct {
 	ExcludePaths   []string // path substrings to exclude from capture (checked first)
 	FilterPatterns []string // tool name patterns to strip; nil = defaultFilterPatterns; []string{} = disable all filtering
 	Injector       Enricher // optional memory injector; nil = disabled
+	CA             *mitm.CA // non-nil enables TLS-MITM: CONNECT tunnels are terminated and intercepted
 }
 
 // New creates a Proxy. Use ListenAddr "127.0.0.1:0" in Config to bind to a
@@ -113,10 +117,20 @@ func New(cfg Config) (*Proxy, error) {
 		excludePaths:   toLowerSlice(cfg.ExcludePaths),
 		filterPatterns: toLowerSlice(filterPatterns),
 		injector:       cfg.Injector,
+		ca:             cfg.CA,
 	}
 
 	transport := &http.Transport{
 		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS13},
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	// Separate transport for MITM forwarding to arbitrary real hosts. TLS1.2 floor
+	// (some upstreams still require it) with normal cert verification of the real
+	// server — msc only forges the agent-facing side, never trusts a bad upstream.
+	p.mitmTransport = &http.Transport{
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
 		IdleConnTimeout:     90 * time.Second,
@@ -185,53 +199,72 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 // capture), stashes metadata in the request context, then delegates to the
 // stdlib reverse proxy which calls rewrite -> upstream -> captureResponse.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-
-	capture := p.shouldCapture(r.URL.Path)
-	slog.Debug("request", "path", r.URL.Path, "capture", capture)
-	if capture {
-		var reqBody []byte
-		if r.Body != nil {
-			var err error
-			reqBody, err = io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize+1))
-			if err != nil {
-				slog.Warn("failed to read request body for capture", "path", r.URL.Path, "err", err)
-				writeJSONError(w, http.StatusInternalServerError, "failed to read request body")
-				return
-			}
-			if int64(len(reqBody)) > maxRequestBodySize {
-				slog.Warn("request body exceeds size limit", "path", r.URL.Path, "limit", maxRequestBodySize)
-				writeJSONError(w, http.StatusRequestEntityTooLarge, "request body exceeds proxy size limit")
-				return
-			}
-		}
-
-		// Enrich with recalled memories if injector is enabled.
-		forwardBody := reqBody
-		if p.injector != nil && len(reqBody) > 0 {
-			enriched, _, err := p.injector.Enrich(r.Context(), reqBody)
-			if err != nil {
-				slog.Warn("inject enrichment failed, using original body", "path", r.URL.Path, "err", err)
-			} else if len(enriched) > 0 {
-				forwardBody = enriched
-			}
-		}
-
-		r.Body = io.NopCloser(bytes.NewReader(forwardBody))
-		r.ContentLength = int64(len(forwardBody))
-
-		ctx := &captureCtx{
-			start:          start,
-			method:         r.Method,
-			path:           r.URL.Path,
-			reqBody:        reqBody, // original body for capture (not enriched)
-			agent:          p.agentName,
-			filterPatterns: p.filterPatterns,
-		}
-		r = r.WithContext(withCapture(r.Context(), ctx))
+	// MITM mode: an agent that routes via HTTPS_PROXY opens a tunnel with CONNECT.
+	// Terminate TLS and intercept the decrypted traffic (the same pipeline).
+	if r.Method == http.MethodConnect && p.ca != nil {
+		p.handleConnect(w, r)
+		return
 	}
 
+	r, ok := p.instrument(w, r, time.Now())
+	if !ok {
+		return // instrument already wrote an error response
+	}
 	p.reverseProxy.ServeHTTP(w, r)
+}
+
+// instrument applies the capture/inject pipeline shared by the plain reverse-proxy
+// path and the MITM tunnel: if the path is captured, it buffers the body (within
+// the size limit), enriches it with recalled memories, and stashes capture
+// metadata in the request context. Returns the (possibly rewritten) request and
+// whether to proceed forwarding — false means an error response was already
+// written. Non-captured requests pass through untouched.
+func (p *Proxy) instrument(w http.ResponseWriter, r *http.Request, start time.Time) (*http.Request, bool) {
+	capture := p.shouldCapture(r.URL.Path)
+	slog.Debug("request", "path", r.URL.Path, "capture", capture)
+	if !capture {
+		return r, true
+	}
+
+	var reqBody []byte
+	if r.Body != nil {
+		var err error
+		reqBody, err = io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize+1))
+		if err != nil {
+			slog.Warn("failed to read request body for capture", "path", r.URL.Path, "err", err)
+			writeJSONError(w, http.StatusInternalServerError, "failed to read request body")
+			return r, false
+		}
+		if int64(len(reqBody)) > maxRequestBodySize {
+			slog.Warn("request body exceeds size limit", "path", r.URL.Path, "limit", maxRequestBodySize)
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body exceeds proxy size limit")
+			return r, false
+		}
+	}
+
+	// Enrich with recalled memories if injector is enabled.
+	forwardBody := reqBody
+	if p.injector != nil && len(reqBody) > 0 {
+		enriched, _, err := p.injector.Enrich(r.Context(), reqBody)
+		if err != nil {
+			slog.Warn("inject enrichment failed, using original body", "path", r.URL.Path, "err", err)
+		} else if len(enriched) > 0 {
+			forwardBody = enriched
+		}
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(forwardBody))
+	r.ContentLength = int64(len(forwardBody))
+
+	ctx := &captureCtx{
+		start:          start,
+		method:         r.Method,
+		path:           r.URL.Path,
+		reqBody:        reqBody, // original body for capture (not enriched)
+		agent:          p.agentName,
+		filterPatterns: p.filterPatterns,
+	}
+	return r.WithContext(withCapture(r.Context(), ctx)), true
 }
 
 // shouldCapture returns true if the request path matches one of the
