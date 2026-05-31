@@ -171,6 +171,45 @@ func TestMITMInterceptsHTTPS(t *testing.T) {
 	}
 }
 
+func TestSingleConnListener(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+	l := newSingleConnListener(c1)
+
+	// Addr reflects the wrapped connection.
+	if l.Addr() == nil {
+		t.Error("Addr returned nil")
+	}
+
+	// First Accept yields the conn; closing it must unblock the second Accept
+	// with net.ErrClosed so http.Server.Serve can return.
+	got, err := l.Accept()
+	if err != nil || got == nil {
+		t.Fatalf("first Accept: conn=%v err=%v", got, err)
+	}
+
+	accepted := make(chan error, 1)
+	go func() {
+		_, err := l.Accept()
+		accepted <- err
+	}()
+	got.Close() // notifyConn.Close signals done
+
+	select {
+	case err := <-accepted:
+		if err != net.ErrClosed {
+			t.Errorf("second Accept err = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Accept did not unblock after conn close")
+	}
+
+	// Close is idempotent (sync.Once) and safe to call again.
+	if err := l.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
 func TestStripPort(t *testing.T) {
 	cases := map[string]string{
 		"api.openai.com:443": "api.openai.com",
