@@ -170,8 +170,8 @@ Flags:
 
 Examples:
   msc claude                    Launch Claude Code with API capture
-  msc gemini                    Launch Gemini CLI with API capture
   msc codex                     Launch Codex with API capture
+  msc grok                      Launch Grok with API capture
   msc --vault myproject claude  Capture into a specific vault
   msc --dry-run opencode        Preview config without launching
   msc --quiet aider --model x   Suppress msc output, pass args to aider

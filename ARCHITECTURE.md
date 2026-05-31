@@ -2,7 +2,7 @@
 
 ## What It Does
 
-Muninn Sidecar (`msc`) is a transparent reverse proxy that sits between AI coding agents (Claude Code, Gemini CLI, Codex, Aider, etc.) and their LLM API backends. It captures every API exchange — request and response — and stores them as memories in [MuninnDB](https://github.com/scrypster/muninn), a semantic memory graph. On subsequent requests, it recalls relevant memories and injects them as system-level context before the request reaches the upstream API.
+Muninn Sidecar (`msc`) is a transparent reverse proxy that sits between AI coding agents (Claude Code, Codex, Grok, Aider, etc.) and their LLM API backends. It captures every API exchange — request and response — and stores them as memories in [MuninnDB](https://github.com/scrypster/muninn), a semantic memory graph. On subsequent requests, it recalls relevant memories and injects them as system-level context before the request reaches the upstream API.
 
 The agent doesn't know the proxy exists. From its perspective, it's talking directly to the API.
 
@@ -15,7 +15,7 @@ Muninn Sidecar solves this by creating a persistent, semantic memory layer that 
 ### Key Benefits
 
 - **Cross-session continuity**: Memories from yesterday's debugging session surface automatically when you encounter the same codebase area today.
-- **Cross-agent memory**: Work done in Claude Code is available when you switch to Gemini or Aider. The memory layer is agent-agnostic.
+- **Cross-agent memory**: Work done in Claude Code is available when you switch to Codex or Aider. The memory layer is agent-agnostic.
 - **Zero configuration for the agent**: No plugins, no agent modifications, no custom prompts. Override one environment variable and everything works.
 - **Semantic, not keyword**: MuninnDB uses embedding-based search. A conversation about "fixing the auth middleware" will surface when you later ask about "login security issues."
 - **Gradual context**: The session memory window with decay means relevant memories persist across turns while stale ones fade naturally, rather than abruptly appearing and disappearing.
@@ -24,7 +24,7 @@ Muninn Sidecar solves this by creating a persistent, semantic memory layer that 
 
 ```mermaid
 flowchart LR
-    Agent["AI Agent\n(claude, gemini, codex...)"] <--> Proxy["msc (proxy)"]
+    Agent["AI Agent\n(claude, codex, grok...)"] <--> Proxy["msc (proxy)"]
 
     subgraph Proxy
         direction TB
@@ -76,7 +76,7 @@ cmd/msc-bench/           Real-MuninnDB retrieval + when-to-inject benchmark
   main.go                Seed labeled corpus, probe, sweep score vs vector_score
   facts.go               Distinct-subject corpus + unrelated absent probes
 internal/
-  agents/agents.go        Agent registry (claude, gemini, codex, aider, etc.)
+  agents/agents.go        Agent registry (claude, codex, grok, reasonix, agy, ...)
   apiformat/apiformat.go  Format detection & message extraction (Anthropic/OpenAI/Gemini)
   inject/
     inject.go             Memory recall, session window with decay, selection, enrichment
@@ -230,12 +230,15 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach:
 | Agent | Binary | Env Var | Default Upstream |
 |---|---|---|---|
 | Claude Code | `claude` | `ANTHROPIC_BASE_URL` | `api.anthropic.com` |
-| Gemini CLI | `gemini` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
-| Antigravity* | `antigravity` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 | Codex | `codex` | `OPENAI_BASE_URL` | `api.openai.com` |
 | OpenCode | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
 | Aider | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
+| Grok | `grok` | `GROK_MODELS_BASE_URL` | `api.x.ai/v1` |
+| reasonix | `reasonix` | `DEEPSEEK_BASE_URL` | `api.deepseek.com/v1` |
+| Antigravity*† | `agy` / `antigravity` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 
-*\* Antigravity support is currently broken. It is hidden behind the `MSC_EXPERIMENTAL_ANTIGRAVITY=1` environment variable feature gate.*
+*\* Antigravity (`antigravity`) is currently broken and gated behind `MSC_EXPERIMENTAL_ANTIGRAVITY=1`.*
+
+*† `agy` (Google Antigravity CLI) is registered but authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override — so the proxy cannot currently capture or inject for it. The Gemini CLI agent was removed (deprecated upstream); the Gemini/Code-Assist API format is still supported for these agents.*
 
 Adding a new agent requires only adding an entry to the `Registry` map in `internal/agents/agents.go`.

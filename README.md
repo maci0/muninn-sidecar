@@ -14,21 +14,22 @@ flowchart LR
 1. **Auto-Memorization**: LLM completion endpoints are captured and stored as semantic memories in MuninnDB.
 2. **Auto-Injection**: Before forwarding a request, `msc` automatically recalls relevant past memories based on the conversation and injects them seamlessly into the system prompt.
 
-This allows agents to magically "remember" project context, conventions, and past debugging sessions across restarts, and even across different agents (e.g., sharing context between Claude and Gemini).
+This allows agents to magically "remember" project context, conventions, and past debugging sessions across restarts, and even across different agents (e.g., sharing context between Claude and Codex).
 
 ## Supported agents
 
 | Agent | Env var | Default upstream |
 |-------|---------|-----------------|
 | `claude` | `ANTHROPIC_BASE_URL` | `api.anthropic.com` |
-| `gemini` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
 | `codex` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
 | `grok` | `GROK_MODELS_BASE_URL` | `api.x.ai/v1`‡ |
 | `reasonix` | `DEEPSEEK_BASE_URL` | `api.deepseek.com/v1` |
-| `agy`§ | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
-| `antigravity`*| `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
+| `agy`§ | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
+| `antigravity`*| `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
+
+*(The Gemini CLI was removed — deprecated upstream. The Gemini/Code-Assist API format is still supported for `agy`/`antigravity`.)*
 
 *\* Antigravity support is currently broken. It is hidden behind the `MSC_EXPERIMENTAL_ANTIGRAVITY=1` environment variable feature gate.*
 
@@ -57,8 +58,8 @@ make build
 ```bash
 # Basic usage — launch an agent with API capture
 msc claude
-msc gemini
 msc codex
+msc grok
 
 # Pass arguments through to the agent
 msc claude -p "explain this codebase"
@@ -68,7 +69,7 @@ msc aider --model gpt-4o
 msc --vault myproject claude
 
 # Preview config without launching
-msc --dry-run gemini
+msc --dry-run opencode
 
 # Suppress msc output
 msc --quiet claude

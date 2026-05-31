@@ -47,12 +47,12 @@ func TestResolveMSCSentinelTakesPriority(t *testing.T) {
 
 func TestResolveAltDefault(t *testing.T) {
 	t.Setenv(mscSentinel, "")
-	for _, k := range Registry["gemini"].DetectEnv {
+	for _, k := range Registry["agy"].DetectEnv {
 		t.Setenv(k, "")
 	}
 	t.Setenv("GEMINI_API_KEY", "test-key")
 
-	agent := Registry["gemini"]
+	agent := Registry["agy"]
 	got := agent.Resolve()
 	if got != "https://generativelanguage.googleapis.com" {
 		t.Fatalf("expected alt default URL for API key auth, got %q", got)
@@ -88,7 +88,7 @@ func TestBuildEnvSetsProxyAndSentinel(t *testing.T) {
 }
 
 func TestBuildEnvExtraKeys(t *testing.T) {
-	agent := Registry["gemini"]
+	agent := Registry["agy"]
 	const proxyURL = "http://127.0.0.1:9999"
 	env := agent.BuildEnv(proxyURL, "https://cloudcode-pa.googleapis.com")
 

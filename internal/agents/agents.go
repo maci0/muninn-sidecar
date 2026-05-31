@@ -49,7 +49,7 @@ func init() {
 // overrides that env var to point at the local reverse proxy, which forwards
 // traffic to the real upstream while capturing every exchange for MuninnDB.
 //
-// Some agents (e.g. Gemini CLI) use different API backends depending on auth
+// Some agents (e.g. agy/antigravity) use different API backends depending on auth
 // mode. ExtraEnvKeys ensures all relevant env vars point at the proxy, while
 // AltDefaultCond/AltDefaultURL select the correct upstream automatically.
 type Agent struct {
@@ -90,17 +90,6 @@ var Registry = map[string]Agent{
 		DefaultURL:   "https://api.anthropic.com",
 		CapturePaths: []string{"/v1/messages"},
 		ExcludePaths: []string{"/count_tokens"},
-	},
-	"gemini": {
-		Command:      "gemini",
-		EnvKey:       "CODE_ASSIST_ENDPOINT",
-		ExtraEnvKeys: []string{"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
-		DetectEnv:    []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
-		DefaultURL:   "https://cloudcode-pa.googleapis.com",
-		// API key auth uses the standard Gemini API instead of Code Assist.
-		AltDefaultCond: "GEMINI_API_KEY",
-		AltDefaultURL:  "https://generativelanguage.googleapis.com",
-		CapturePaths:   []string{"GenerateContent", "CountTokens"},
 	},
 	"codex": {
 		Command:      "codex",
