@@ -3,7 +3,21 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
-## [Unreleased]
+## [0.4.0] — 2026-06-01
+
+### Added
+
+- **`MSC_WS_DEBUG` WebSocket protocol probe.** When set, the MITM upgrade-splice
+  logs the JSON envelope `type` and byte size of every decoded WebSocket message
+  per direction (`dir=c->s` / `dir=s->c`) — the message *shape*, never its
+  content. msc decodes codex's Responses-API WebSocket out of the box; this flag
+  surfaces the envelope of other agents' proprietary WebSocket protocols (e.g.
+  grok's gateway, `wss://grok.com/ws/gw/`) so a new protocol can be mapped and
+  handled alongside codex. Off by default.
+- **`docs/websocket-agents.md`** — records a static probe of installed agents'
+  LLM transports: only codex streams a capturable WebSocket today; grok's
+  gateway mode is a future target; `agy` is gRPC, not WebSocket; the rest are
+  HTTP/SSE on the normal path.
 
 ### Removed
 
@@ -185,6 +199,7 @@ and injecting relevant recalled context — with zero agent configuration.
   race-clean; CI builds all binaries, runs `go vet`/staticcheck/race tests, and a
   short fuzz campaign on every push.
 
+[0.4.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.0
 [0.3.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.3.0
 [0.2.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.2.0
 [0.1.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.1.0
