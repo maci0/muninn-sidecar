@@ -413,11 +413,11 @@ type recalledMemory struct {
 // probeOpts configures query construction and reranking for an experiment run.
 type probeOpts struct {
 	mode         string
-	transform    string  // none | distractors | repeat-last
-	distractN    int     // prior unrelated turns to prepend
-	rerank       string  // none | lexical
-	rerankLambda float64 // lexical rerank weight
-	multiRecall  bool    // split the query into entity spans, recall each, merge
+	transform    string   // none | distractors | repeat-last
+	distractN    int      // prior unrelated turns to prepend
+	rerank       string   // none | lexical
+	rerankLambda float64  // lexical rerank weight
+	multiRecall  bool     // split the query into entity spans, recall each, merge
 	rewriter     rewriter // optional LLM query rewrite/decomposition before recall
 	rewriteN     int      // max sub-queries (incl. original) from the rewriter
 }

@@ -1483,14 +1483,14 @@ func TestInjectable(t *testing.T) {
 		m    memory
 		want bool
 	}{
-		{memory{}, true},                              // empty fields → keep
+		{memory{}, true}, // empty fields → keep
 		{memory{State: "active", Trust: "verified"}, true},
-		{memory{State: "completed"}, true},            // finished but still relevant
+		{memory{State: "completed"}, true}, // finished but still relevant
 		{memory{State: "planning"}, true},
-		{memory{State: "archived"}, false},            // retired
-		{memory{State: "cancelled"}, false},           // abandoned
-		{memory{Trust: "untrusted"}, false},           // flagged unreliable
-		{memory{Trust: "external"}, true},             // external is still usable
+		{memory{State: "archived"}, false},                    // retired
+		{memory{State: "cancelled"}, false},                   // abandoned
+		{memory{Trust: "untrusted"}, false},                   // flagged unreliable
+		{memory{Trust: "external"}, true},                     // external is still usable
 		{memory{State: "archived", Trust: "verified"}, false}, // dead state wins
 	}
 	for _, c := range cases {

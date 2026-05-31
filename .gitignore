@@ -42,3 +42,6 @@ dist/
 
 # Antigravity CLI (agy) drops this in the working dir
 .antigravitycli/
+
+# Local agent/session state
+.claude/

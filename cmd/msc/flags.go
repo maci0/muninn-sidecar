@@ -26,15 +26,15 @@ type opts struct {
 	logJSON         bool
 	force           bool
 	noInject        bool
-	injectBudget    int     // max tokens to inject per request (0 = default)
-	minScore        float64 // injection cosine threshold (0 = default 0.6)
-	recallMode      string  // MuninnDB recall mode (empty = default "semantic")
-	groundCmd       string  // answer-grounding rerank via a CLI agent (e.g. "claude -p")
-	groundURL       string  // answer-grounding rerank via an OpenAI-compatible URL
-	groundModel     string  // grounding model name (for --ground-url)
-	groundTopK      int     // candidates to ground per recall (0 = default 3)
+	injectBudget    int           // max tokens to inject per request (0 = default)
+	minScore        float64       // injection cosine threshold (0 = default 0.6)
+	recallMode      string        // MuninnDB recall mode (empty = default "semantic")
+	groundCmd       string        // answer-grounding rerank via a CLI agent (e.g. "claude -p")
+	groundURL       string        // answer-grounding rerank via an OpenAI-compatible URL
+	groundModel     string        // grounding model name (for --ground-url)
+	groundTopK      int           // candidates to ground per recall (0 = default 3)
 	groundTimeout   time.Duration // in-flight grounding-call timeout (0 = default 10s); bounds how long a slow judge can stall a request
-	noAutoCalibrate bool    // disable self-tuning of the injection threshold
+	noAutoCalibrate bool          // disable self-tuning of the injection threshold
 }
 
 // parseAction signals a special action from parseFlags instead of os.Exit.
