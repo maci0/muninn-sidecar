@@ -3,6 +3,8 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 
@@ -98,6 +100,109 @@ func FuzzWSExchangeMessages(f *testing.F) {
 		ex.onServer("s->c", []byte(server))
 		ex.onServer("s->c", []byte(`{"type":"response.completed"}`))
 	})
+}
+
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestSpliceCopyTap(t *testing.T) {
+	t.Run("forwards and taps", func(t *testing.T) {
+		var dst bytes.Buffer
+		tap := make(chan []byte, 8)
+		spliceCopyTap(&dst, strings.NewReader("hello world"), tap)
+		if dst.String() != "hello world" {
+			t.Errorf("forwarded %q, want %q", dst.String(), "hello world")
+		}
+		var tapped []byte
+		for c := range tap { // closed by spliceCopyTap on EOF
+			tapped = append(tapped, c...)
+		}
+		if string(tapped) != "hello world" {
+			t.Errorf("tapped %q, want %q", tapped, "hello world")
+		}
+	})
+
+	t.Run("nil tap forwards only", func(t *testing.T) {
+		var dst bytes.Buffer
+		spliceCopyTap(&dst, strings.NewReader("data"), nil)
+		if dst.String() != "data" {
+			t.Errorf("forwarded %q, want %q", dst.String(), "data")
+		}
+	})
+
+	t.Run("backpressure abandons tap, keeps forwarding", func(t *testing.T) {
+		var dst bytes.Buffer
+		tap := make(chan []byte) // unbuffered, never drained → first send hits default
+		spliceCopyTap(&dst, strings.NewReader("keep forwarding"), tap)
+		if dst.String() != "keep forwarding" {
+			t.Errorf("forwarding must continue after tap abandon, got %q", dst.String())
+		}
+		if _, ok := <-tap; ok {
+			t.Error("tap should be closed after backpressure abandon")
+		}
+	})
+
+	t.Run("write error closes tap and returns", func(t *testing.T) {
+		tap := make(chan []byte, 1)
+		spliceCopyTap(errWriter{}, strings.NewReader("x"), tap)
+		if _, ok := <-tap; ok {
+			t.Error("tap should be closed after write error")
+		}
+	})
+}
+
+func TestRunWSParser(t *testing.T) {
+	// Feed two complete text frames through the channel; the parser must
+	// reassemble both and hand each to onMessage, then return on channel close.
+	frames := append(
+		wsBuildFrame(wsOpText, []byte(`{"type":"a"}`), false, true, false),
+		wsBuildFrame(wsOpText, []byte(`{"type":"b"}`), false, true, false)...,
+	)
+	ch := make(chan []byte, 2)
+	ch <- frames
+	close(ch)
+
+	var got []string
+	runWSParser("s->c", ch, false, func(_ string, msg []byte) {
+		got = append(got, string(msg))
+	})
+	if len(got) != 2 || got[0] != `{"type":"a"}` || got[1] != `{"type":"b"}` {
+		t.Fatalf("expected two reassembled messages, got %v", got)
+	}
+}
+
+func TestRunWSParserDebugLogs(t *testing.T) {
+	// With wsDebug on, the parser logs each message's type but still delivers it.
+	defer func(prev bool) { wsDebug = prev }(wsDebug)
+	wsDebug = true
+
+	ch := make(chan []byte, 1)
+	ch <- wsBuildFrame(wsOpText, []byte(`{"type":"gw.message"}`), false, true, false)
+	close(ch)
+
+	var n int
+	runWSParser("s->c", ch, false, func(_ string, _ []byte) { n++ })
+	if n != 1 {
+		t.Fatalf("expected one delivered message, got %d", n)
+	}
+}
+
+func TestRunWSParserDecodeErrorStops(t *testing.T) {
+	// A compressed (rsv1) frame with a corrupt deflate payload on a deflate
+	// connection makes the assembler error; the parser must stop (no delivery),
+	// while a following valid frame is never reached.
+	bad := wsBuildFrame(wsOpText, []byte{0xde, 0xad, 0xbe, 0xef, 0x00}, false, true, true)
+	good := wsBuildFrame(wsOpText, []byte(`{"type":"after"}`), false, true, false)
+	ch := make(chan []byte, 1)
+	ch <- append(bad, good...)
+	close(ch)
+
+	var n int
+	runWSParser("s->c", ch, true, func(_ string, _ []byte) { n++ })
+	if n != 0 {
+		t.Fatalf("decode error must stop the parser before any delivery, got %d", n)
+	}
 }
 
 func TestWSMessageType(t *testing.T) {
