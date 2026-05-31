@@ -287,4 +287,4 @@ quality bar, how to add an agent (verify empirically), and commit conventions.
 
 ## License
 
-MIT
+[MIT](LICENSE)
