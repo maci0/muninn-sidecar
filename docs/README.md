@@ -1,7 +1,9 @@
 # muninn-sidecar docs
 
-- **[recall-and-injection.md](recall-and-injection.md)** — how the sidecar
-  decides *when* to ask MuninnDB, *what* to inject, and *when to inject nothing*:
+- **[recall-and-injection.md](recall-and-injection.md)** — start here. A
+  plain-language walkthrough + a decision-flow diagram, then the full design: how
+  the sidecar decides *when* to ask MuninnDB, *what* to inject, and *when to inject
+  nothing*:
   latest-turn query, `semantic` recall mode, `vector_score` confidence gate
   (auto-calibrated per vault), fitness filter (drop dead/untrusted memories),
   staleness + contradiction resolution, reuse/negative-cache triggers, and the

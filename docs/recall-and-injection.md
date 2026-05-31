@@ -6,6 +6,83 @@ to inject into the traffic between an AI agent and its model — and the empiric
 work behind every one of those choices. No agent involvement, no extra round
 trips: it is a reverse-proxy decision on the request body.
 
+## In plain terms
+
+Think of `msc` as a **careful assistant sitting between your coding agent and the
+model**. Every time the agent is about to ask the model something, the assistant
+quietly checks its notebook (MuninnDB) for anything worth remembering — but it
+only speaks up when it's genuinely useful. Its guiding rules:
+
+- **Only look things up when the question is new.** If the agent just re-sends the
+  same message (common in tool-use loops), the assistant reuses what it already
+  pulled instead of re-searching.
+- **Only inject when confident.** A vague or off-topic match is worse than
+  silence — it wastes space and can mislead the model. When nothing clearly
+  relevant turns up, the assistant says nothing.
+- **Only inject what's still true.** Retired, contradicted, or stale notes are
+  dropped; if two notes disagree, the current one wins.
+- **Stay invisible.** The agent never knows the assistant is there — the request
+  just arrives with helpful context already in the system prompt.
+
+The whole decision, per request:
+
+```mermaid
+flowchart TD
+    A([Agent request]) --> B{Same question<br/>as last turn?}
+    B -- "yes, window has memories" --> REUSE[Reuse session window<br/>no new lookup]
+    B -- "yes, last time found nothing" --> SUP([Inject nothing<br/>forward as-is])
+    B -- "no / first turn" --> Q[Query = latest user message<br/>system-reminders stripped]
+    Q --> R[Ask MuninnDB<br/>semantic recall]
+    R --> SC[Score each memory by<br/>cosine similarity]
+    SC --> G{Best score ≥<br/>confidence gate?}
+    G -- "no" --> SUP
+    G -- "yes" --> KEEP[Keep memories above the gate]
+    REUSE --> KEEP
+    KEEP --> FIT["Drop unfit<br/>archived / cancelled / untrusted"]
+    FIT --> CUR["Keep the current version<br/>(drop stale & contradicted)"]
+    CUR --> DUP[Drop near-duplicates]
+    DUP --> GRND{"Grounding<br/>enabled? (opt-in)"}
+    GRND -- "no" --> BUD
+    GRND -- "yes" --> JUDGE["LLM judge: does each passage<br/>actually answer? drop the misses"]
+    JUDGE --> BUD[Pack within token budget]
+    BUD --> INJ[Inject as system-prompt context]
+    INJ --> FWD([Forward to the model])
+    SUP --> FWD
+```
+
+**Reading the diagram:** the left path (reuse / inject-nothing) is the cheap,
+common case — most turns either continue a prior question or have nothing
+confidently relevant. The right path is a fresh lookup, and everything after the
+gate is *quality control*: keep only confident, fit, current, non-redundant
+memories, optionally double-check them with an LLM, then fit them in the budget.
+
+### Why a confidence gate (and why it self-tunes)
+
+Retrieval always returns *something* — the top matches by similarity — even for a
+totally unrelated question. So the real decision is **"is the best match actually
+relevant, or just the least-irrelevant noise?"** Plotted, recall scores form two
+humps: a low **noise** cluster (things that happen to share some words) and a
+higher **relevant** cluster. The gate sits in the valley between them:
+
+```
+ count
+   │      ███ noise                  ██ relevant
+   │     █████                      ████
+   │    ███████                    ██████
+   │   █████████        ▲         ████████
+   │  ███████████   gate│        ██████████
+   └────────────────────┴───────────────────────► cosine score
+       0.3   0.4   0.5  0.6  0.7   0.8   0.9
+                (inject ↑ only to the right)
+```
+
+Where that valley falls depends on the data — a vault of short notes scores
+differently than one of long documents or code. So instead of a fixed cutoff,
+`msc` **watches the scores it actually sees and moves the gate to the valley**
+(Otsu's method), per vault. A bad/low-cosine vault that a fixed 0.6 would silence
+entirely starts injecting once the gate calibrates down to where its real matches
+live. (Details + the data behind every threshold are in the sections below.)
+
 ## The four decisions
 
 A request flows through four core decisions in `internal/inject`:
