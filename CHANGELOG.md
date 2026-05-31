@@ -7,6 +7,10 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **SSE capture without the optional space** — the streaming parser now accepts
+  `data:{...}` (no space after the colon), per the SSE spec's optional leading
+  space. The big-3 APIs send `data: `, but OpenAI-compatible proxies and local
+  servers may omit it; previously those deltas were silently skipped.
 - **MITM upgrade-splice dial timeout** — the WebSocket/upgrade splice now dials
   the backend with a 30s timeout (mirroring the blind-tunnel), so a black-hole
   target can't hang the goroutine and its hijacked connection indefinitely.

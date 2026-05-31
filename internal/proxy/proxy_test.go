@@ -1275,6 +1275,39 @@ func TestStreamCaptureAccumulatesText(t *testing.T) {
 	}
 }
 
+func TestStreamCaptureNoSpaceAfterDataColon(t *testing.T) {
+	// SSE spec: the space after "data:" is optional. OpenAI-compatible proxies and
+	// local servers may emit "data:{...}". msc must still capture the deltas.
+	sc := &streamCapture{
+		ReadCloser: io.NopCloser(strings.NewReader("")),
+		ctx:        &captureCtx{start: time.Now()},
+		statusCode: 200,
+	}
+	chunk := []byte(strings.Join([]string{
+		`data:{"choices":[{"delta":{"content":"no-"}}]}`, // no space
+		``,
+		`data: {"choices":[{"delta":{"content":"space"}}]}`, // with space (must still work)
+		``,
+		`data:[DONE]`,
+		``,
+	}, "\n"))
+	sc.processChunk(chunk)
+
+	respBody := sc.buildRespBody()
+	var doc map[string]any
+	if err := json.Unmarshal(respBody, &doc); err != nil {
+		t.Fatalf("invalid synthetic response: %v", err)
+	}
+	content, ok := doc["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("expected content from no-space SSE deltas, got %s", respBody)
+	}
+	block, _ := content[0].(map[string]any)
+	if block["text"] != "no-space" {
+		t.Errorf("expected accumulated text 'no-space', got %v", block["text"])
+	}
+}
+
 func TestStreamCapturePreservesUsage(t *testing.T) {
 	// Verify that usage metadata from SSE events is preserved in the
 	// synthetic response body and correctly extracted into token counts.

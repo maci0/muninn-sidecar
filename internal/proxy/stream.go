@@ -18,7 +18,7 @@ const maxToolNames = 20
 // sseDataPrefix and sseDone are package-level byte slices to avoid per-call
 // []byte conversions inside the SSE hot path.
 var (
-	sseDataPrefix = []byte("data: ")
+	sseDataPrefix = []byte("data:")
 	sseDone       = []byte("[DONE]")
 )
 
@@ -120,6 +120,12 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 			continue
 		}
 		dBytes := lineBytes[len(sseDataPrefix):]
+		// The space after "data:" is optional per the SSE spec; a single leading
+		// space is stripped. The big-3 APIs send "data: ", but OpenAI-compatible
+		// proxies and local servers (e.g. via custom upstreams) may omit it.
+		if len(dBytes) > 0 && dBytes[0] == ' ' {
+			dBytes = dBytes[1:]
+		}
 		if bytes.Equal(dBytes, sseDone) {
 			continue
 		}
