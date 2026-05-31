@@ -32,20 +32,34 @@ func TestCallRPCError(t *testing.T) {
 }
 
 func TestCallSuccess(t *testing.T) {
+	var gotContentType, gotAccept, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		gotAccept = r.Header.Get("Accept")
+		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"ok"}]},"id":1}`))
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "", 5*time.Second)
+	c := New(srv.URL, "tok", 5*time.Second)
 	body, err := c.Call(context.Background(), "muninn_remember", map[string]any{"vault": "x"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(body) == 0 {
 		t.Fatal("expected non-empty body for successful response")
+	}
+	// Content negotiation: request JSON, send JSON, carry the bearer token.
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+	if gotAccept != "application/json" {
+		t.Errorf("Accept = %q, want application/json", gotAccept)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("Authorization = %q, want 'Bearer tok'", gotAuth)
 	}
 }
 

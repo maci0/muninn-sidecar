@@ -7,6 +7,10 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **Explicit JSON content negotiation for MCP calls** — requests now send
+  `Accept: application/json` so an MCP-over-HTTP server capable of both JSON and
+  SSE returns JSON (what the one-shot JSON-RPC client parses) rather than possibly
+  defaulting to a `text/event-stream` reply.
 - **Bounded shutdown when MuninnDB is unreachable** — `Drain` now arms a deadline
   that cancels in-flight flush retries, so Ctrl-C with a queued backlog against an
   unreachable MuninnDB exits within ~8s instead of retrying ~6s per queued batch

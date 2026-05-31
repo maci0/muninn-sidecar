@@ -68,6 +68,7 @@ func (c *Client) HealthCheck() error {
 	if err != nil {
 		return fmt.Errorf("failed to create health request: %w", err)
 	}
+	req.Header.Set("Accept", "application/json")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
@@ -139,6 +140,10 @@ func (c *Client) Call(ctx context.Context, toolName string, args map[string]any)
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Explicitly negotiate a JSON response. An MCP-over-HTTP server capable of
+	// both JSON and SSE may otherwise default to a text/event-stream reply, which
+	// this client (a one-shot JSON-RPC caller) does not parse as a stream.
+	req.Header.Set("Accept", "application/json")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
