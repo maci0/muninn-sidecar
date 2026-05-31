@@ -173,6 +173,41 @@ func TestExtractUserMessage(t *testing.T) {
 			want: "part1part2",
 		},
 		{
+			name: "openai responses no input field",
+			body: `{"model":"gpt-4o"}`,
+			want: "",
+		},
+		{
+			name: "openai responses input wrong type",
+			body: `{"model":"gpt-4o","input":42}`,
+			want: "",
+		},
+		{
+			name: "openai responses no user item",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"assistant","content":"only reply"}]}`,
+			want: "",
+		},
+		{
+			name: "openai responses item not object skipped",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"real"},"bogus"]}`,
+			want: "real",
+		},
+		{
+			name: "openai responses content parts non-text skipped",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":[{"type":"image"},{"type":"input_text","text":"kept"}]}]}`,
+			want: "kept",
+		},
+		{
+			name: "openai responses content unknown type",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":123}]}`,
+			want: "",
+		},
+		{
+			name: "openai responses content part not object",
+			body: `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":["raw",{"type":"input_text","text":"obj"}]}]}`,
+			want: "obj",
+		},
+		{
 			name: "empty",
 			body: `{}`,
 			want: "",
@@ -526,6 +561,14 @@ func TestTruncateQuery(t *testing.T) {
 				t.Errorf("TruncateQuery() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractOpenAIResponsesUserQueryNoInput(t *testing.T) {
+	// The no-"input" guard is unreachable via ExtractUserMessage (format
+	// detection requires "input"), so exercise it directly.
+	if got := extractOpenAIResponsesUserQuery(map[string]any{"model": "gpt-4o"}); got != "" {
+		t.Errorf("missing input should yield empty, got %q", got)
 	}
 }
 
