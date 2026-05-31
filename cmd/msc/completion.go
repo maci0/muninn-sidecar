@@ -19,12 +19,12 @@ func cmdCompletion(shell string) int {
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "-h --help -v --version -d --debug -q --quiet -n --dry-run -j --json -f --force --no-inject --no-auto-calibrate --no-redact --mitm --mitm-host --inject-budget --inject-min-score --recall-mode --log-json --vault --mcp-url --token" -- "$cur"))
+        COMPREPLY=($(compgen -W "-h --help -v --version -d --debug -q --quiet -n --dry-run -j --json -f --force --no-inject --no-auto-calibrate --no-redact --mitm --mitm-host --inject-budget --inject-min-score --recall-mode --ground-url --ground-cmd --ground-model --ground-topk --ground-timeout --log-json --vault --mcp-url --token" -- "$cur"))
         return
     fi
 
     # Flags that take a value: don't offer commands/agents after them.
-    if [[ "$prev" == "--vault" || "$prev" == "--mcp-url" || "$prev" == "--token" || "$prev" == "--inject-budget" || "$prev" == "--inject-min-score" || "$prev" == "--recall-mode" ]]; then
+    if [[ "$prev" == "--vault" || "$prev" == "--mcp-url" || "$prev" == "--token" || "$prev" == "--inject-budget" || "$prev" == "--inject-min-score" || "$prev" == "--recall-mode" || "$prev" == "--ground-url" || "$prev" == "--ground-cmd" || "$prev" == "--ground-model" || "$prev" == "--ground-topk" || "$prev" == "--ground-timeout" ]]; then
         return
     fi
 
@@ -46,7 +46,7 @@ func cmdCompletion(shell string) int {
             skip_next=0
             continue
         fi
-        if [[ "$word" == "--vault" || "$word" == "--mcp-url" || "$word" == "--token" || "$word" == "--inject-budget" || "$word" == "--inject-min-score" || "$word" == "--recall-mode" ]]; then
+        if [[ "$word" == "--vault" || "$word" == "--mcp-url" || "$word" == "--token" || "$word" == "--inject-budget" || "$word" == "--inject-min-score" || "$word" == "--recall-mode" || "$word" == "--ground-url" || "$word" == "--ground-cmd" || "$word" == "--ground-model" || "$word" == "--ground-topk" || "$word" == "--ground-timeout" ]]; then
             skip_next=1
             continue
         fi
@@ -84,6 +84,11 @@ _msc() {
         '--inject-budget[Max tokens to inject per request]:budget:'
         '--inject-min-score[Min cosine to inject a memory (0-1)]:score:'
         '--recall-mode[MuninnDB recall mode]:mode:(semantic recent balanced deep)'
+        '--ground-url[Answer-grounding rerank via an OpenAI-compatible URL]:url:'
+        '--ground-cmd[Answer-grounding rerank via a CLI agent]:cmd:'
+        '--ground-model[Grounding model for --ground-url]:model:'
+        '--ground-topk[Candidates to ground per recall]:k:'
+        '--ground-timeout[In-flight grounding-call timeout]:duration:'
         '--log-json[Emit logs as JSON]'
         '--vault[MuninnDB vault name]:vault:'
         '--mcp-url[MuninnDB MCP endpoint]:url:'
@@ -126,6 +131,11 @@ complete -c msc -l mitm-host -r -d "Scope MITM to a host (implies --mitm)"
 complete -c msc -l inject-budget -r -d "Max tokens to inject per request"
 complete -c msc -l inject-min-score -r -d "Min cosine to inject a memory (0-1)"
 complete -c msc -l recall-mode -r -a "semantic recent balanced deep" -d "MuninnDB recall mode"
+complete -c msc -l ground-url -r -d "Answer-grounding rerank via an OpenAI-compatible URL"
+complete -c msc -l ground-cmd -r -d "Answer-grounding rerank via a CLI agent"
+complete -c msc -l ground-model -r -d "Grounding model for --ground-url"
+complete -c msc -l ground-topk -r -d "Candidates to ground per recall"
+complete -c msc -l ground-timeout -r -d "In-flight grounding-call timeout"
 complete -c msc -l log-json -d "Emit logs as JSON"
 complete -c msc -l vault -r -d "MuninnDB vault name"
 complete -c msc -l mcp-url -r -d "MuninnDB MCP endpoint"

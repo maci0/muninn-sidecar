@@ -279,6 +279,12 @@ Flags:
       --inject-min-score F  Min cosine score to inject a memory, 0-1 (default: 0.6)
       --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
       --no-auto-calibrate   Disable self-tuning of the injection threshold (keep min-score fixed)
+      --ground-url URL      Opt-in answer-grounding rerank via an OpenAI-compatible model;
+                            drops recalled passages the model says don't answer the query
+      --ground-cmd CMD      Answer-grounding rerank via a CLI agent (e.g. "claude -p"); offline
+      --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
+      --ground-topk K       Candidates to ground per recall (default: 3)
+      --ground-timeout D    In-flight grounding-call timeout (default: 10s); fails open to the gate
       --no-redact        Disable secret redaction of captured content (full-fidelity; trusted envs only)
       --mitm             Intercept HTTPS via a local CA + CONNECT proxy instead of a
                          base-URL override (for agents that ignore *_BASE_URL); the
