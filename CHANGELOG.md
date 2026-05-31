@@ -3,7 +3,12 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
-## [Unreleased]
+## [0.3.0] — 2026-05-31
+
+Headline: **codex ChatGPT-mode is now captured** — msc decodes codex's
+permessage-deflate WebSocket under `--mitm` — alongside a full secret-redaction
+system, CI hardening (vulnerability scanning, green pipeline), and MITM
+scoping/diagnostics.
 
 ### Added
 
@@ -172,5 +177,6 @@ and injecting relevant recalled context — with zero agent configuration.
   race-clean; CI builds all binaries, runs `go vet`/staticcheck/race tests, and a
   short fuzz campaign on every push.
 
+[0.3.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.3.0
 [0.2.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.2.0
 [0.1.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.1.0
