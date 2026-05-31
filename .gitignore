@@ -39,3 +39,6 @@ dist/
 /msc-bench
 /msc-eval
 /msc-qa
+
+# Antigravity CLI (agy) drops this in the working dir
+.antigravitycli/
