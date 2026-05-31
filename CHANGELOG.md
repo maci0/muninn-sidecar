@@ -29,7 +29,8 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 - **Secret redaction before storage** — captured exchanges are scanned for
   well-known credential formats (OpenAI/Anthropic `sk-` keys, AWS access keys,
-  GitHub tokens, Google API keys, Slack tokens, JWTs, `Bearer` tokens, PEM
+  GitHub tokens incl. fine-grained PATs, Google API keys, Slack tokens, Stripe
+  secret/restricted keys, npm tokens, JWTs, `Bearer` and Basic auth headers, PEM
   private-key blocks) and replaced with `[REDACTED]` before being written to
   MuninnDB, so secrets pasted into an agent don't persist and resurface via
   recall. Patterns are conservative (prefix/structure-anchored) to avoid

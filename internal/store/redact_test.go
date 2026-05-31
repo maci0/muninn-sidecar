@@ -25,6 +25,11 @@ func TestRedactSecrets(t *testing.T) {
 		{"bearer token", "Bearer " + strings.Repeat("f", 36), strings.Repeat("f", 36)},
 		{"jwt", "ey" + "J" + strings.Repeat("a", 12) + ".ey" + "J" + strings.Repeat("b", 12) + "." + strings.Repeat("c", 12), strings.Repeat("b", 12)},
 		{"private key block", "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Repeat("M", 24) + "\n-----END RSA PRIVATE KEY-----", strings.Repeat("M", 24)},
+		{"stripe secret key", "sk" + "_live_" + strings.Repeat("g", 24), strings.Repeat("g", 24)},
+		{"stripe restricted key", "rk" + "_test_" + strings.Repeat("h", 24), strings.Repeat("h", 24)},
+		{"github fine-grained pat", "github" + "_pat_" + strings.Repeat("i", 62), strings.Repeat("i", 62)},
+		{"npm token", "npm" + "_" + strings.Repeat("j", 36), strings.Repeat("j", 36)},
+		{"basic auth header", "Authorization: Basic " + strings.Repeat("k", 24), strings.Repeat("k", 24)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,6 +52,7 @@ func TestRedactSecrets(t *testing.T) {
 		"Let's refactor the authentication module today.",
 		"The function returns sk- prefixed ids? no.", // "sk-" without 20+ chars
 		"bearer of bad news",                         // "bearer" without a token
+		"pk" + "_live_" + strings.Repeat("x", 24),    // Stripe publishable key is public — keep
 		"",
 	}
 	for _, c := range clean {

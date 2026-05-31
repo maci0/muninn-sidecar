@@ -30,6 +30,14 @@ var redactPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
 	// Bearer tokens in headers/prose.
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
+	// Stripe secret / restricted keys (live or test) — not pk_ (publishable).
+	regexp.MustCompile(`(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{16,}`),
+	// GitHub fine-grained personal access token.
+	regexp.MustCompile(`github_pat_[0-9A-Za-z_]{60,}`),
+	// npm access token.
+	regexp.MustCompile(`npm_[0-9A-Za-z]{36}`),
+	// HTTP Basic auth header (base64 user:pass).
+	regexp.MustCompile(`(?i)authorization:\s*basic\s+[A-Za-z0-9+/]{16,}=*`),
 }
 
 const redactionMarker = "[REDACTED]"
