@@ -7,6 +7,12 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **Bounded shutdown when MuninnDB is unreachable** — `Drain` now arms a deadline
+  that cancels in-flight flush retries, so Ctrl-C with a queued backlog against an
+  unreachable MuninnDB exits within ~8s instead of retrying ~6s per queued batch
+  (which could stack to minutes). Flush calls are now context-aware (interruptible
+  backoff); a single in-flight batch still gets its full retry budget for
+  transient blips.
 - **SSE capture without the optional space** — the streaming parser now accepts
   `data:{...}` (no space after the colon), per the SSE spec's optional leading
   space. The big-3 APIs send `data: `, but OpenAI-compatible proxies and local

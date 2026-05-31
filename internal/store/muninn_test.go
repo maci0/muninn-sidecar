@@ -145,6 +145,37 @@ func TestQueueOverflow(t *testing.T) {
 	s.Drain()
 }
 
+func TestDrainBoundedWhenUnreachable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping bounded-drain test (needs ~8s)")
+	}
+	// Server always 500s. Many distinct batches would, unbounded, retry ~6s each
+	// (~18s for 3 batches). Drain must instead be bounded near drainTimeout.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL, "", "test", &stats.Stats{})
+	for i := 0; i < 25; i++ { // > 2*maxBatchSize, distinct concepts (no dedup)
+		s.Store(&CapturedExchange{
+			Agent:    "test",
+			Path:     "/v1/messages",
+			ReqBody:  json.RawMessage(fmt.Sprintf(`{"messages":[{"role":"user","content":"unique message %d"}]}`, i)),
+			RespBody: json.RawMessage(fmt.Sprintf(`{"content":[{"type":"text","text":"resp %d"}]}`, i)),
+		})
+	}
+
+	start := time.Now()
+	s.Drain()
+	elapsed := time.Since(start)
+	// Bounded to drainTimeout (+ margin for an in-flight call), well under the
+	// unbounded ~18s+ a multi-batch backlog would otherwise take.
+	if elapsed > drainTimeout+5*time.Second {
+		t.Fatalf("Drain took %v, expected bounded near drainTimeout (%v)", elapsed, drainTimeout)
+	}
+}
+
 func TestRetryOnServerError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping retry test in short mode (needs ~6s for backoff)")

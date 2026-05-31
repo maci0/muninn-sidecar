@@ -44,7 +44,20 @@ type MuninnStore struct {
 	done      chan struct{}          // closed when Drain completes
 	drainOnce sync.Once              // ensures Drain is idempotent
 	stats     *stats.Stats           // session statistics (nil-safe)
+
+	// flushCtx governs MCP flush calls and their retries. It stays live for the
+	// whole session (so transient blips get full retries), and Drain arms a
+	// deadline that cancels it — bounding worst-case shutdown when MuninnDB is
+	// unreachable instead of retrying 6s per queued batch.
+	flushCtx    context.Context
+	flushCancel context.CancelFunc
 }
+
+// drainTimeout bounds total shutdown flushing. It exceeds one batch's full retry
+// budget (2s+4s backoff) so a single in-flight batch can still recover from a
+// transient blip, while a large backlog against an unreachable MuninnDB is
+// bounded to one budget instead of ~6s per queued batch (which could be minutes).
+const drainTimeout = 8 * time.Second
 
 // CapturedExchange holds one request->response pair captured by the proxy.
 type CapturedExchange struct {
@@ -81,6 +94,7 @@ func New(mcpURL, token, vault string, st *stats.Stats) *MuninnStore {
 		done:  make(chan struct{}),
 		stats: st,
 	}
+	s.flushCtx, s.flushCancel = context.WithCancel(context.Background())
 	go s.worker()
 	return s
 }
@@ -126,9 +140,14 @@ func (s *MuninnStore) Store(ex *CapturedExchange) {
 // Safe to call multiple times.
 func (s *MuninnStore) Drain() {
 	s.drainOnce.Do(func() {
+		// Bound shutdown: cancel flush retries after drainTimeout so a queued
+		// backlog against an unreachable MuninnDB can't hang exit. Normal flushes
+		// before this fires keep their full retry budget.
+		time.AfterFunc(drainTimeout, s.flushCancel)
 		close(s.queue)
 	})
 	<-s.done
+	s.flushCancel() // release the context once the worker has exited
 }
 
 // HealthCheck pings the MuninnDB MCP health endpoint for this store's
@@ -345,12 +364,22 @@ func (s *MuninnStore) callTool(name string, args map[string]any) error {
 		if attempt > 0 {
 			backoff := time.Duration(1<<attempt) * time.Second // 2s, 4s
 			slog.Debug("retrying MCP call", "attempt", attempt+1, "backoff", backoff, "tool", name, "err", lastErr)
-			time.Sleep(backoff)
+			// Interruptible backoff: a Drain deadline cancels flushCtx so we
+			// don't sleep through shutdown.
+			select {
+			case <-time.After(backoff):
+			case <-s.flushCtx.Done():
+				return s.flushCtx.Err()
+			}
 		}
 
-		_, lastErr = s.mcp.Call(context.Background(), name, args)
+		_, lastErr = s.mcp.Call(s.flushCtx, name, args)
 		if lastErr == nil {
 			return nil
+		}
+		// Stop retrying once the flush context is cancelled (shutdown deadline).
+		if s.flushCtx.Err() != nil {
+			return lastErr
 		}
 		// Don't retry client errors (4xx) or RPC-level errors — they
 		// indicate a permanent rejection that won't succeed on retry.
