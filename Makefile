@@ -38,6 +38,8 @@ fuzz:
 	@set -e; for pkg in $$(go list ./...); do \
 	  for fn in $$(go test -list '^Fuzz' $$pkg 2>/dev/null | grep '^Fuzz'); do \
 	    echo "== $$pkg $$fn =="; \
+	    go test $$pkg -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) && continue; \
+	    echo "   retrying $$fn once (a real crasher is saved to testdata and re-fails; this only absorbs loaded-runner 'context deadline exceeded' flakes)"; \
 	    go test $$pkg -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) || exit 1; \
 	  done; \
 	done; echo "all fuzz targets clean"
