@@ -19,7 +19,7 @@
   unifying law: *injection value ≈ retrieval accuracy × the model's in-context
   ability; a wrong injection never helps*.
 - **[testing.md](testing.md)** — test + fuzz posture: every function tested,
-  48 fuzz targets over all parsing/transform surfaces, `make cover` / `make fuzz`.
+  51 fuzz targets over all parsing/transform surfaces, `make cover` / `make fuzz`.
 
 ## Dataset zoo
 

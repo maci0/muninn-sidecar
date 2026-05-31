@@ -18,7 +18,7 @@ surfaces) has a Go fuzz target.
 
 ## Fuzzing
 
-48 fuzz targets cover the untrusted-input surfaces:
+51 fuzz targets cover the untrusted-input surfaces:
 
 - **apiformat** — request/response extraction, recent-context, system-reminder
   strip, truncation (UTF-8 + length invariants), SSE delta/tool-name.
@@ -32,7 +32,9 @@ surfaces) has a Go fuzz target.
   (`buildArgs`) and the TLS-MITM child environment (`BuildMITMEnv`).
 - **proxy** — request/response anti-recursion filtering, SSE parsing, injected-
   context stripping, MITM helpers (`stripPort`, `isUpgradeRequest`,
-  `shouldInterceptHost`), and WebSocket frame decoding (`readWSFrame`).
+  `shouldInterceptHost`), and the WebSocket-capture path: frame decoding
+  (`readWSFrame`), permessage-deflate inflation (`inflate`), the 101 header
+  reader, and the codex message-pairing parsers.
 - **mitm** — CONNECT host normalization (`normalizeHost`) and per-host leaf
   minting (`LeafFor`).
 - **mcpclient** — health URL derivation.

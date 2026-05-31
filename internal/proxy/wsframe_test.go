@@ -163,6 +163,19 @@ func TestWSAssembler(t *testing.T) {
 	}
 }
 
+func FuzzWSInflate(f *testing.F) {
+	f.Add([]byte{0x00})
+	f.Add([]byte("not a deflate stream"))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Arbitrary (possibly corrupt) compressed payloads must never panic, and
+		// the context-takeover state must survive a second call.
+		var w wsInflater
+		_, _ = w.inflate(data)
+		_, _ = w.inflate(data)
+	})
+}
+
 func FuzzReadWSFrame(f *testing.F) {
 	f.Add(wsBuildFrame(wsOpText, []byte("hi"), true, true, false))
 	f.Add([]byte{0x81, 0x00})

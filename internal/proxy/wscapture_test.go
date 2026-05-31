@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"sync"
 	"testing"
@@ -70,6 +71,33 @@ func TestWSExchangeReasoningOnlySkipped(t *testing.T) {
 	if len(got) != 1 || !bytes.Contains(got[0].RespBody, []byte("answer")) {
 		t.Fatalf("answer cycle should store 'answer' exactly once, got %d: %+v", len(got), got)
 	}
+}
+
+func FuzzReadHeaderBlock(f *testing.F) {
+	f.Add([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"))
+	f.Add([]byte("no terminator"))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Arbitrary header bytes must never panic and the returned block must not
+		// exceed the cap.
+		out, _ := readHeaderBlock(bufio.NewReader(bytes.NewReader(data)))
+		if len(out) > 64<<10+16 {
+			t.Fatalf("header block exceeded cap: %d", len(out))
+		}
+	})
+}
+
+func FuzzWSExchangeMessages(f *testing.F) {
+	f.Add(`{"type":"response.create","input":[]}`, `{"type":"response.output_text.delta","delta":"x"}`)
+	f.Add(`garbage`, `{"type":"response.completed"}`)
+	f.Add(``, ``)
+	f.Fuzz(func(t *testing.T, client, server string) {
+		// Arbitrary JSON (or non-JSON) on either direction must never panic.
+		ex := &wsExchange{p: &Proxy{store: &recordStore{}, agentName: "x"}}
+		ex.onClient("c->s", []byte(client))
+		ex.onServer("s->c", []byte(server))
+		ex.onServer("s->c", []byte(`{"type":"response.completed"}`))
+	})
 }
 
 func TestWSExchangeNoRequestNoStore(t *testing.T) {
