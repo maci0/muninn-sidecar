@@ -40,7 +40,7 @@ This allows agents to magically "remember" project context, conventions, and pas
 
 *‡ Setting `GROK_MODELS_BASE_URL` switches grok to API-key (Bearer) auth, so an xAI API key must be configured; grok then routes inference (OpenAI-compatible) through the proxy.*
 
-*◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`). In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend directly and ignores `OPENAI_BASE_URL`, so the env-override path is bypassed — use `--mitm` to intercept it transparently.*
+*◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`). In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend directly and ignores `OPENAI_BASE_URL`, so the env-override path is bypassed. `--mitm` does intercept its TLS (verified: `chatgpt.com/backend-api/codex/responses`), but that endpoint uses a `101`-upgrade/streaming protocol the capturing reverse-proxy does not yet splice, so the exchange isn't stored — tracked as a known limitation.*
 
 *§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override. The env-override path can't capture or inject for it (same limitation as `antigravity`); `--mitm` is the way to intercept these.*
 

@@ -29,6 +29,15 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   termination to the upstream + listed hosts and blind-tunnels everything else
   untouched, so package registries and cert-pinned services aren't decrypted.
 
+### Known limitations
+
+- **MITM + `101` protocol upgrades** — verified live that `--mitm` intercepts
+  every agent runtime (claude end-to-end: intercept→inject→capture→store). codex
+  ChatGPT-mode is intercepted at the TLS layer (`chatgpt.com/backend-api/codex/responses`),
+  but that endpoint does a `101 Switching Protocols` upgrade the capturing
+  reverse-proxy can't splice yet, so its exchanges aren't stored. Normal
+  request/response and SSE agents are unaffected.
+
 ### Changed
 
 - **MITM CA/leaf hardening** — the on-disk CA is regenerated on load when within
