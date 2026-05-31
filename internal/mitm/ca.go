@@ -48,6 +48,11 @@ const leafValidity = 24 * time.Hour
 // approximate (drops an arbitrary entry), which is fine for a size guard.
 const maxCacheEntries = 1024
 
+// maxHostLen rejects hosts longer than the DNS name limit (RFC 1035, 253
+// octets) before minting — no real SNI is longer, and it bounds the cost of an
+// adversarial/huge host string.
+const maxHostLen = 253
+
 // CA is a local certificate authority that mints (and caches) per-host leaf
 // certificates for TLS interception. Safe for concurrent use.
 type CA struct {
@@ -177,6 +182,13 @@ func (c *CA) CertPEM() []byte { return c.certPEM }
 // maxCacheEntries) and re-minted once expired. Safe for concurrent use.
 func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
 	host = normalizeHost(host)
+	// A DNS name can't exceed 253 octets (RFC 1035); reject implausibly long
+	// hosts rather than minting a cert with a giant SAN — that wastes work
+	// (ASN.1-encoding + signing a huge string) on input that can't be a real
+	// SNI, and bounds a pathological slow path.
+	if len(host) > maxHostLen {
+		return nil, fmt.Errorf("mitm: host too long (%d > %d)", len(host), maxHostLen)
+	}
 	now := time.Now()
 
 	c.mu.Lock()

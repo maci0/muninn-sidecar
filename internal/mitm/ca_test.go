@@ -112,6 +112,22 @@ func TestNormalizeHost(t *testing.T) {
 	}
 }
 
+func TestLeafForRejectsOverlongHost(t *testing.T) {
+	ca, err := LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 253 chars (DNS limit) is accepted; longer is rejected before minting.
+	ok := strings.Repeat("a", 249) + ".com" // 253
+	if _, err := ca.LeafFor(ok); err != nil {
+		t.Errorf("253-char host should mint, got error: %v", err)
+	}
+	tooLong := strings.Repeat("a", maxHostLen+1)
+	if _, err := ca.LeafFor(tooLong); err == nil {
+		t.Errorf("host longer than %d should be rejected", maxHostLen)
+	}
+}
+
 func TestParseCACorruptRegenerates(t *testing.T) {
 	dir := t.TempDir()
 	// Pre-seed corrupt files; LoadOrCreateCA must regenerate rather than fail.
