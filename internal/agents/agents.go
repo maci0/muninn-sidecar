@@ -72,6 +72,14 @@ const openAIDefaultURL = "https://api.openai.com"
 
 var openAICapturePaths = []string{"/v1/chat/completions", "/v1/completions", "/responses"}
 
+// openAIV1BaseCapturePaths is for OpenAI-compatible agents whose base-URL env is
+// expected to already include the `/v1` segment (grok, reasonix): the client
+// appends `/chat/completions` to it, so the path the proxy sees has no `/v1`
+// prefix. The upstream's own `/v1` is restored by the DefaultURL path
+// (singleJoiningSlash in the proxy). These substrings also match `/v1/...`, so
+// they are safe if a build ever sends the full path.
+var openAIV1BaseCapturePaths = []string{"/chat/completions", "/completions"}
+
 // Registry maps short names to their agent definitions. Add new agents here.
 // The map key is the canonical name used in logs, tags, and CLI arguments.
 var Registry = map[string]Agent{
@@ -114,6 +122,45 @@ var Registry = map[string]Agent{
 		DetectEnv:    []string{"OPENAI_API_BASE", "OPENAI_BASE_URL"},
 		DefaultURL:   openAIDefaultURL,
 		CapturePaths: openAICapturePaths,
+	},
+	// grok (xAI CLI) — set GROK_MODELS_BASE_URL to a custom OpenAI-compatible
+	// endpoint, which switches grok to API-key (Bearer) auth and routes inference
+	// through it (verified: GET /v1/models, POST /v1/chat/completions). The user
+	// must have an xAI API key configured; grok ignores OAuth/session auth in this
+	// mode. The base is expected to include `/v1`, so DefaultURL carries it.
+	"grok": {
+		Command:      "grok",
+		EnvKey:       "GROK_MODELS_BASE_URL",
+		DetectEnv:    []string{"GROK_MODELS_BASE_URL"},
+		DefaultURL:   "https://api.x.ai/v1",
+		CapturePaths: openAIV1BaseCapturePaths,
+	},
+	// reasonix (DeepSeek-native agent) — OpenAI-compatible, overridable via
+	// DEEPSEEK_BASE_URL (verified: POST /v1/chat/completions). OPENAI_BASE_URL is
+	// also pointed at the proxy for its OpenAI-provider code path.
+	"reasonix": {
+		Command:      "reasonix",
+		EnvKey:       "DEEPSEEK_BASE_URL",
+		ExtraEnvKeys: []string{"OPENAI_BASE_URL"},
+		DetectEnv:    []string{"DEEPSEEK_BASE_URL", "OPENAI_BASE_URL"},
+		DefaultURL:   "https://api.deepseek.com/v1",
+		CapturePaths: openAIV1BaseCapturePaths,
+	},
+	// agy (Google Antigravity CLI) — same Code Assist / Gemini family as the
+	// gated "antigravity" entry. WARNING: agy is a Google-internal binary that
+	// authenticates via OAuth and talks to cloudcode-pa directly; in testing it
+	// ignored CODE_ASSIST_ENDPOINT / GOOGLE_*_BASE_URL, so the proxy cannot
+	// currently intercept it (capture/injection will not fire). Registered so
+	// `msc agy` launches it, but transparent capture is not yet supported.
+	"agy": {
+		Command:        "agy",
+		EnvKey:         "CODE_ASSIST_ENDPOINT",
+		ExtraEnvKeys:   []string{"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
+		DetectEnv:      []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
+		DefaultURL:     "https://cloudcode-pa.googleapis.com",
+		AltDefaultCond: "GEMINI_API_KEY",
+		AltDefaultURL:  "https://generativelanguage.googleapis.com",
+		CapturePaths:   []string{"GenerateContent", "CountTokens", "LanguageServerService"},
 	},
 }
 

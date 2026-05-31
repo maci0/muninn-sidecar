@@ -22,14 +22,21 @@ This allows agents to magically "remember" project context, conventions, and pas
 |-------|---------|-----------------|
 | `claude` | `ANTHROPIC_BASE_URL` | `api.anthropic.com` |
 | `gemini` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
-| `antigravity`*| `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 | `codex` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
+| `grok` | `GROK_MODELS_BASE_URL` | `api.x.ai/v1`‡ |
+| `reasonix` | `DEEPSEEK_BASE_URL` | `api.deepseek.com/v1` |
+| `agy`§ | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
+| `antigravity`*| `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 
 *\* Antigravity support is currently broken. It is hidden behind the `MSC_EXPERIMENTAL_ANTIGRAVITY=1` environment variable feature gate.*
 
 *† When `GEMINI_API_KEY` is set and `CODE_ASSIST_ENDPOINT` is not, the upstream is `generativelanguage.googleapis.com` instead.*
+
+*‡ Setting `GROK_MODELS_BASE_URL` switches grok to API-key (Bearer) auth, so an xAI API key must be configured; grok then routes inference (OpenAI-compatible) through the proxy.*
+
+*§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override — so the proxy cannot currently capture or inject for it (same limitation as `antigravity`).*
 
 ### Installation
 
