@@ -55,6 +55,37 @@ func TestApplyGrounding(t *testing.T) {
 	}
 }
 
+func TestSplitPresentAbsent(t *testing.T) {
+	results := []probeResult{
+		{probe: probe{Present: true}}, {probe: probe{Present: false}},
+		{probe: probe{Present: true}},
+	}
+	p, a := splitPresentAbsent(results)
+	if len(p) != 2 || len(a) != 1 {
+		t.Fatalf("split: present=%d absent=%d", len(p), len(a))
+	}
+}
+
+func TestDeepCopyResults(t *testing.T) {
+	orig := []probeResult{{
+		probe:    probe{Query: "q"},
+		Recalled: []recalledMemory{{Concept: "a", VectorScore: 0.5}},
+	}}
+	cp := deepCopyResults(orig)
+	cp[0].Recalled[0].Concept = "MUT"
+	if orig[0].Recalled[0].Concept != "a" {
+		t.Error("deepCopyResults must not alias the original Recalled slice")
+	}
+}
+
+func TestReportGroundedGate(t *testing.T) {
+	// Smoke: must not panic on empty or populated input (it prints a summary).
+	reportGroundedGate("stub", nil, nil)
+	present := []probeResult{{probe: probe{Gold: "g", Present: true}, Recalled: []recalledMemory{{Concept: "g", VectorScore: 0.8}}}}
+	absent := []probeResult{{probe: probe{Present: false}, Recalled: []recalledMemory{{Concept: "x", VectorScore: 0.2}}}}
+	reportGroundedGate("http:test", present, absent)
+}
+
 func TestApplyGroundingTopK(t *testing.T) {
 	results := []probeResult{{
 		probe: probe{Query: "q", Present: true},

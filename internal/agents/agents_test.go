@@ -197,6 +197,30 @@ func TestBuildArgsProxySubstitution(t *testing.T) {
 	}
 }
 
+func FuzzBuildArgs(f *testing.F) {
+	f.Add("http://127.0.0.1:9", "-p", "hi")
+	f.Fuzz(func(t *testing.T, proxyURL, arg1, arg2 string) {
+		a := Agent{
+			WaitArgs:  []string{"--wait"},
+			ProxyArgs: []string{"--openai-base-url", proxyURLPlaceholder},
+		}
+		got := a.buildArgs(proxyURL, []string{arg1, arg2})
+		// Shape: WaitArgs + ProxyArgs + user args, with the placeholder substituted.
+		if len(got) != 1+2+2 {
+			t.Fatalf("arg count = %d", len(got))
+		}
+		if got[0] != "--wait" || got[1] != "--openai-base-url" {
+			t.Fatalf("prefix args wrong: %v", got[:2])
+		}
+		if got[2] != proxyURL { // placeholder replaced with the proxy URL
+			t.Fatalf("proxy URL not substituted into ProxyArgs: %q", got[2])
+		}
+		if got[3] != arg1 || got[4] != arg2 {
+			t.Fatalf("user args not appended verbatim: %v", got[3:])
+		}
+	})
+}
+
 func TestExecMissingBinary(t *testing.T) {
 	a := Agent{Command: "msc-nonexistent-binary-xyz-123", EnvKey: "FOO_URL", DefaultURL: "https://x"}
 	if err := a.Exec("http://127.0.0.1:1", "https://x", nil); err == nil {

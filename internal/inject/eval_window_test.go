@@ -60,6 +60,28 @@ func TestRecallFloorBelowCalibrationFloor(t *testing.T) {
 	}
 }
 
+func TestCalibrateThresholdDetail(t *testing.T) {
+	// Clearly bimodal: a noise cluster ~0.45 and a relevant cluster ~0.75.
+	var scores []float64
+	for i := 0; i < 40; i++ {
+		scores = append(scores, 0.45, 0.75)
+	}
+	thr, noise, rel, sep := CalibrateThresholdDetail(scores)
+	if thr <= calibMinThreshold || thr >= calibMaxThreshold {
+		t.Errorf("threshold %.3f out of expected range", thr)
+	}
+	if !(noise < rel) {
+		t.Errorf("noise mean %.3f should be below relevant mean %.3f", noise, rel)
+	}
+	if sep <= 0 {
+		t.Errorf("expected positive cluster separation, got %.3f", sep)
+	}
+	// CalibrateThreshold returns the same threshold.
+	if CalibrateThreshold(scores) != thr {
+		t.Error("CalibrateThreshold and CalibrateThresholdDetail must agree")
+	}
+}
+
 func TestScoreWindowEdges(t *testing.T) {
 	// Empty sessions → zero, no panic.
 	if p, r, f := scoreWindow(nil, 0.7, 0.6); p != 0 || r != 0 || f != 0 {

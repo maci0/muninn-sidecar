@@ -150,6 +150,21 @@ func jsonString(s string) string {
 	return `"` + s + `"`
 }
 
+func FuzzPrompt(f *testing.F) {
+	f.Add("where?", "Newcastle.")
+	f.Add("", "")
+	f.Fuzz(func(t *testing.T, q, p string) {
+		out := Prompt(q, []string{p})
+		if !strings.Contains(out, q) {
+			t.Fatalf("prompt must contain the query verbatim")
+		}
+		// Passages are flattened (newlines → spaces) before embedding.
+		if norm := strings.ReplaceAll(p, "\n", " "); !strings.Contains(out, norm) {
+			t.Fatalf("prompt must contain the newline-normalized passage")
+		}
+	})
+}
+
 func FuzzParseMask(f *testing.F) {
 	f.Add("1: yes\n2: no", 2)
 	f.Add("garbage", 3)

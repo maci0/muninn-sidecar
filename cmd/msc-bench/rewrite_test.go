@@ -1,10 +1,80 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestHTTPRewriter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"content":"who directed it\nwhat year was the director born"}}]}`))
+	}))
+	defer srv.Close()
+	r := buildRewriter("", srv.URL, "m", "", 5*time.Second)
+	if r == nil {
+		t.Fatal("expected http rewriter")
+	}
+	subs := r.Rewrite(context.Background(), "orig question", 4)
+	if len(subs) < 2 || subs[0] != "orig question" {
+		t.Fatalf("expected original + sub-queries, got %v", subs)
+	}
+	if !strings.HasPrefix(r.label(), "http:") {
+		t.Errorf("label = %q", r.label())
+	}
+	// Unreachable endpoint fails safe → just the original.
+	bad := buildRewriter("", "http://127.0.0.1:0", "m", "", 200*time.Millisecond)
+	if got := bad.Rewrite(context.Background(), "only this", 4); len(got) != 1 || got[0] != "only this" {
+		t.Fatalf("unreachable rewriter must fail safe to [query], got %v", got)
+	}
+}
+
+func TestCLIRewriter(t *testing.T) {
+	// `printf` emits fixed sub-query lines, ignoring the appended prompt arg.
+	r := &cliRewriter{name: "printf", argv: []string{"printf", "sub one\nsub two\n"}, timeout: 5 * time.Second}
+	subs := r.Rewrite(context.Background(), "orig", 4)
+	if subs[0] != "orig" || len(subs) != 3 {
+		t.Fatalf("expected [orig, sub one, sub two], got %v", subs)
+	}
+	if !strings.HasPrefix(r.label(), "cli:") {
+		t.Errorf("label = %q", r.label())
+	}
+	// A failing command fails safe to the original.
+	rf := &cliRewriter{name: "false", argv: []string{"false"}, timeout: 5 * time.Second}
+	if got := rf.Rewrite(context.Background(), "q", 4); len(got) != 1 || got[0] != "q" {
+		t.Fatalf("failing rewriter must fail safe, got %v", got)
+	}
+}
+
+func FuzzRewritePrompt(f *testing.F) {
+	f.Add("who won?", 3)
+	f.Fuzz(func(t *testing.T, q string, max int) {
+		p := rewritePrompt(q, max)
+		if !strings.Contains(p, q) {
+			t.Fatalf("prompt must contain the query")
+		}
+	})
+}
+
+func FuzzItoa(f *testing.F) {
+	f.Add(0)
+	f.Add(42)
+	f.Add(-5)
+	f.Fuzz(func(t *testing.T, n int) {
+		got := itoa(n)
+		want := "0"
+		if n > 0 {
+			want = strconv.Itoa(n)
+		}
+		if got != want {
+			t.Fatalf("itoa(%d) = %q, want %q", n, got, want)
+		}
+	})
+}
 
 func TestParseSubqueries(t *testing.T) {
 	out := "Who directed the film?\n2. What year was the director born?\n- where is the studio"

@@ -17,20 +17,22 @@ surfaces) has a Go fuzz target.
 
 ## Fuzzing
 
-36 fuzz targets cover the untrusted-input surfaces:
+40 fuzz targets cover the untrusted-input surfaces:
 
 - **apiformat** — request/response extraction, recent-context, system-reminder
   strip, truncation, SSE delta/tool-name.
 - **inject** — recall/where-left-off/guide/MCP-text parsers, `InjectContext`,
   selection + budget packing, live-scenario parse, metric primitives, Otsu
   calibration, top-Z, nDCG.
-- **grounding** — listwise yes/no verdict mask parsing (`ParseMask`).
+- **grounding** — listwise verdict-mask parsing (`ParseMask`) and grader-prompt
+  build (`Prompt`).
+- **agents** — proxy-flag argument injection / `{proxy}` substitution (`buildArgs`).
 - **proxy** — request/response anti-recursion filtering, SSE parsing, injected-
   context stripping.
 - **mcpclient** — health URL derivation.
 - **cmd/msc** — flag parsing, Levenshtein, closest-match.
-- **cmd/msc-bench** — recall parse, query transforms, string/number helpers,
-  corpus generators, query-rewrite sub-query parsing.
+- **cmd/msc-bench** — recall parse, query transforms, string/number helpers
+  (`itoa`), corpus generators, query-rewrite sub-query parsing + prompt build.
 - **cmd/msc-qa** — generic QA loading, SQuAD-style answer scoring, CLI-reader
   prompt build / last-line extraction, entity-span split.
 
