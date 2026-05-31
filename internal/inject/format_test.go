@@ -310,3 +310,49 @@ func TestInjectContextOpenAIResponses(t *testing.T) {
 		}
 	})
 }
+
+func TestInjectGeminiContext(t *testing.T) {
+	const block = "CTX"
+	partsOf := func(doc map[string]any) []any {
+		si := doc["systemInstruction"].(map[string]any)
+		return si["parts"].([]any)
+	}
+
+	t.Run("no systemInstruction creates one", func(t *testing.T) {
+		doc := map[string]any{}
+		injectGeminiContext(doc, block)
+		p := partsOf(doc)
+		if len(p) != 1 || p[0].(map[string]any)["text"] != block {
+			t.Fatalf("expected one part with block, got %v", p)
+		}
+	})
+
+	t.Run("non-map systemInstruction overwritten", func(t *testing.T) {
+		doc := map[string]any{"systemInstruction": "a string"}
+		injectGeminiContext(doc, block)
+		p := partsOf(doc)
+		if len(p) != 1 || p[0].(map[string]any)["text"] != block {
+			t.Fatalf("expected overwrite to parts, got %v", doc["systemInstruction"])
+		}
+	})
+
+	t.Run("map without parts gets parts", func(t *testing.T) {
+		doc := map[string]any{"systemInstruction": map[string]any{"role": "system"}}
+		injectGeminiContext(doc, block)
+		p := partsOf(doc)
+		if len(p) != 1 || p[0].(map[string]any)["text"] != block {
+			t.Fatalf("expected parts set, got %v", p)
+		}
+	})
+
+	t.Run("existing parts appended", func(t *testing.T) {
+		doc := map[string]any{"systemInstruction": map[string]any{
+			"parts": []any{map[string]any{"text": "orig"}},
+		}}
+		injectGeminiContext(doc, block)
+		p := partsOf(doc)
+		if len(p) != 2 || p[0].(map[string]any)["text"] != "orig" || p[1].(map[string]any)["text"] != block {
+			t.Fatalf("expected append after orig, got %v", p)
+		}
+	})
+}

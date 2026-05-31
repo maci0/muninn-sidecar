@@ -605,3 +605,34 @@ func TestFilterCaseInsensitive(t *testing.T) {
 		t.Fatalf("expected 0 messages after filtering case-insensitive match, got %d", len(messages))
 	}
 }
+
+func TestFilterToolDefs(t *testing.T) {
+	pats := []string{"muninn"}
+	tools := []any{
+		map[string]any{"name": "muninn_recall"},                               // top-level name match -> dropped
+		map[string]any{"name": "Read"},                                        // top-level keep
+		map[string]any{"function": map[string]any{"name": "muninn_remember"}}, // nested match -> dropped
+		map[string]any{"function": map[string]any{"name": "edit_file"}},       // nested keep
+		map[string]any{"description": "no name field"},                        // no name -> empty -> keep
+	}
+	kept := filterToolDefs(tools, pats)
+	if len(kept) != 3 {
+		t.Fatalf("expected 3 kept tools, got %d: %v", len(kept), kept)
+	}
+	names := map[string]bool{}
+	for _, k := range kept {
+		m := k.(map[string]any)
+		if n, ok := m["name"].(string); ok {
+			names[n] = true
+		}
+		if fn, ok := m["function"].(map[string]any); ok {
+			names[fn["name"].(string)] = true
+		}
+	}
+	if names["muninn_recall"] || names["muninn_remember"] {
+		t.Errorf("muninn tools should be dropped, got %v", names)
+	}
+	if !names["Read"] || !names["edit_file"] {
+		t.Errorf("non-matching tools should be kept, got %v", names)
+	}
+}
