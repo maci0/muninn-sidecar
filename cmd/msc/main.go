@@ -28,7 +28,7 @@ import (
 //
 //	go build -ldflags "-X main.version=1.0.0 -X main.commit=abc1234 -X main.date=2026-03-10T12:34:56Z"
 var (
-	version = "0.1.0"
+	version = "0.2.0"
 	commit  = "dev"
 	date    = "unknown"
 )
