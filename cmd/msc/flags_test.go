@@ -74,6 +74,16 @@ func TestParseFlags(t *testing.T) {
 		}
 	})
 
+	t.Run("no-redact flag", func(t *testing.T) {
+		o := &opts{}
+		if _, _, err := parseFlags([]string{"--no-redact", "claude"}, o); err != nil || !o.noRedact {
+			t.Fatalf("--no-redact not parsed: err=%v noRedact=%v", err, o.noRedact)
+		}
+		if _, _, err := parseFlags([]string{"--no-redact=1", "claude"}, &opts{}); err == nil {
+			t.Error("expected error for --no-redact=1")
+		}
+	})
+
 	t.Run("mitm rejects =value", func(t *testing.T) {
 		if _, _, err := parseFlags([]string{"--mitm=true", "claude"}, &opts{}); err == nil {
 			t.Error("expected error for --mitm=true")

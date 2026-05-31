@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
@@ -44,6 +45,7 @@ type MuninnStore struct {
 	done      chan struct{}          // closed when Drain completes
 	drainOnce sync.Once              // ensures Drain is idempotent
 	stats     *stats.Stats           // session statistics (nil-safe)
+	redact    atomic.Bool            // scrub secrets from captured content before storage
 
 	// flushCtx governs MCP flush calls and their retries. It stays live for the
 	// whole session (so transient blips get full retries), and Drain arms a
@@ -95,9 +97,16 @@ func New(mcpURL, token, vault string, st *stats.Stats) *MuninnStore {
 		stats: st,
 	}
 	s.flushCtx, s.flushCancel = context.WithCancel(context.Background())
+	s.redact.Store(true) // secure default: scrub secrets before storage
 	go s.worker()
 	return s
 }
+
+// SetRedaction enables or disables secret redaction of captured content before
+// storage. Redaction is on by default; disable it (e.g. via --no-redact) only in
+// trusted environments where full-fidelity capture is wanted. Call before
+// captures start flowing.
+func (s *MuninnStore) SetRedaction(enabled bool) { s.redact.Store(enabled) }
 
 // Store enqueues an exchange for async delivery. Non-blocking: if the queue
 // is full the exchange is dropped with a warning (we never block the proxy).
@@ -237,8 +246,10 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	// Redact well-known secret formats (API keys, tokens, private keys) before
 	// they enter long-term memory, where they would persist and resurface on
 	// recall. Applied here so both the concept and content are scrubbed.
-	userMsg = redactSecrets(userMsg)
-	assistantMsg = redactSecrets(assistantMsg)
+	if s.redact.Load() {
+		userMsg = redactSecrets(userMsg)
+		assistantMsg = redactSecrets(assistantMsg)
+	}
 
 	// Skip system-generated noise (context continuations, summary tasks).
 	if isNoiseContent(userMsg) {

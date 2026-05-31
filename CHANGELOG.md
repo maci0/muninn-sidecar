@@ -34,7 +34,7 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   private-key blocks) and replaced with `[REDACTED]` before being written to
   MuninnDB, so secrets pasted into an agent don't persist and resurface via
   recall. Patterns are conservative (prefix/structure-anchored) to avoid
-  corrupting prose.
+  corrupting prose. Disable with `--no-redact` in trusted environments.
 - **`msc ca` command** — prints the TLS-MITM CA certificate path + SHA-256
   fingerprint (creating the CA if needed); `--json` includes the PEM. Lets users
   trust msc's CA in tools it doesn't launch itself (browsers, system store,

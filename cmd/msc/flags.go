@@ -37,6 +37,7 @@ type opts struct {
 	noAutoCalibrate bool          // disable self-tuning of the injection threshold
 	mitm            bool          // intercept HTTPS via a local CA + CONNECT proxy instead of a base-URL override
 	mitmHosts       []string      // scope MITM to these hosts (+ upstream); empty = intercept all. "*" forces all.
+	noRedact        bool          // disable secret redaction of captured content (full-fidelity capture)
 }
 
 // parseAction signals a special action from parseFlags instead of os.Exit.
@@ -108,7 +109,7 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			switch key {
 			case "-h", "--help", "-v", "--version", "-d", "--debug",
 				"-q", "--quiet", "-n", "--dry-run", "-j", "--json",
-				"-f", "--force", "--no-inject", "--no-auto-calibrate", "--log-json", "--mitm":
+				"-f", "--force", "--no-inject", "--no-auto-calibrate", "--log-json", "--mitm", "--no-redact":
 				return nil, actionNone, fmt.Errorf("%s does not accept a value", key)
 			}
 		}
@@ -156,6 +157,10 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			continue
 		case "--mitm":
 			o.mitm = true
+			i++
+			continue
+		case "--no-redact":
+			o.noRedact = true
 			i++
 			continue
 		case "--inject-budget":

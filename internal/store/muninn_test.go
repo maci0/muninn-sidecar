@@ -107,6 +107,44 @@ func TestStoreRedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestSetRedactionDisables(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		received []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		received = append(received, string(body))
+		mu.Unlock()
+		w.WriteHeader(200)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL, "", "test", &stats.Stats{})
+	s.SetRedaction(false) // disabled before any capture flows
+	secret := "sk-" + strings.Repeat("a", 30)
+	s.Store(&CapturedExchange{
+		Agent:    "test",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"key ` + secret + `"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
+	})
+	s.Drain()
+
+	mu.Lock()
+	all := strings.Join(received, " ")
+	mu.Unlock()
+	// With redaction off, the secret is captured verbatim (full fidelity).
+	if !strings.Contains(all, secret) {
+		t.Errorf("expected verbatim capture with redaction disabled: %q", all)
+	}
+	if strings.Contains(all, "[REDACTED]") {
+		t.Errorf("redaction marker present despite SetRedaction(false): %q", all)
+	}
+}
+
 func TestBatching(t *testing.T) {
 	var (
 		mu    sync.Mutex

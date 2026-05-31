@@ -242,6 +242,8 @@ Command-line flags take precedence over environment variables.
                       trust msc's CA via NODE_EXTRA_CA_CERTS / SSL_CERT_FILE
     --mitm-host HOST  Scope MITM to HOST (repeatable/comma-separated; implies --mitm). Only
                       upstream + listed hosts are terminated; others blind-tunnel. Default: all
+    --no-redact       Disable secret redaction of captured content (full-fidelity capture;
+                      trusted environments only — secrets will be stored verbatim)
     --log-json        Emit logs as JSON (for log aggregation pipelines)
     --vault NAME      MuninnDB vault name
     --mcp-url URL     MuninnDB MCP endpoint
@@ -265,7 +267,8 @@ Command-line flags take precedence over environment variables.
 - **Secret redaction is best-effort.** Captured content is scrubbed of well-known
   credential formats before storage, but the patterns are conservative and not
   exhaustive — it reduces, not eliminates, the risk of a secret reaching the
-  store. Don't rely on it as a reason to paste secrets into an agent.
+  store. Don't rely on it as a reason to paste secrets into an agent. Disable it
+  with `--no-redact` in trusted environments where full-fidelity capture is wanted.
 - **MITM trust.** `--mitm` is opt-in. The CA private key is generated locally,
   stored `0600`, and trusted only by the agent msc launches — never the system
   trust store (`msc ca` prints the cert for trusting it elsewhere yourself).

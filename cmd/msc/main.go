@@ -175,6 +175,9 @@ func run() int {
 
 	sessionStats := &stats.Stats{}
 	muninn := store.New(mcpURL, token, vault, sessionStats)
+	if o.noRedact {
+		muninn.SetRedaction(false) // trusted env: keep full-fidelity capture
+	}
 	// Ensure the background worker is always stopped on exit, even for
 	// early returns (dry-run, health check failure). The store's drainOnce
 	// makes the second call from the normal shutdown path a no-op.
