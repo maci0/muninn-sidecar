@@ -62,6 +62,48 @@ func TestRedactSecrets(t *testing.T) {
 	}
 }
 
+func TestRedactKeyValueSecrets(t *testing.T) {
+	// The dominant leak vector: pasted .env files / exports. Value is redacted,
+	// key kept for context.
+	redacted := []struct{ name, in string }{
+		{"env api key", "API_KEY=supersecretvalue123"},
+		{"export with quotes", `export DB_PASSWORD="hunter2-longer-pw"`},
+		{"yaml colon", "password: my-secret-passphrase"},
+		{"json client secret", `"client_secret": "abc123def456ghi"`},
+		{"access token", "access_token = abcdef1234567890"},
+		{"private key var", "PRIVATE_KEY=longprivatekeymaterialxyz"},
+	}
+	for _, tc := range redacted {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactSecrets(tc.in)
+			if !strings.Contains(got, redactionMarker) {
+				t.Errorf("expected redaction, got %q", got)
+			}
+			// The key name must survive (context); the value must not.
+			for _, secretVal := range []string{"supersecretvalue123", "hunter2-longer-pw", "my-secret-passphrase", "abc123def456ghi", "abcdef1234567890", "longprivatekeymaterialxyz"} {
+				if strings.Contains(got, secretVal) {
+					t.Errorf("value leaked: %q", got)
+				}
+			}
+		})
+	}
+
+	// No false positives: prose, trivial/short values, non-sensitive keys.
+	clean := []string{
+		"the secret to success is hard work", // no := after "secret"
+		"token=1",                            // value too short
+		"password=",                          // no value
+		"width=1200px",                       // non-sensitive key
+		"tokens=5 returned",                  // "tokens" != "token" (word boundary)
+		"discuss the api_key design",         // no separator+value
+	}
+	for _, c := range clean {
+		if got := redactSecrets(c); got != c {
+			t.Errorf("false positive: %q -> %q", c, got)
+		}
+	}
+}
+
 func TestRedactSecretsMultiple(t *testing.T) {
 	k1 := "sk-" + strings.Repeat("a", 28)
 	k2 := "AKIA" + strings.Repeat("Z", 16)

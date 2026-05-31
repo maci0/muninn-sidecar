@@ -42,6 +42,21 @@ var redactPatterns = []*regexp.Regexp{
 
 const redactionMarker = "[REDACTED]"
 
+// redactKVPattern catches sensitive key=value / key: value assignments — the
+// dominant real-world leak vector, where someone pastes a .env file or shell
+// export into the agent (the value has no distinctive format, so the key name is
+// the only signal). It keeps the key and separator and redacts only the value.
+// A 6-char minimum on the value avoids redacting trivial settings (token=1,
+// password=). The key must be immediately followed by ':' or '=', so prose like
+// "the secret to success" is untouched.
+//
+// The key may carry an identifier prefix (DB_PASSWORD, AWS_SECRET_KEY,
+// OPENAI_API_KEY) since the sensitive word is often a suffix after '_'.
+//
+//	group 1: key  group 2: separator (+ optional quotes)  group 3: value
+var redactKVPattern = regexp.MustCompile(
+	`(?i)([A-Za-z0-9_.-]*(?:passwd|password|secret|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|access[_-]?token|token|credentials?))(["']?\s*[:=]\s*["']?)([^\s"',;]{6,})`)
+
 // redactSecrets replaces well-known credential formats in s with a marker.
 // Returns s unchanged when it contains no recognized secret.
 func redactSecrets(s string) string {
@@ -51,5 +66,7 @@ func redactSecrets(s string) string {
 	for _, re := range redactPatterns {
 		s = re.ReplaceAllString(s, redactionMarker)
 	}
+	// Sensitive key=value assignments: redact the value, keep the key for context.
+	s = redactKVPattern.ReplaceAllString(s, "${1}${2}"+redactionMarker)
 	return s
 }
