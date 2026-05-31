@@ -374,6 +374,88 @@ func FuzzIsUpgradeRequest(f *testing.F) {
 	})
 }
 
+// connectStatus opens a raw CONNECT to the proxy for target and returns the
+// status code of the CONNECT response.
+func connectStatus(t *testing.T, proxyAddr, target string) (*http.Response, *bufio.Reader, net.Conn) {
+	t.Helper()
+	raw, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	br := bufio.NewReader(raw)
+	resp, err := http.ReadResponse(br, &http.Request{Method: "CONNECT"})
+	if err != nil {
+		raw.Close()
+		t.Fatalf("reading CONNECT response: %v", err)
+	}
+	return resp, br, raw
+}
+
+func TestMITMBlindTunnelDialFailure(t *testing.T) {
+	// Scoped MITM: 127.0.0.1 is not allowlisted, so it's blind-tunneled. The
+	// target port has nothing listening, so the dial fails and msc must reply 502.
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0", Upstream: "https://api.example.invalid",
+		Store: st, CA: mustCA(t), MITMHosts: []string{"api.example.invalid"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	resp, _, raw := connectStatus(t, addr, "127.0.0.1:1") // port 1: connection refused
+	defer raw.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("blind-tunnel to unreachable target: status %d, want 502", resp.StatusCode)
+	}
+}
+
+func TestMITMSpliceUpgradeBackendUnreachable(t *testing.T) {
+	// Intercept-all: CONNECT to an unreachable target is TLS-terminated, then an
+	// upgrade request triggers spliceUpgrade whose backend dial fails -> 502 over
+	// the decrypted connection.
+	ca := mustCA(t)
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0", Upstream: "https://api.example.invalid",
+		Store: st, CA: ca, MITMHosts: []string{"*"}, Stats: &stats.Stats{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	resp, _, raw := connectStatus(t, addr, "127.0.0.1:1")
+	defer raw.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("CONNECT (intercept) status %d, want 200", resp.StatusCode)
+	}
+	caPool := x509.NewCertPool()
+	caPool.AppendCertsFromPEM(ca.CertPEM())
+	tconn := tls.Client(raw, &tls.Config{RootCAs: caPool, ServerName: "127.0.0.1"})
+	if err := tconn.Handshake(); err != nil {
+		t.Fatalf("TLS handshake with msc leaf: %v", err)
+	}
+	fmt.Fprintf(tconn, "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGVzdA==\r\n\r\n")
+	upResp, err := http.ReadResponse(bufio.NewReader(tconn), nil)
+	if err != nil {
+		t.Fatalf("reading upgrade response: %v", err)
+	}
+	if upResp.StatusCode != http.StatusBadGateway {
+		t.Errorf("splice with unreachable backend: status %d, want 502", upResp.StatusCode)
+	}
+}
+
 func TestShouldInterceptHost(t *testing.T) {
 	p, err := New(Config{
 		ListenAddr: "127.0.0.1:0",
