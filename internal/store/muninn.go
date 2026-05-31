@@ -234,6 +234,12 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	userMsg := apiformat.StripSystemReminders(apiformat.ExtractUserMessage(ex.ReqBody))
 	assistantMsg := apiformat.ExtractAssistantMessage(ex.RespBody)
 
+	// Redact well-known secret formats (API keys, tokens, private keys) before
+	// they enter long-term memory, where they would persist and resurface on
+	// recall. Applied here so both the concept and content are scrubbed.
+	userMsg = redactSecrets(userMsg)
+	assistantMsg = redactSecrets(assistantMsg)
+
 	// Skip system-generated noise (context continuations, summary tasks).
 	if isNoiseContent(userMsg) {
 		slog.Debug("skipping noise content", "path", ex.Path)

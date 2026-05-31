@@ -67,6 +67,46 @@ func TestStoreAndDrain(t *testing.T) {
 	}
 }
 
+func TestStoreRedactsSecrets(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		received []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		received = append(received, string(body))
+		mu.Unlock()
+		w.WriteHeader(200)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL, "", "test", &stats.Stats{})
+	// Built from parts so no contiguous secret-shaped literal sits in source.
+	secret := "sk-" + strings.Repeat("a", 30)
+	s.Store(&CapturedExchange{
+		Agent:    "test",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"my key is ` + secret + `"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
+	})
+	s.Drain()
+
+	mu.Lock()
+	all := strings.Join(received, " ")
+	mu.Unlock()
+	if all == "" {
+		t.Fatal("nothing flushed")
+	}
+	if strings.Contains(all, secret) {
+		t.Errorf("secret leaked into stored memory: %q", all)
+	}
+	if !strings.Contains(all, "[REDACTED]") {
+		t.Errorf("expected redaction marker in stored payload: %q", all)
+	}
+}
+
 func TestBatching(t *testing.T) {
 	var (
 		mu    sync.Mutex

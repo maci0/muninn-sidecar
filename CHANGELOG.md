@@ -27,6 +27,13 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Added
 
+- **Secret redaction before storage** — captured exchanges are scanned for
+  well-known credential formats (OpenAI/Anthropic `sk-` keys, AWS access keys,
+  GitHub tokens, Google API keys, Slack tokens, JWTs, `Bearer` tokens, PEM
+  private-key blocks) and replaced with `[REDACTED]` before being written to
+  MuninnDB, so secrets pasted into an agent don't persist and resurface via
+  recall. Patterns are conservative (prefix/structure-anchored) to avoid
+  corrupting prose.
 - **`msc ca` command** — prints the TLS-MITM CA certificate path + SHA-256
   fingerprint (creating the CA if needed); `--json` includes the PEM. Lets users
   trust msc's CA in tools it doesn't launch itself (browsers, system store,

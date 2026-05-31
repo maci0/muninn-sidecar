@@ -117,7 +117,7 @@ msc -- claude --weird-flag
 4. The agent launches and sends API requests through the proxy
 5. All traffic is forwarded transparently (no extra headers, no modified User-Agent)
 6. Requests matching the agent's `CapturePaths` (e.g. `/v1/messages`, `GenerateContent`) are captured
-7. Captured exchanges are sent to MuninnDB asynchronously via MCP JSON-RPC
+7. Captured exchanges are scrubbed of well-known secrets (API keys, tokens, private keys → `[REDACTED]`) and sent to MuninnDB asynchronously via MCP JSON-RPC
 
 ### Memory injection
 
@@ -262,6 +262,10 @@ Command-line flags take precedence over environment variables.
   unreachable or the queue (depth 256) fills, exchanges are dropped rather than
   blocking the agent; shutdown flushing is time-bounded (~8s). Recall/injection
   fail open — a MuninnDB hiccup never blocks or corrupts a request.
+- **Secret redaction is best-effort.** Captured content is scrubbed of well-known
+  credential formats before storage, but the patterns are conservative and not
+  exhaustive — it reduces, not eliminates, the risk of a secret reaching the
+  store. Don't rely on it as a reason to paste secrets into an agent.
 - **MITM trust.** `--mitm` is opt-in. The CA private key is generated locally,
   stored `0600`, and trusted only by the agent msc launches — never the system
   trust store (`msc ca` prints the cert for trusting it elsewhere yourself).
