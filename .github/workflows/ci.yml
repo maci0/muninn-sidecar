@@ -37,4 +37,22 @@ jobs:
         run: go test -race -count=1 ./...
 
       - name: Build
-        run: go build -o /dev/null ./cmd/msc/
+        run: go build -o /dev/null ./...   # all binaries: msc, msc-bench, msc-qa, msc-eval
+
+  fuzz:
+    name: Fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Run a short campaign over every fuzz target. The seed corpora (including
+      # past crashers) run under `go test` above; this also explores new inputs
+      # briefly, so regressions surface on every push, not just on a manual run.
+      - name: Fuzz (short campaign, all targets)
+        run: FUZZTIME=8s make fuzz
