@@ -89,6 +89,7 @@ internal/
   mitm/
     ca.go                 Local CA: generate/persist + mint cached per-host leaf certs
     host.go               Host normalization & SAN selection (DNS vs IP)
+  redact/redact.go        Secret scrubbing (API keys/tokens/key=value) for store + inject
   proxy/
     proxy.go              Reverse proxy, request/response capture, token extraction
     mitm.go               CONNECT handler: TLS-terminate, intercept, re-originate TLS
@@ -209,6 +210,12 @@ Without filtering, each stored exchange would embed the full conversation histor
 1. Stripping `<retrieved-context>`, `<session-context>`, and `<global-guide>` blocks from request bodies before storage, plus a generic fallback that matches any XML tag carrying a `source="muninn"` attribute.
 2. Removing all `muninn_*` tool_use/tool_result blocks (Anthropic format) and tool_calls/tool messages (OpenAI format) from both request and response bodies.
 3. Removing muninn tool definitions from the `tools` array.
+
+### Secret Redaction
+
+Coding agents routinely carry API keys, tokens, and `.env` contents in their context. Storing those verbatim in a long-term memory graph is a leak that persists and resurfaces on recall. The shared `internal/redact` package scrubs well-known credential formats — provider key prefixes (`sk-`, `AKIA`, `gh*_`, `AIza`, Slack/Stripe/npm, JWTs, `Bearer`/Basic headers, PEM private-key blocks) and sensitive `key=value` / `key: value` assignments (the pasted-`.env` case, value redacted, key kept) — to a `[REDACTED]` marker. Patterns are deliberately conservative (anchored to distinctive prefixes/structures or sensitive key names) to avoid corrupting prose.
+
+It runs on **both** sides: before a captured exchange is stored (`--no-redact` disables this for full-fidelity local capture in trusted environments), and — always, as defense in depth — on recalled memory content before it is injected into an outgoing request, so a secret stored by another client or before redaction existed isn't re-transmitted to the provider in a session where it wasn't otherwise present. It reduces, not eliminates, leak risk.
 
 ### SSE Stream Capture
 
