@@ -3,6 +3,19 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased]
+
+### Added (in progress)
+
+- **TLS-MITM interception (opt-in)** — groundwork for intercepting agents that
+  don't honor a base-URL env override (codex ChatGPT-mode, grok session auth,
+  agy) and for using msc as a transparent HTTPS_PROXY. First increment: a local
+  certificate authority (`internal/mitm`) that auto-generates/persists a CA
+  (0600 key, local-only) and mints cached per-host leaf certs signed by it.
+  Subsequent increments: the CONNECT proxy + TLS termination wired to the
+  existing recall/inject + capture pipeline, and a `--mitm` flag that injects
+  CA trust into the child (`NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE`).
+
 ## [0.1.0] — 2026-05-31
 
 First tagged release. A transparent reverse proxy that gives any stateless AI
