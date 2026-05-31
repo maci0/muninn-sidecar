@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 )
@@ -97,6 +99,28 @@ func TestRunCA(t *testing.T) {
 	// ca takes no arguments.
 	if runArgs(t, "ca", "extra") == 0 {
 		t.Error("ca with an argument should be a usage error")
+	}
+}
+
+func TestVaultStats(t *testing.T) {
+	// Fake MuninnDB returning a muninn_status result in the MCP content envelope.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"vault\":\"v\",\"total_memories\":47,\"health\":\"good\"}"}]}}`))
+	}))
+	defer srv.Close()
+
+	total, health, err := vaultStats(srv.URL, "", "v")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 47 || health != "good" {
+		t.Errorf("vaultStats = (%d, %q), want (47, good)", total, health)
+	}
+
+	// Unreachable endpoint -> error (caller omits stats, doesn't fail).
+	if _, _, err := vaultStats("http://127.0.0.1:1/mcp", "", "v"); err == nil {
+		t.Error("expected error against unreachable endpoint")
 	}
 }
 

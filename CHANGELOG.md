@@ -48,6 +48,11 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   secret stored by another client or before redaction existed isn't re-transmitted
   to the provider in a session where it wasn't otherwise present. (Redaction logic
   lives in the shared `internal/redact` package.)
+- **`msc status` vault stats** — when MuninnDB is reachable, `status` now reports
+  the vault's memory count and health (via the `muninn_status` tool), and flags an
+  empty vault — directly answering "why is nothing being injected?". Best-effort:
+  omitted (not an error) on servers without the tool. `--json` gains `memories` /
+  `vault_health`.
 - **`msc ca` command** — prints the TLS-MITM CA certificate path + SHA-256
   fingerprint (creating the CA if needed); `--json` includes the PEM. Lets users
   trust msc's CA in tools it doesn't launch itself (browsers, system store,

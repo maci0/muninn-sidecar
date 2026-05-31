@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"encoding/pem"
@@ -10,11 +11,47 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/mitm"
 )
+
+// vaultStats queries MuninnDB's status tool for a vault's memory count and
+// health. Best-effort: a non-nil error means the stats are simply unavailable
+// (older server, missing tool) and the caller should omit them, not fail.
+func vaultStats(mcpURL, token, vault string) (total int, health string, err error) {
+	body, err := mcpclient.New(mcpURL, token, 3*time.Second).
+		Call(context.Background(), "muninn_status", map[string]any{"vault": vault})
+	if err != nil {
+		return 0, "", err
+	}
+	var env struct {
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return 0, "", err
+	}
+	for _, ct := range env.Result.Content {
+		if ct.Type != "text" {
+			continue
+		}
+		var st struct {
+			TotalMemories int    `json:"total_memories"`
+			Health        string `json:"health"`
+		}
+		if json.Unmarshal([]byte(ct.Text), &st) == nil && st.Health != "" {
+			return st.TotalMemories, st.Health, nil
+		}
+	}
+	return 0, "", fmt.Errorf("no status content in response")
+}
 
 // cmdCA loads (or creates) the local TLS-MITM certificate authority and prints
 // its certificate path and SHA-256 fingerprint, so users can trust it in tools
@@ -115,8 +152,21 @@ func cmdStatus(o *opts) int {
 
 	err := mcpclient.HealthCheckAt(mcpURL, token)
 
+	// Best-effort vault stats (memory count + health) when reachable — answers
+	// "is my vault populated?", the common cause of "nothing gets injected".
+	var (
+		haveStats bool
+		memCount  int
+		vaultHP   string
+	)
+	if err == nil {
+		if total, hp, serr := vaultStats(mcpURL, token, vault); serr == nil {
+			haveStats, memCount, vaultHP = true, total, hp
+		}
+	}
+
 	if o.asJSON {
-		out := map[string]string{
+		out := map[string]any{
 			"mcp_url": mcpURL,
 			"vault":   vault,
 		}
@@ -125,6 +175,10 @@ func cmdStatus(o *opts) int {
 			out["error"] = err.Error()
 		} else {
 			out["status"] = "reachable"
+		}
+		if haveStats {
+			out["memories"] = memCount
+			out["vault_health"] = vaultHP
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -144,6 +198,12 @@ func cmdStatus(o *opts) int {
 		fmt.Printf("MuninnDB: %s (unreachable: %v)\n", mcpURL, err)
 	}
 	fmt.Printf("Vault:    %s\n", vault)
+	if haveStats {
+		fmt.Printf("Memories: %d (health: %s)\n", memCount, vaultHP)
+		if memCount == 0 {
+			fmt.Println("          vault is empty — nothing to inject until exchanges are captured")
+		}
+	}
 
 	if err != nil {
 		return 1

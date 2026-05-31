@@ -82,7 +82,7 @@ msc --quiet claude
 # Launch even if MuninnDB is unreachable (captures will be lost)
 msc --force claude
 
-# Check MuninnDB connectivity
+# Check MuninnDB connectivity (and vault memory count — "is it populated?")
 msc status
 msc --json status
 
