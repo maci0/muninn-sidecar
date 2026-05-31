@@ -23,19 +23,6 @@ var ReservedCommands = map[string]bool{
 const mscSentinel = "MSC_UPSTREAM"
 
 func init() {
-	if os.Getenv("MSC_EXPERIMENTAL_ANTIGRAVITY") == "1" {
-		Registry["antigravity"] = Agent{
-			Command:        "antigravity",
-			EnvKey:         "CODE_ASSIST_ENDPOINT",
-			ExtraEnvKeys:   []string{"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
-			DetectEnv:      []string{"CODE_ASSIST_ENDPOINT", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_BASE_URL"},
-			DefaultURL:     "https://cloudcode-pa.googleapis.com",
-			AltDefaultCond: "GEMINI_API_KEY",
-			AltDefaultURL:  "https://generativelanguage.googleapis.com",
-			WaitArgs:       []string{"--wait"},
-			CapturePaths:   []string{"GenerateContent", "CountTokens", "LanguageServerService"},
-		}
-	}
 	for name := range Registry {
 		if ReservedCommands[name] {
 			panic(fmt.Sprintf("agent name %q collides with reserved command", name))
@@ -49,8 +36,8 @@ func init() {
 // overrides that env var to point at the local reverse proxy, which forwards
 // traffic to the real upstream while capturing every exchange for MuninnDB.
 //
-// Some agents (e.g. agy/antigravity) use different API backends depending on auth
-// mode. ExtraEnvKeys ensures all relevant env vars point at the proxy, while
+// Some agents (e.g. agy) use different API backends depending on auth mode.
+// ExtraEnvKeys ensures all relevant env vars point at the proxy, while
 // AltDefaultCond/AltDefaultURL select the correct upstream automatically.
 type Agent struct {
 	Command        string   // binary to exec (resolved via PATH)
@@ -159,12 +146,11 @@ var Registry = map[string]Agent{
 		DefaultURL:   "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 		CapturePaths: openAIV1BaseCapturePaths,
 	},
-	// agy (Google Antigravity CLI) — same Code Assist / Gemini family as the
-	// gated "antigravity" entry. WARNING: agy is a Google-internal binary that
+	// agy (Google Antigravity CLI) — Code Assist / Gemini family. WARNING: agy
 	// authenticates via OAuth and talks to cloudcode-pa directly; in testing it
-	// ignored CODE_ASSIST_ENDPOINT / GOOGLE_*_BASE_URL, so the proxy cannot
-	// currently intercept it (capture/injection will not fire). Registered so
-	// `msc agy` launches it, but transparent capture is not yet supported.
+	// ignored CODE_ASSIST_ENDPOINT / GOOGLE_*_BASE_URL, so the env-override path
+	// can't intercept it — use `--mitm` to capture. Registered so `msc agy`
+	// launches it regardless.
 	"agy": {
 		Command:        "agy",
 		EnvKey:         "CODE_ASSIST_ENDPOINT",

@@ -93,6 +93,8 @@ internal/
   proxy/
     proxy.go              Reverse proxy, request/response capture, token extraction
     mitm.go               CONNECT handler: TLS-terminate, intercept, re-originate TLS
+    wsframe.go            WebSocket frame decode + permessage-deflate inflation (RFC 6455/7692)
+    wscapture.go          Safe upgrade-splice tap: decode codex's WebSocket Responses stream
     filter.go             Anti-recursion filters (strip injected context, tool calls)
     stream.go             SSE/ndjson stream capture and synthetic response building
     context.go            Request-scoped capture metadata via context.Value
@@ -112,7 +114,7 @@ The `MSC_UPSTREAM` sentinel prevents infinite loops when msc is accidentally nes
 
 ### TLS-MITM Interception (opt-in, `--mitm`)
 
-Some agents ignore the base-URL override and reach their provider directly (codex ChatGPT-subscription mode, grok session auth, agy/antigravity OAuth). For these, `--mitm` makes msc a transparent HTTPS proxy instead. A local certificate authority (`internal/mitm`) generates and persists a CA under the user config dir (`~/.config/muninn-sidecar/mitm/`, `0600` key) and mints cached per-host leaf certs on demand. The child is launched with `HTTP(S)_PROXY`/`ALL_PROXY` (both cases) pointing at msc and `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE` pointing at the CA cert. When the agent opens an HTTPS `CONNECT` tunnel, `proxy.handleConnect` hijacks it, terminates TLS with a minted leaf, and serves the decrypted requests through the **same** recall/inject + capture pipeline (`instrument`) as the plain path, re-originating TLS to the real upstream via a per-tunnel `httputil.ReverseProxy`.
+Some agents ignore the base-URL override and reach their provider directly (codex ChatGPT-subscription mode, grok session auth, agy OAuth). For these, `--mitm` makes msc a transparent HTTPS proxy instead. A local certificate authority (`internal/mitm`) generates and persists a CA under the user config dir (`~/.config/muninn-sidecar/mitm/`, `0600` key) and mints cached per-host leaf certs on demand. The child is launched with `HTTP(S)_PROXY`/`ALL_PROXY` (both cases) pointing at msc and `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE` pointing at the CA cert. When the agent opens an HTTPS `CONNECT` tunnel, `proxy.handleConnect` hijacks it, terminates TLS with a minted leaf, and serves the decrypted requests through the **same** recall/inject + capture pipeline (`instrument`) as the plain path, re-originating TLS to the real upstream via a per-tunnel `httputil.ReverseProxy`.
 
 The child env covers every runtime our agents use, verified with a per-runtime interception probe (the record-upstream's cert is trusted by msc but not the client, so a successful response *proves* the request went through msc rather than directly): Node/undici `fetch` (claude, qwen, reasonix), Rust/`reqwest` (codex, grok), Bun (opencode), Deno, Python (aider), Go (agy). The non-obvious one: Node's global `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` (Node 24+), so msc sets that too — otherwise the most common agent family (Anthropic/OpenAI SDKs on undici) would silently bypass the proxy.
 
@@ -261,10 +263,8 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach:
 | Grok | `grok` | `GROK_MODELS_BASE_URL` | `api.x.ai/v1` |
 | reasonix | `reasonix` | `DEEPSEEK_BASE_URL` | `api.deepseek.com/v1` |
 | Qwen Code | `qwen` | `--openai-base-url` flag (injected) | `dashscope-intl.aliyuncs.com/compatible-mode/v1` |
-| Antigravity*† | `agy` / `antigravity` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
+| Antigravity† | `agy` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 
-*\* Antigravity (`antigravity`) is currently broken and gated behind `MSC_EXPERIMENTAL_ANTIGRAVITY=1`.*
-
-*† `agy` (Google Antigravity CLI) is registered but authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override — so the proxy cannot currently capture or inject for it. The Gemini CLI agent was removed (deprecated upstream); the Gemini/Code-Assist API format is still supported for these agents.*
+*† `agy` (Google Antigravity CLI) is registered but authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override — so the env-override path can't capture or inject for it; use `--mitm`. The Gemini CLI agent was removed (deprecated upstream); the Gemini/Code-Assist API format is still supported for `agy`.*
 
 Adding a new agent requires only adding an entry to the `Registry` map in `internal/agents/agents.go`.

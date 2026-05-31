@@ -28,13 +28,10 @@ This allows agents to magically "remember" project context, conventions, and pas
 | `reasonix` | `DEEPSEEK_BASE_URL` | `api.deepseek.com/v1` |
 | `qwen` | `--openai-base-url` flag¶ | `dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | `agy`§ | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
-| `antigravity`*| `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
 
-*(The Gemini CLI was removed — deprecated upstream. The Gemini/Code-Assist API format is still supported for `agy`/`antigravity`.)*
+*(The Gemini CLI was removed — deprecated upstream. The Gemini/Code-Assist API format is still supported for `agy`.)*
 
 *¶ `qwen` (Qwen Code, a Gemini-CLI fork) takes its base URL from the `--openai-base-url` flag, not an env var, so msc injects `--auth-type openai --openai-base-url <proxy>` automatically. Set `OPENAI_BASE_URL` to redirect to a custom/local upstream (e.g. `http://127.0.0.1:11434/v1` for ollama); you supply the API key as usual.*
-
-*\* Antigravity support is currently broken. It is hidden behind the `MSC_EXPERIMENTAL_ANTIGRAVITY=1` environment variable feature gate.*
 
 *† When `GEMINI_API_KEY` is set and `CODE_ASSIST_ENDPOINT` is not, the upstream is `generativelanguage.googleapis.com` instead.*
 
@@ -42,7 +39,7 @@ This allows agents to magically "remember" project context, conventions, and pas
 
 *◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`) over plain HTTP. In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend over a permessage-deflate **WebSocket** and ignores `OPENAI_BASE_URL` — so it needs `--mitm`. With `--mitm`, msc decodes that WebSocket (RFC 6455 framing + RFC 7692 context-takeover inflation) and captures codex's turns (the Responses-API request + the streamed answer); verified live.*
 
-*§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override. The env-override path can't capture or inject for it (same limitation as `antigravity`); `--mitm` is the way to intercept these.*
+*§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override. The env-override path can't capture or inject for it; use `--mitm` to intercept it.*
 
 ### Installation
 
@@ -145,7 +142,7 @@ A downstream eval across **~10 local models** (Qwen2.5/Qwen3, Gemma2/3, Llama3.2
 
 The default path overrides the agent's API base-URL env var. Some agents ignore
 that override and talk to their provider directly (codex in ChatGPT-subscription
-mode, grok session auth, agy/antigravity OAuth). `--mitm` intercepts those by
+mode, grok session auth, agy OAuth). `--mitm` intercepts those by
 turning msc into a transparent HTTPS proxy:
 
 1. On first use, msc creates a local certificate authority under your config dir
@@ -253,7 +250,7 @@ Command-line flags take precedence over environment variables.
 ## Limitations
 
 - **OAuth-direct / WebSocket agents.** Agents that ignore a base-URL env override
-  need `--mitm` (codex ChatGPT-mode, agy/antigravity). codex ChatGPT-mode streams
+  need `--mitm` (codex ChatGPT-mode, agy). codex ChatGPT-mode streams
   over a permessage-deflate WebSocket; msc decodes and captures it (RFC 6455 +
   RFC 7692). Other WebSocket protocols are spliced through but not decoded — they
   run but aren't captured (the session summary reports such streams).

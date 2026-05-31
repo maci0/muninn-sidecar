@@ -3,6 +3,14 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased]
+
+### Removed
+
+- **Gated `antigravity` agent.** The experimental `antigravity` registry entry
+  (hidden behind `MSC_EXPERIMENTAL_ANTIGRAVITY=1`) and that env gate are gone.
+  Google's Antigravity CLI is supported via the `agy` agent only.
+
 ## [0.3.0] — 2026-05-31
 
 Headline: **codex ChatGPT-mode is now captured** — msc decodes codex's
