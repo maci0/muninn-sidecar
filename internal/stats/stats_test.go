@@ -21,7 +21,7 @@ func TestSummaryUpgradedOnly(t *testing.T) {
 	if got == "" {
 		t.Fatal("expected non-empty summary when upgrades occurred")
 	}
-	if !strings.Contains(got, "2 upgraded stream") || !strings.Contains(got, "not captured") {
+	if !strings.Contains(got, "2 WebSocket/upgrade stream") {
 		t.Fatalf("expected upgraded-stream notice in summary: %q", got)
 	}
 }

@@ -118,6 +118,8 @@ The child env covers every runtime our agents use, verified with a per-runtime i
 
 By default every CONNECT host is terminated (the agents that need MITM often talk to a backend that isn't their nominal API host). `--mitm-host` scopes interception to the upstream + listed hosts; all others are **blind-tunneled** (`blindTunnel` — a plain TCP splice with no TLS termination), so package registries and cert-pinned services are never decrypted.
 
+WebSocket capture: an intercepted protocol upgrade (e.g. codex ChatGPT-mode, which streams the OpenAI Responses API over a permessage-deflate WebSocket) is spliced raw to the backend so the agent keeps working, while a best-effort copy is decoded — RFC 6455 framing (`wsframe.go`) + RFC 7692 context-takeover inflation, accumulating `response.output_text` deltas and pairing them with the `response.create` request (`wscapture.go`). Decoding runs on a copy that abandons under backpressure, so it can never block or alter forwarding. The decoded turn is fed to the normal store pipeline (extraction, redaction, dedup).
+
 Security model: the CA private key is generated locally, stored `0600`, and never leaves the machine; trust is scoped to the launched child via env vars only — msc never touches the system trust store. MITM is off unless `--mitm` is explicitly passed.
 
 ### Format-Agnostic API Handling

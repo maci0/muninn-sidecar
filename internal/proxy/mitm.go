@@ -165,12 +165,10 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 		p.stats.Upgraded.Add(1)
 	}
 
-	// Pipe both directions until either side closes. clientBuf may hold bytes
-	// already read past the request headers.
-	done := make(chan struct{}, 2)
-	go func() { io.Copy(backend, clientBuf); done <- struct{}{} }()
-	go func() { io.Copy(clientConn, backend); done <- struct{}{} }()
-	<-done
+	// Forward both directions verbatim; tap a best-effort copy to decode the
+	// WebSocket-framed exchange (forwarding is never blocked by capture).
+	// clientBuf may hold bytes already read past the upgrade request.
+	p.spliceWithCapture(clientConn, clientBuf.Reader, backend, target)
 }
 
 // shouldInterceptHost reports whether a CONNECT target host should be

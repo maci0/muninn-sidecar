@@ -40,7 +40,7 @@ This allows agents to magically "remember" project context, conventions, and pas
 
 *‡ Setting `GROK_MODELS_BASE_URL` switches grok to API-key (Bearer) auth, so an xAI API key must be configured; grok then routes inference (OpenAI-compatible) through the proxy.*
 
-*◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`). In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend over a WebSocket and ignores `OPENAI_BASE_URL`, so the env-override path is bypassed. `--mitm` intercepts and runs codex correctly (the WebSocket is spliced through; verified live), but the WebSocket-framed exchange isn't parsed for capture yet — so codex runs through msc but its turns aren't stored in MuninnDB.*
+*◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`) over plain HTTP. In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend over a permessage-deflate **WebSocket** and ignores `OPENAI_BASE_URL` — so it needs `--mitm`. With `--mitm`, msc decodes that WebSocket (RFC 6455 framing + RFC 7692 context-takeover inflation) and captures codex's turns (the Responses-API request + the streamed answer); verified live.*
 
 *§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override. The env-override path can't capture or inject for it (same limitation as `antigravity`); `--mitm` is the way to intercept these.*
 
@@ -253,10 +253,10 @@ Command-line flags take precedence over environment variables.
 ## Limitations
 
 - **OAuth-direct / WebSocket agents.** Agents that ignore a base-URL env override
-  need `--mitm` (codex ChatGPT-mode, agy/antigravity). With `--mitm` they *run*
-  through msc, but codex ChatGPT-mode streams over a permessage-deflate WebSocket
-  that isn't decoded for capture yet — so codex runs but its turns aren't stored.
-  The session summary reports any such uncaptured upgraded streams.
+  need `--mitm` (codex ChatGPT-mode, agy/antigravity). codex ChatGPT-mode streams
+  over a permessage-deflate WebSocket; msc decodes and captures it (RFC 6455 +
+  RFC 7692). Other WebSocket protocols are spliced through but not decoded — they
+  run but aren't captured (the session summary reports such streams).
 - **Single upstream without `--mitm`.** The default proxy forwards to one resolved
   upstream (the agent's API). An agent that talks to several API hosts needs
   `--mitm` (which intercepts per-CONNECT-host).

@@ -5,6 +5,17 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- **codex ChatGPT-mode capture (WebSocket).** codex in ChatGPT-subscription mode
+  streams the OpenAI Responses API over a permessage-deflate WebSocket (ignoring
+  `OPENAI_BASE_URL`). Under `--mitm`, msc now decodes that stream — RFC 6455
+  framing + RFC 7692 context-takeover inflation — accumulates the
+  `response.output_text` deltas, pairs them with the `response.create` request,
+  and stores the turn through the normal pipeline (extraction, secret redaction,
+  dedup). Decoding runs on a best-effort copy that abandons under backpressure,
+  so it never blocks or alters the agent's connection. Verified live end-to-end.
+
 ### Fixed
 
 - **Explicit JSON content negotiation for MCP calls** — requests now send
@@ -57,11 +68,10 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   fingerprint (creating the CA if needed); `--json` includes the PEM. Lets users
   trust msc's CA in tools it doesn't launch itself (browsers, system store,
   custom HTTPS clients) for the transparent-HTTPS-proxy use case.
-- **Uncaptured-upgrade visibility** — spliced protocol upgrades (e.g. codex's
-  WebSocket) bypass capture; the session summary now reports them
-  (`mitm: N upgraded stream(s) spliced, not captured`) so it's never silent.
-  codex's WebSocket is permessage-deflate-compressed text; full capture is
-  tracked as future work.
+- **Upgraded-stream visibility** — the session summary reports spliced WebSocket/
+  upgrade streams (`mitm: N WebSocket/upgrade stream(s) spliced`). codex's stream
+  is decoded and captured (see Added); other WebSocket protocols pass through
+  without capture.
 
 ## [0.2.0] — 2026-05-31
 

@@ -145,9 +145,11 @@ func (s *Stats) Summary() string {
 		}
 	}
 
-	// MITM-spliced protocol upgrades that bypass capture (e.g. codex's WebSocket).
+	// MITM-spliced protocol upgrades (WebSocket). codex's Responses-over-WebSocket
+	// is decoded and captured (counted in "saved" above); other upgrades pass
+	// through without capture.
 	if upgraded > 0 {
-		sb.WriteString(fmt.Sprintf("\nmitm: %d upgraded stream(s) spliced, not captured (WebSocket/upgrade)", upgraded))
+		sb.WriteString(fmt.Sprintf("\nmitm: %d WebSocket/upgrade stream(s) spliced", upgraded))
 	}
 
 	// Line 4: model breakdown (only if we tracked any).
