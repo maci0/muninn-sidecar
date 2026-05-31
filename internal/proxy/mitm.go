@@ -144,7 +144,9 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 
 	cfg := p.mitmTransport.TLSClientConfig.Clone()
 	cfg.ServerName = stripPort(target)
-	backend, err := tls.Dial("tcp", target, cfg)
+	// Bound the dial so a black-hole upgrade target can't hang this goroutine and
+	// its hijacked connection indefinitely (mirrors blindTunnel's DialTimeout).
+	backend, err := tls.DialWithDialer(&net.Dialer{Timeout: 30 * time.Second}, "tcp", target, cfg)
 	if err != nil {
 		slog.Debug("mitm: upgrade backend dial failed", "target", target, "err", err)
 		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))

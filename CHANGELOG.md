@@ -7,6 +7,9 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **MITM upgrade-splice dial timeout** — the WebSocket/upgrade splice now dials
+  the backend with a 30s timeout (mirroring the blind-tunnel), so a black-hole
+  target can't hang the goroutine and its hijacked connection indefinitely.
 - **MITM WebSocket/`101` upgrades** — intercepted protocol-upgrade requests (e.g.
   codex ChatGPT-mode streams over a WebSocket) are detected and spliced raw to
   the backend over TLS instead of erroring in the capturing reverse-proxy.
