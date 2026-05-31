@@ -6,30 +6,33 @@ surfaces) has a Go fuzz target.
 
 ## Coverage
 
-- **0 functions at 0% coverage**; ~85% statement coverage overall.
+- High statement coverage across every package: internal **83–95%**
+  (`inject` 94%, `grounding` 92%, `agents`/`stats` 95%), cmd **68–87%**.
 - `make cover` — race-enabled coverage with a per-function breakdown.
-- The four `main()` wrappers are exercised via a re-exec test (`TestMainHelp`)
+- The `main()` wrappers are exercised via a re-exec test (`TestMainHelp`)
   that runs `main()` inside the instrumented test binary, so even those count.
-- Functions needing external services (recall/store, agent exec, model calls)
-  are tested with `httptest` fakes; the agent launcher's lookup/error path is
-  tested with a missing binary and the success path with `/bin/true`.
+- Functions needing external services (recall/store, agent exec, model/grounder
+  calls) are tested with `httptest` fakes; the agent launcher's lookup/error path
+  is tested with a missing binary and the success path with `/bin/true`.
 
 ## Fuzzing
 
-29 fuzz targets cover the untrusted-input surfaces:
+36 fuzz targets cover the untrusted-input surfaces:
 
 - **apiformat** — request/response extraction, recent-context, system-reminder
   strip, truncation, SSE delta/tool-name.
 - **inject** — recall/where-left-off/guide/MCP-text parsers, `InjectContext`,
   selection + budget packing, live-scenario parse, metric primitives, Otsu
-  calibration, nDCG.
+  calibration, top-Z, nDCG.
+- **grounding** — listwise yes/no verdict mask parsing (`ParseMask`).
 - **proxy** — request/response anti-recursion filtering, SSE parsing, injected-
   context stripping.
 - **mcpclient** — health URL derivation.
 - **cmd/msc** — flag parsing, Levenshtein, closest-match.
 - **cmd/msc-bench** — recall parse, query transforms, string/number helpers,
-  corpus generators.
-- **cmd/msc-qa** — generic QA loading, SQuAD-style answer scoring.
+  corpus generators, query-rewrite sub-query parsing.
+- **cmd/msc-qa** — generic QA loading, SQuAD-style answer scoring, CLI-reader
+  prompt build / last-line extraction, entity-span split.
 
 Run all of them briefly (regression smoke):
 

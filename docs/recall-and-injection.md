@@ -8,14 +8,17 @@ trips: it is a reverse-proxy decision on the request body.
 
 ## The four decisions
 
-A request flows through four gates in `internal/inject`:
+A request flows through four core decisions in `internal/inject`:
 
 | # | Decision | Rule | Knob |
 |---|----------|------|------|
 | 1 | **When to ask** MuninnDB | Recall only on new intent; reuse the session window on unchanged-query continuations | — (FNV-1a hash of the query) |
 | 2 | **How to recall** | Request the `semantic` preset (pure high-precision vector search) | `RecallMode` (default `semantic`) |
-| 3 | **When to inject** | Inject only if the best memory's cosine ≥ threshold; otherwise inject nothing this turn | `MinScore` (default `0.6`) |
-| 4 | **What to inject** | Keep memories ≥ threshold, drop near-duplicates, greedily pack within the token budget, ranked by cosine | `MinScore`, `Budget` |
+| 3 | **When to inject** | Inject only if the best memory's cosine ≥ threshold; otherwise inject nothing this turn | `MinScore` (default `0.6`, auto-calibrated) |
+| 4 | **What to inject** | Keep memories ≥ threshold; drop unfit/stale/contradicted/duplicate; pack within the budget | `MinScore`, `Budget` |
+
+Decision 4 carries the correctness filters detailed below (fitness, staleness,
+contradiction, near-duplicate) plus an optional answer-grounding rerank.
 
 ### 0. What to query with
 
@@ -70,8 +73,36 @@ decay, ordering, threshold, the displayed relevance — operates on cosine.
 `selectForInjection` then keeps every memory with effective (post-decay) cosine
 ≥ `MinScore`. Because this drops *all* candidates when none is confident enough,
 one threshold answers both *when* (empty result → suppress the turn) and *what*
-(the survivors). Near-duplicates are removed (identical normalized concept, or
-word-set Jaccard ≥ 0.8), then `withinBudget` greedily packs the survivors.
+(the survivors). On top of the threshold, three correctness filters run on what
+survives:
+
+- **Fitness** — memories MuninnDB marks `archived`, `cancelled`, or `untrusted`
+  are dropped regardless of cosine; surfacing retired/abandoned/unreliable content
+  as current context misleads the agent (`completed` is kept — a finished
+  decision is still relevant).
+- **Staleness / supersession** — among same-concept duplicates, the *current*
+  memory wins, not the higher-cosine one. Recall is requested with `annotate:true`,
+  and MuninnDB's authoritative `stale` flag (falling back to `created_at`) decides
+  which version supersedes — so "migrated to Postgres" beats the stale "uses MySQL".
+- **Contradiction** — when MuninnDB flags two recalled memories as contradicting
+  (`conflicts_with`), only the superseding side is kept (cross-concept), so the
+  agent never receives mutually-exclusive "facts" ("deploys to AWS" + "never AWS").
+
+Near-duplicates are also removed (identical normalized concept, or word-set
+Jaccard ≥ 0.8), then `withinBudget` greedily packs the survivors. All of the above
+is validated end-to-end on a live vault (`docs/experiments.md` §Staleness &
+contradiction).
+
+### Optional answer-grounding rerank
+
+For **harm-prone vaults** (weak retrieval, many on-topic-but-wrong neighbours), an
+opt-in LLM rerank adds a precision check the bi-encoder cosine can't: a single
+*listwise* call judges which gated candidates actually answer the query and drops
+the rest. A fast local judge (`--ground-url`, ~1s, one call/turn) is viable
+in-flight; a frontier CLI (`--ground-cmd "claude -p"`, ~3.5s) is best offline. It
+fails open (a slow/unavailable judge degrades to the cosine gate) and is **off by
+default** — it only helps with a domain-competent grader (`docs/experiments.md`
+§B3/§B4).
 
 A cross-validated method study (`internal/inject/eval_study.go`) compared this
 single-threshold rule against relative-cutoff, top-k, and combined gates on
@@ -118,8 +149,18 @@ quality. Topic retrieval, the level injection needs, is strong.
   "right topic, wrong specific entity" from a true hit on cosine alone.
 - The synthetic study models the recall-score signal, not embedding-recall
   quality; its distributions are calibrated to real cosines but remain synthetic.
-- Not yet measured: whether injection improves the **model's answers** end to end
-  (requires an LLM-in-the-loop eval). Retrieval/gate quality is a proxy for it.
+- Multilingual reach is **script-dependent**: retrieval holds for Latin-script
+  languages (German R@1 0.51) but collapses for CJK (Chinese R@1 0.18). The gate
+  degrades safely — it auto-calibrates higher and suppresses rather than injecting
+  wrong context — but coverage is low when the embedding is out of its depth.
+
+End-to-end answer quality **is** measured (it was the open question above):
+`cmd/msc-qa` runs the recalled context through real models in none/injected/
+distractor arms and scores SQuAD EM/token-F1. Across ~10 models and seven+ task
+regimes, injection's value tracks retrieval accuracy × the model's in-context
+ability, a wrong injection never helps, and the lift is largest where the model
+*cannot* answer without memory (agent-memory 0.00→0.88, NL→code 0.03→0.81). See
+[model-eval.md](model-eval.md).
 
 ## Tooling
 
@@ -154,10 +195,13 @@ not a black box:
 ```
 inject: 42 injected, 11 suppressed, ~38.0K tokens
 recall: 18 queried, 35 reused (window)
+grounding: 9 turns judged, 4 candidates dropped
+budget: 2 memories truncated (raise --inject-budget)
 ```
 
 `injected` vs `suppressed` shows the gate at work; `queried` vs `reused` shows the
-when-to-ask trigger avoiding redundant recalls.
+when-to-ask trigger avoiding redundant recalls; the `grounding` and `budget` lines
+appear only when those paths fire.
 
 ## Fuzzing the parsing surfaces
 
