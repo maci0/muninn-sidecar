@@ -34,9 +34,19 @@ import (
 // have to re-trust it often; it lives only on the local machine.
 const caValidity = 10 * 365 * 24 * time.Hour
 
-// leafValidity bounds minted leaf certs. Short-ish, but the cache is per-process
-// so this only matters for very long-running sessions.
-const leafValidity = 365 * 24 * time.Hour
+// caRenewBefore triggers regeneration when a loaded CA is within this window of
+// expiry, so a stale on-disk CA is rotated rather than minting leaves that
+// outlive their issuer.
+const caRenewBefore = 30 * 24 * time.Hour
+
+// leafValidity bounds minted leaf certs. Expired cached leaves are re-minted on
+// demand (matters only for sessions longer than this).
+const leafValidity = 24 * time.Hour
+
+// maxCacheEntries caps the per-host leaf cache so a long-running transparent
+// proxy that sees many hosts can't grow it without bound. Eviction is
+// approximate (drops an arbitrary entry), which is fine for a size guard.
+const maxCacheEntries = 1024
 
 // CA is a local certificate authority that mints (and caches) per-host leaf
 // certificates for TLS interception. Safe for concurrent use.
@@ -62,27 +72,36 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 	keyPEM, keyErr := os.ReadFile(keyPath)
 	if certErr == nil && keyErr == nil {
 		ca, err := parseCA(certPEM, keyPEM)
-		if err == nil {
+		// Reuse only a parseable CA that isn't expired or about to expire;
+		// otherwise fall through to regenerate (corrupt, or stale on disk).
+		if err == nil && time.Now().Before(ca.cert.NotAfter.Add(-caRenewBefore)) {
 			return ca, nil
 		}
-		// Fall through to regenerate on a corrupt/unreadable pair.
 	}
 
 	ca, err := generateCA()
 	if err != nil {
 		return nil, err
 	}
-	keyOut, err := marshalKeyPEM(ca.key)
-	if err != nil {
+	if err := persistCA(ca, certPath, keyPath); err != nil {
 		return nil, err
 	}
+	return ca, nil
+}
+
+// persistCA writes the CA key (0600) and cert (0644) to disk.
+func persistCA(ca *CA, certPath, keyPath string) error {
+	keyOut, err := marshalKeyPEM(ca.key)
+	if err != nil {
+		return err
+	}
 	if err := os.WriteFile(keyPath, keyOut, 0o600); err != nil {
-		return nil, fmt.Errorf("mitm: write ca key: %w", err)
+		return fmt.Errorf("mitm: write ca key: %w", err)
 	}
 	if err := os.WriteFile(certPath, ca.certPEM, 0o644); err != nil {
-		return nil, fmt.Errorf("mitm: write ca cert: %w", err)
+		return fmt.Errorf("mitm: write ca cert: %w", err)
 	}
-	return ca, nil
+	return nil
 }
 
 // generateCA creates a fresh self-signed CA in memory (not persisted).
@@ -154,11 +173,14 @@ func marshalKeyPEM(key *ecdsa.PrivateKey) ([]byte, error) {
 func (c *CA) CertPEM() []byte { return c.certPEM }
 
 // LeafFor returns a leaf certificate valid for host (the SNI server name),
-// signed by the CA. Minted leaves are cached per host for the process lifetime.
+// signed by the CA. Minted leaves are cached per host (bounded to
+// maxCacheEntries) and re-minted once expired. Safe for concurrent use.
 func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
 	host = normalizeHost(host)
+	now := time.Now()
+
 	c.mu.Lock()
-	if cached, ok := c.cache[host]; ok {
+	if cached, ok := c.cache[host]; ok && cached.Leaf != nil && now.Before(cached.Leaf.NotAfter) {
 		c.mu.Unlock()
 		return cached, nil
 	}
@@ -168,7 +190,16 @@ func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	c.mu.Lock()
+	// Bound the cache: evict an arbitrary entry once full (unless we're
+	// refreshing an existing host, which replaces in place).
+	if _, exists := c.cache[host]; !exists && len(c.cache) >= maxCacheEntries {
+		for k := range c.cache {
+			delete(c.cache, k)
+			break
+		}
+	}
 	c.cache[host] = leaf
 	c.mu.Unlock()
 	return leaf, nil

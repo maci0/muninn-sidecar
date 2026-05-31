@@ -1,12 +1,21 @@
 package mitm
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestLoadOrCreateCAPersistsAndReloads(t *testing.T) {
@@ -115,6 +124,99 @@ func TestParseCACorruptRegenerates(t *testing.T) {
 	if len(ca.CertPEM()) == 0 {
 		t.Error("regenerated CA has empty cert")
 	}
+}
+
+func TestCARegeneratesNearExpiry(t *testing.T) {
+	dir := t.TempDir()
+	// Seed a CA cert/key that expires within the renew window.
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	serial, _ := randomSerial()
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "muninn-sidecar local CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour), // within caRenewBefore
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyOut, _ := marshalKeyPEM(key)
+	os.WriteFile(filepath.Join(dir, "ca-cert.pem"), certPEM, 0o644)
+	os.WriteFile(filepath.Join(dir, "ca-key.pem"), keyOut, 0o600)
+
+	ca, err := LoadOrCreateCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Must have regenerated a long-lived CA, not reused the near-expired one.
+	if !ca.cert.NotAfter.After(time.Now().Add(caRenewBefore)) {
+		t.Errorf("expected a freshly regenerated CA, got NotAfter=%v", ca.cert.NotAfter)
+	}
+	if string(ca.CertPEM()) == string(certPEM) {
+		t.Error("near-expiry CA was reused instead of regenerated")
+	}
+}
+
+func TestLeafReMintOnExpiry(t *testing.T) {
+	ca := mustGenCA(t)
+	// Inject an already-expired cached leaf.
+	ca.cache["example.com"] = &tls.Certificate{Leaf: &x509.Certificate{NotAfter: time.Now().Add(-time.Hour)}}
+
+	leaf, err := ca.LeafFor("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leaf.Leaf == nil || !leaf.Leaf.NotAfter.After(time.Now()) {
+		t.Error("expired cached leaf was not re-minted")
+	}
+	if len(leaf.Certificate) != 2 {
+		t.Errorf("re-minted leaf missing CA in chain: %d certs", len(leaf.Certificate))
+	}
+}
+
+func TestLeafCacheBounded(t *testing.T) {
+	ca := mustGenCA(t)
+	// Fill the cache to capacity with dummy valid entries.
+	future := time.Now().Add(time.Hour)
+	for i := 0; i < maxCacheEntries; i++ {
+		ca.cache[fmt.Sprintf("host-%d.example", i)] = &tls.Certificate{Leaf: &x509.Certificate{NotAfter: future}}
+	}
+	// Minting a new host must evict, keeping the cache bounded.
+	if _, err := ca.LeafFor("brand-new.example"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ca.cache) > maxCacheEntries {
+		t.Errorf("cache grew past cap: %d > %d", len(ca.cache), maxCacheEntries)
+	}
+}
+
+func TestLeafForConcurrent(t *testing.T) {
+	ca := mustGenCA(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			// Mix of repeated and distinct hosts to exercise cache hits + inserts.
+			host := fmt.Sprintf("host-%d.example", n%10)
+			leaf, err := ca.LeafFor(host)
+			if err != nil || leaf == nil || leaf.Leaf == nil {
+				t.Errorf("LeafFor(%q): leaf=%v err=%v", host, leaf, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func mustGenCA(t *testing.T) *CA {
+	t.Helper()
+	ca, err := generateCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ca
 }
 
 func FuzzNormalizeHost(f *testing.F) {

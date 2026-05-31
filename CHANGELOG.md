@@ -29,6 +29,14 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   termination to the upstream + listed hosts and blind-tunnels everything else
   untouched, so package registries and cert-pinned services aren't decrypted.
 
+### Changed
+
+- **MITM CA/leaf hardening** — the on-disk CA is regenerated on load when within
+  30 days of expiry (no more leaves outliving their issuer); the per-host leaf
+  cache is bounded (`maxCacheEntries`, evicts when full) so a long-running
+  transparent proxy can't grow it without bound; expired cached leaves are
+  re-minted on demand; leaf validity shortened to 24h. Concurrency-stress tested.
+
 ## [0.1.0] — 2026-05-31
 
 First tagged release. A transparent reverse proxy that gives any stateless AI
