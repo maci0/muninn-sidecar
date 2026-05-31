@@ -12,9 +12,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           # Latest 1.25.x patch (not the vulnerable 1.25.0 the go.mod directive
           # would pin): picks up stdlib security backports so govulncheck is clean,
@@ -61,9 +61,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           # Latest 1.25.x patch (not the vulnerable 1.25.0 the go.mod directive
           # would pin): picks up stdlib security backports so govulncheck is clean,
@@ -82,9 +82,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           # Latest 1.25.x patch (not the vulnerable 1.25.0 the go.mod directive
           # would pin): picks up stdlib security backports so govulncheck is clean,
