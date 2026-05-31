@@ -3,6 +3,7 @@ package apiformat
 import (
 	"encoding/json"
 	"testing"
+	"unicode/utf8"
 )
 
 // These fuzz targets cover the apiformat parsing surface — the functions that
@@ -74,8 +75,35 @@ func FuzzTruncate(f *testing.F) {
 		if n > 1<<16 {
 			n = 1 << 16
 		}
-		_ = TruncateText(s, n)
-		_ = TruncateQuery(s, n)
+		txt := TruncateText(s, n)
+		qry := TruncateQuery(s, n)
+
+		// Invariant: valid-UTF-8 input must never be truncated mid-rune (would
+		// corrupt every stored memory / recall query). Guards against a regression
+		// to byte-slicing.
+		if utf8.ValidString(s) {
+			if !utf8.ValidString(txt) {
+				t.Fatalf("TruncateText produced invalid UTF-8 from valid input: %q -> %q", s, txt)
+			}
+			if !utf8.ValidString(qry) {
+				t.Fatalf("TruncateQuery produced invalid UTF-8 from valid input: %q -> %q", s, qry)
+			}
+		}
+
+		// Invariant: rune-count bound. TruncateText may add a 1-rune ellipsis;
+		// TruncateQuery adds no suffix. Non-positive limits yield "".
+		if n <= 0 {
+			if txt != "" || qry != "" {
+				t.Fatalf("non-positive limit %d should yield empty, got %q / %q", n, txt, qry)
+			}
+			return
+		}
+		if rc := utf8.RuneCountInString(txt); rc > n+1 {
+			t.Fatalf("TruncateText(%q, %d) = %d runes, want <= %d", s, n, rc, n+1)
+		}
+		if rc := utf8.RuneCountInString(qry); rc > n {
+			t.Fatalf("TruncateQuery(%q, %d) = %d runes, want <= %d", s, n, rc, n)
+		}
 	})
 }
 

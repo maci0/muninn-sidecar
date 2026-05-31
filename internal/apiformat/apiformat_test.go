@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestStripSystemReminders(t *testing.T) {
@@ -380,6 +381,12 @@ func TestTruncateText(t *testing.T) {
 	runes = []rune(got)
 	if len(runes) > 11 { // 10 + "…"
 		t.Errorf("CJK truncation too long: %d runes", len(runes))
+	}
+	// Must be valid UTF-8 — a byte-slice cut would split a 3-byte rune and
+	// corrupt the stored memory. (Count alone wouldn't catch it: invalid bytes
+	// decode to U+FFFD and could still pass the length check.)
+	if !utf8.ValidString(got) {
+		t.Errorf("CJK truncation split a rune (invalid UTF-8): %q", got)
 	}
 }
 
