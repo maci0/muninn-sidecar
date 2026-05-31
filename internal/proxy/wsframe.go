@@ -188,23 +188,3 @@ func (a *wsMessageAssembler) add(f wsFrame) ([]byte, error) {
 	// Uncompressed text (or a non-compressed message on a deflate connection).
 	return append([]byte(nil), data...), nil
 }
-
-// opcodeName labels an opcode for logging.
-func opcodeName(op byte) string {
-	switch op {
-	case wsOpText:
-		return "text"
-	case wsOpBinary:
-		return "binary"
-	case wsOpContinuation:
-		return "continuation"
-	case wsOpClose:
-		return "close"
-	case wsOpPing:
-		return "ping"
-	case wsOpPong:
-		return "pong"
-	default:
-		return "reserved"
-	}
-}
