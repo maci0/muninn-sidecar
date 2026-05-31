@@ -6,8 +6,9 @@ surfaces) has a Go fuzz target.
 
 ## Coverage
 
-- High statement coverage across every package: internal **83–95%**
-  (`inject` 94%, `grounding` 92%, `agents`/`stats` 95%), cmd **68–87%**.
+- High statement coverage across every package: internal **~81–100%**
+  (`redact` 100%, `agents`/`store`/`stats` ~96%, `inject` 94%, `grounding` 92%,
+  `proxy` 89%, `mitm` 81%), cmd **~66–87%**.
 - `make cover` — race-enabled coverage with a per-function breakdown.
 - The `main()` wrappers are exercised via a re-exec test (`TestMainHelp`)
   that runs `main()` inside the instrumented test binary, so even those count.
@@ -17,18 +18,23 @@ surfaces) has a Go fuzz target.
 
 ## Fuzzing
 
-40 fuzz targets cover the untrusted-input surfaces:
+47 fuzz targets cover the untrusted-input surfaces:
 
 - **apiformat** — request/response extraction, recent-context, system-reminder
-  strip, truncation, SSE delta/tool-name.
+  strip, truncation (UTF-8 + length invariants), SSE delta/tool-name.
 - **inject** — recall/where-left-off/guide/MCP-text parsers, `InjectContext`,
   selection + budget packing, live-scenario parse, metric primitives, Otsu
   calibration, top-Z, nDCG.
+- **redact** — secret redaction (idempotence, marker-on-change).
 - **grounding** — listwise verdict-mask parsing (`ParseMask`) and grader-prompt
   build (`Prompt`).
-- **agents** — proxy-flag argument injection / `{proxy}` substitution (`buildArgs`).
+- **agents** — proxy-flag argument injection / `{proxy}` substitution
+  (`buildArgs`) and the TLS-MITM child environment (`BuildMITMEnv`).
 - **proxy** — request/response anti-recursion filtering, SSE parsing, injected-
-  context stripping.
+  context stripping, plus MITM helpers (`stripPort`, `isUpgradeRequest`,
+  `shouldInterceptHost`).
+- **mitm** — CONNECT host normalization (`normalizeHost`) and per-host leaf
+  minting (`LeafFor`).
 - **mcpclient** — health URL derivation.
 - **cmd/msc** — flag parsing, Levenshtein, closest-match.
 - **cmd/msc-bench** — recall parse, query transforms, string/number helpers
