@@ -1,16 +1,71 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
+	"github.com/maci0/muninn-sidecar/internal/mitm"
 )
+
+// cmdCA loads (or creates) the local TLS-MITM certificate authority and prints
+// its certificate path and SHA-256 fingerprint, so users can trust it in tools
+// msc doesn't launch itself (browsers, system store, custom HTTP clients) for
+// the transparent-HTTPS-proxy use case. With -j it emits JSON incl. the PEM.
+func cmdCA(o *opts) int {
+	dir, err := mitmCADir()
+	if err != nil {
+		logerr("%v", err)
+		return 1
+	}
+	ca, err := mitm.LoadOrCreateCA(dir)
+	if err != nil {
+		logerr("failed to load MITM CA: %v", err)
+		return 1
+	}
+	certPath := filepath.Join(dir, "ca-cert.pem")
+	certPEM := ca.CertPEM()
+
+	fingerprint := "(unparseable)"
+	if block, _ := pem.Decode(certPEM); block != nil {
+		sum := sha256.Sum256(block.Bytes)
+		parts := make([]string, len(sum))
+		for i, b := range sum {
+			parts[i] = fmt.Sprintf("%02X", b)
+		}
+		fingerprint = strings.Join(parts, ":")
+	}
+
+	if o.asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(map[string]string{
+			"path":        certPath,
+			"sha256":      fingerprint,
+			"certificate": string(certPEM),
+		}); err != nil {
+			logerr("failed to encode JSON: %v", err)
+			return 1
+		}
+		return 0
+	}
+
+	fmt.Printf("MITM CA certificate: %s\n", certPath)
+	fmt.Printf("SHA-256:             %s\n", fingerprint)
+	fmt.Println("\nmsc trusts this CA in agents it launches with --mitm automatically.")
+	fmt.Println("To trust it elsewhere (browser, system store, or a custom HTTPS client):")
+	fmt.Printf("  export NODE_EXTRA_CA_CERTS=%s   # Node\n", certPath)
+	fmt.Printf("  export SSL_CERT_FILE=%s         # OpenSSL/Python/Go/curl\n", certPath)
+	return 0
+}
 
 // cmdList prints supported agents to stdout.
 func cmdList(o *opts) int {
@@ -147,6 +202,7 @@ Agents:
 Commands:
   list           List supported agents (use --json for machine output)
   status         Check MuninnDB connectivity
+  ca             Print the TLS-MITM CA cert path + fingerprint (for trusting it elsewhere)
   version        Show version information (use --json for machine output)
   completion     Generate shell completions (bash, zsh, fish)
 

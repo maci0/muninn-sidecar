@@ -14,7 +14,7 @@ import (
 // init() validates this at startup to prevent silent shadowing.
 var ReservedCommands = map[string]bool{
 	"help": true, "list": true, "version": true,
-	"status": true, "completion": true,
+	"status": true, "completion": true, "ca": true,
 }
 
 // mscSentinel is set in the child's environment by BuildEnv() so Resolve()

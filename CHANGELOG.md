@@ -14,6 +14,10 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Added
 
+- **`msc ca` command** — prints the TLS-MITM CA certificate path + SHA-256
+  fingerprint (creating the CA if needed); `--json` includes the PEM. Lets users
+  trust msc's CA in tools it doesn't launch itself (browsers, system store,
+  custom HTTPS clients) for the transparent-HTTPS-proxy use case.
 - **Uncaptured-upgrade visibility** — spliced protocol upgrades (e.g. codex's
   WebSocket) bypass capture; the session summary now reports them
   (`mitm: N upgraded stream(s) spliced, not captured`) so it's never silent.

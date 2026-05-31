@@ -109,6 +109,12 @@ func run() int {
 			return exitUsage
 		}
 		return cmdStatus(o)
+	case "ca":
+		if len(agentArgs) > 0 {
+			logerr("ca does not accept arguments")
+			return exitUsage
+		}
+		return cmdCA(o)
 	case "completion":
 		if len(agentArgs) == 0 {
 			logerr("missing shell argument: msc completion <bash|zsh|fish>")
@@ -136,14 +142,14 @@ func run() int {
 		names := agents.ListSorted()
 		allNames := make([]string, 0, len(names)+5)
 		allNames = append(allNames, names...)
-		allNames = append(allNames, "list", "status", "version", "help", "completion")
+		allNames = append(allNames, "list", "status", "ca", "version", "help", "completion")
 		if suggestion := closestMatch(cmd, allNames); suggestion != "" {
 			logerr("unknown command: %s. Did you mean %q?", cmd, suggestion)
 		} else {
 			logerr("unknown command: %s", cmd)
 		}
 		logf("agents: %s", strings.Join(names, ", "))
-		logf("commands: list, status, version, completion, help")
+		logf("commands: list, status, ca, version, completion, help")
 		return exitUsage
 	}
 

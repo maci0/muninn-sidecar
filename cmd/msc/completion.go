@@ -35,7 +35,7 @@ func cmdCompletion(shell string) int {
     fi
 
     # Only complete agent names and subcommands for the first positional arg.
-    local commands="%s list status version help completion"
+    local commands="%s list status ca version help completion"
     local subcmd=""
     local skip_next=0
     for word in "${COMP_WORDS[@]:1}"; do
@@ -67,7 +67,7 @@ complete -F _msc msc
 
 _msc() {
     local -a agents=(%s)
-    local -a commands=(list status version help completion)
+    local -a commands=(list status ca version help completion)
     local -a flags=(
         {-h,--help}'[Show help]'
         {-v,--version}'[Show version]'
@@ -133,7 +133,7 @@ complete -c msc -l token -r -d "MuninnDB bearer token"
 		// function __fish_seen_subcommand_from returns true when one of the
 		// listed words has already appeared, so negating it guards completions
 		// that should only appear as the first positional argument.
-		allCmds := append([]string{"list", "status", "version", "help", "completion"}, names...)
+		allCmds := append([]string{"list", "status", "ca", "version", "help", "completion"}, names...)
 		noSubcmd := fmt.Sprintf("not __fish_seen_subcommand_from %s", strings.Join(allCmds, " "))
 		// Only complete agent names and subcommands for the first positional argument.
 		for _, n := range names {
@@ -141,6 +141,7 @@ complete -c msc -l token -r -d "MuninnDB bearer token"
 		}
 		fmt.Printf("complete -c msc -n '%s' -a list -d \"List supported agents\"\n", noSubcmd)
 		fmt.Printf("complete -c msc -n '%s' -a status -d \"Check MuninnDB connectivity\"\n", noSubcmd)
+		fmt.Printf("complete -c msc -n '%s' -a ca -d \"Print TLS-MITM CA cert path\"\n", noSubcmd)
 		fmt.Printf("complete -c msc -n '%s' -a version -d \"Show version\"\n", noSubcmd)
 		fmt.Printf("complete -c msc -n '%s' -a help -d \"Show help\"\n", noSubcmd)
 		fmt.Printf("complete -c msc -n '%s' -a completion -d \"Generate shell completions\"\n", noSubcmd)

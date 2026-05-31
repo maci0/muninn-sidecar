@@ -79,6 +79,27 @@ func TestRunDryRun(t *testing.T) {
 	}
 }
 
+func TestRunCA(t *testing.T) {
+	// Pin a throwaway config home so the CA is created under it.
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	if code := runArgs(t, "ca"); code != 0 {
+		t.Errorf("ca should exit 0, got %d", code)
+	}
+	if code := runArgs(t, "-j", "ca"); code != 0 {
+		t.Errorf("ca --json should exit 0, got %d", code)
+	}
+	// The command must have created the CA cert under the pinned config home.
+	if _, err := os.Stat(tmp + "/muninn-sidecar/mitm/ca-cert.pem"); err != nil {
+		t.Errorf("ca command did not create the CA cert: %v", err)
+	}
+	// ca takes no arguments.
+	if runArgs(t, "ca", "extra") == 0 {
+		t.Error("ca with an argument should be a usage error")
+	}
+}
+
 func TestUsageAndVersionWriters(t *testing.T) {
 	silence(t, func() {
 		usage(os.Stdout)

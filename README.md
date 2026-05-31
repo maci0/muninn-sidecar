@@ -90,6 +90,10 @@ msc --json status
 msc list
 msc --json list
 
+# Print the TLS-MITM CA cert path + fingerprint (to trust it in other tools)
+msc ca
+msc --json ca
+
 # Install shell completions
 msc completion zsh > ~/.zsh_functions/_msc
 msc completion bash >> ~/.bashrc
