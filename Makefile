@@ -3,7 +3,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: build install test cover lint fmt tidy clean eval eval-models fuzz bench
+.PHONY: build install test cover lint vuln fmt tidy clean eval eval-models fuzz bench
 
 build:
 	go build -ldflags '$(LDFLAGS)' -o msc ./cmd/msc/
@@ -45,6 +45,10 @@ fuzz:
 lint:
 	go vet ./...
 	@command -v staticcheck >/dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed, skipping (go install honnef.co/go/tools/cmd/staticcheck@v0.5.1)"
+
+# Scan reachable code against the Go vulnerability DB (CI runs this too).
+vuln:
+	@command -v govulncheck >/dev/null 2>&1 && govulncheck ./... || echo "govulncheck not installed, skipping (go install golang.org/x/vuln/cmd/govulncheck@latest)"
 
 fmt:
 	gofmt -l -w .

@@ -24,7 +24,12 @@ make lint               # go vet + staticcheck
 make test               # go test -race -count=1 ./...
 make cover              # coverage report
 FUZZTIME=8s make fuzz   # run every fuzz target briefly
+make vuln               # govulncheck against the Go vulnerability DB
 ```
+
+The module has **no third-party dependencies** (standard library only) — keep it
+that way unless there's a compelling reason; it's the project's strongest
+supply-chain property. `make vuln` (and CI) then mainly guards stdlib CVEs.
 
 ### Quality bar
 

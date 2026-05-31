@@ -56,3 +56,23 @@ jobs:
       # briefly, so regressions surface on every push, not just on a manual run.
       - name: Fuzz (short campaign, all targets)
         run: FUZZTIME=8s make fuzz
+
+  vuln:
+    name: Vulnerability scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Scan reachable code against the Go vulnerability DB. The module has no
+      # third-party dependencies, so this primarily catches stdlib CVEs tied to
+      # the toolchain version — and guards future dependencies.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
