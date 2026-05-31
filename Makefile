@@ -44,7 +44,7 @@ fuzz:
 
 lint:
 	go vet ./...
-	@command -v staticcheck >/dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed, skipping (go install honnef.co/go/tools/cmd/staticcheck@v0.5.1)"
+	@command -v staticcheck >/dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed, skipping (go install honnef.co/go/tools/cmd/staticcheck@latest)"
 
 # Scan reachable code against the Go vulnerability DB (CI runs this too).
 vuln:

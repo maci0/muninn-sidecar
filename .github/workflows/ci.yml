@@ -44,7 +44,10 @@ jobs:
 
       - name: Staticcheck
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@v0.5.1
+          # @latest: the pinned v0.5.1 no longer compiles against current Go
+          # toolchains (stale x/tools). A linter tracking the toolchain is the
+          # right call here over a pin that breaks the build.
+          go install honnef.co/go/tools/cmd/staticcheck@latest
           staticcheck ./...
 
       - name: Test
