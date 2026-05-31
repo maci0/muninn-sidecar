@@ -280,6 +280,11 @@ Command-line flags take precedence over environment variables.
 - [MuninnDB](https://github.com/scrypster/muninn) running locally (or reachable via `MUNINN_MCP_URL`)
 - The coding agent binary installed and in `PATH`
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the build/test/fuzz workflow, the
+quality bar, how to add an agent (verify empirically), and commit conventions.
+
 ## License
 
 MIT
