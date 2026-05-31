@@ -178,6 +178,18 @@ The key gotcha: Node's global `fetch` (undici) — used by the Anthropic/OpenAI 
 — silently ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` (Node 24+); msc sets
 it so claude/qwen/reasonix are actually intercepted.
 
+By default `--mitm` intercepts **every** host the agent connects to — deliberately,
+since the agents that need MITM (e.g. codex ChatGPT-mode) often talk to a backend
+that *isn't* their nominal API host. To narrow it, `--mitm-host HOST` (repeatable /
+comma-separated) scopes interception to the upstream plus the listed hosts and
+**blind-tunnels everything else untouched** — so package registries, OAuth, and
+cert-pinned services are never decrypted:
+
+```
+msc --mitm codex                                  # intercept all hosts
+msc --mitm-host api.openai.com,chatgpt.com codex  # intercept only these, tunnel the rest
+```
+
 MITM is **off by default** — only the explicit `--mitm` flag enables it. Use it for
 agents that bypass the base-URL override; the plain proxy remains the default for
 everything else.
@@ -224,6 +236,8 @@ Command-line flags take precedence over environment variables.
     --mitm            Intercept HTTPS via a local CA + CONNECT proxy instead of a base-URL
                       override (for agents that ignore *_BASE_URL); the child is told to
                       trust msc's CA via NODE_EXTRA_CA_CERTS / SSL_CERT_FILE
+    --mitm-host HOST  Scope MITM to HOST (repeatable/comma-separated; implies --mitm). Only
+                      upstream + listed hosts are terminated; others blind-tunnel. Default: all
     --log-json        Emit logs as JSON (for log aggregation pipelines)
     --vault NAME      MuninnDB vault name
     --mcp-url URL     MuninnDB MCP endpoint

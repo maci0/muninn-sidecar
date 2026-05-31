@@ -36,6 +36,7 @@ type opts struct {
 	groundTimeout   time.Duration // in-flight grounding-call timeout (0 = default 10s); bounds how long a slow judge can stall a request
 	noAutoCalibrate bool          // disable self-tuning of the injection threshold
 	mitm            bool          // intercept HTTPS via a local CA + CONNECT proxy instead of a base-URL override
+	mitmHosts       []string      // scope MITM to these hosts (+ upstream); empty = intercept all. "*" forces all.
 }
 
 // parseAction signals a special action from parseFlags instead of os.Exit.
@@ -187,6 +188,24 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 				return nil, actionNone, fmt.Errorf("--inject-min-score must be in (0,1]")
 			}
 			o.minScore = f
+			i++
+			continue
+		case "--mitm-host":
+			v := val
+			if !hasVal {
+				i++
+				if i >= len(args) {
+					return nil, actionNone, fmt.Errorf("%s requires a value", key)
+				}
+				v = args[i]
+			}
+			// Comma-separated and/or repeated; scoping implies --mitm.
+			for _, h := range strings.Split(v, ",") {
+				if h = strings.TrimSpace(h); h != "" {
+					o.mitmHosts = append(o.mitmHosts, h)
+				}
+			}
+			o.mitm = true
 			i++
 			continue
 		case "--recall-mode":

@@ -166,6 +166,9 @@ Flags:
       --mitm             Intercept HTTPS via a local CA + CONNECT proxy instead of a
                          base-URL override (for agents that ignore *_BASE_URL); the
                          child is told to trust msc's CA (NODE_EXTRA_CA_CERTS/SSL_CERT_FILE)
+      --mitm-host HOST   Scope MITM to HOST (repeatable / comma-separated; implies --mitm).
+                         Only the upstream + listed hosts are TLS-terminated; all other
+                         hosts are blind-tunneled untouched. Default (no flag): intercept all
       --log-json         Emit logs as JSON (for log aggregation pipelines)
       --vault NAME       MuninnDB vault name (default: current directory name, fallback: sidecar)
       --mcp-url URL      MuninnDB MCP endpoint (default: http://127.0.0.1:8750/mcp)

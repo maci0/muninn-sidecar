@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,6 +107,8 @@ func TestMITMInterceptsHTTPS(t *testing.T) {
 		CapturePaths: []string{"/v1/messages"},
 		Injector:     injector,
 		CA:           ca,
+		// No MITMHosts -> default intercept-all, so the 127.0.0.1 test upstream
+		// (not the Config.Upstream host) is still terminated.
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +172,140 @@ func TestMITMInterceptsHTTPS(t *testing.T) {
 	if sessionStats.Injections.Load() != 1 {
 		t.Errorf("expected 1 injection through MITM, got %d", sessionStats.Injections.Load())
 	}
+}
+
+// TestMITMBlindTunnel proves a non-intercepted host passes through untouched:
+// the client trusts ONLY the real upstream's cert (not msc's CA), so a
+// successful TLS session can only mean msc blind-tunneled rather than forging a
+// leaf. If msc had intercepted, the client would see a msc-minted cert it does
+// not trust and the handshake would fail.
+func TestMITMBlindTunnel(t *testing.T) {
+	var hits atomic.Int64
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Write([]byte(`upstream-ok`))
+	}))
+	defer upstream.Close()
+
+	ca, err := mitm.LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{
+		ListenAddr:   "127.0.0.1:0",
+		Upstream:     "https://api.example.invalid", // upstream host != the test server's 127.0.0.1
+		AgentName:    "claude",
+		Store:        st,
+		CapturePaths: []string{"/v1/messages"},
+		CA:           ca,
+		// Scoped mode (non-empty, no "*"): only the upstream host is intercepted,
+		// so the 127.0.0.1 test server must be blind-tunneled.
+		MITMHosts: []string{"api.example.invalid"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	// Client trusts the REAL upstream cert only, NOT msc's CA.
+	upstreamPool := x509.NewCertPool()
+	upstreamPool.AddCert(upstream.Certificate())
+	proxyURL, _ := url.Parse("http://" + addr)
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: upstreamPool},
+		},
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Get(upstream.URL + "/v1/messages")
+	if err != nil {
+		t.Fatalf("blind-tunnel request failed (msc likely intercepted instead of tunneling): %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "upstream-ok" {
+		t.Errorf("unexpected body %q", body)
+	}
+	// The cert the client saw must be the upstream's own, not a msc-minted leaf.
+	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
+		t.Fatal("no peer certificate")
+	}
+	if resp.TLS.PeerCertificates[0].Issuer.CommonName == "muninn-sidecar local CA" {
+		t.Error("client saw a msc-minted cert; host was intercepted, not tunneled")
+	}
+	if hits.Load() != 1 {
+		t.Errorf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestShouldInterceptHost(t *testing.T) {
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0",
+		Upstream:   "https://api.anthropic.com",
+		Store:      store.New("http://127.0.0.1:1", "", "t", &stats.Stats{}),
+		CA:         mustCA(t),
+		MITMHosts:  []string{"api.openai.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]bool{
+		"api.anthropic.com":     true, // upstream host
+		"API.Anthropic.com":     true, // case-insensitive
+		"api.openai.com":        true, // allowlisted
+		"registry.npmjs.org":    false,
+		"api.githubcopilot.com": false,
+		"":                      false,
+	}
+	for host, want := range cases {
+		if got := p.shouldInterceptHost(host); got != want {
+			t.Errorf("shouldInterceptHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+
+	// "*" intercepts everything.
+	pAll, _ := New(Config{
+		ListenAddr: "127.0.0.1:0", Upstream: "https://api.anthropic.com",
+		Store: store.New("http://127.0.0.1:1", "", "t", &stats.Stats{}), CA: mustCA(t),
+		MITMHosts: []string{"*"},
+	})
+	if !pAll.shouldInterceptHost("anything.example.com") {
+		t.Error(`"*" should intercept all hosts`)
+	}
+}
+
+func FuzzShouldInterceptHost(f *testing.F) {
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0", Upstream: "https://api.anthropic.com",
+		Store: store.New("http://127.0.0.1:1", "", "t", &stats.Stats{}), CA: mustCA(f),
+	})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add("api.anthropic.com")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, host string) {
+		// Pure lookup: never panics and is deterministic.
+		if p.shouldInterceptHost(host) != p.shouldInterceptHost(host) {
+			t.Fatal("non-deterministic result")
+		}
+	})
+}
+
+func mustCA(tb testing.TB) *mitm.CA {
+	tb.Helper()
+	ca, err := mitm.LoadOrCreateCA(tb.TempDir())
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return ca
 }
 
 func TestSetMITMRoots(t *testing.T) {

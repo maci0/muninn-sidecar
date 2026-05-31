@@ -262,7 +262,8 @@ func run() int {
 		CapturePaths: agent.CapturePaths,
 		ExcludePaths: agent.ExcludePaths,
 		Injector:     injector,
-		CA:           ca, // nil unless --mitm; enables CONNECT/TLS interception
+		CA:           ca,          // nil unless --mitm; enables CONNECT/TLS interception
+		MITMHosts:    o.mitmHosts, // empty = intercept all CONNECT hosts; non-empty scopes (+ upstream)
 	})
 	if err != nil {
 		logerr("failed to create proxy: %v", err)
@@ -433,7 +434,12 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	fmt.Fprintf(os.Stdout, "Binary:   %s\n", binary)
 	fmt.Fprintf(os.Stdout, "Upstream: %s\n", upstream)
 	if o.mitm {
+		scope := "all hosts"
+		if len(o.mitmHosts) > 0 {
+			scope = "upstream + " + strings.Join(o.mitmHosts, ", ") + " (others blind-tunneled)"
+		}
 		fmt.Fprintf(os.Stdout, "Mode:     TLS-MITM (transparent HTTPS proxy)\n")
+		fmt.Fprintf(os.Stdout, "Intercept: %s\n", scope)
 		fmt.Fprintf(os.Stdout, "Env:      HTTPS_PROXY=http://127.0.0.1:<port>\n")
 		fmt.Fprintf(os.Stdout, "          NODE_EXTRA_CA_CERTS=%s\n", caCertPath)
 		fmt.Fprintf(os.Stdout, "          SSL_CERT_FILE=%s\n", caCertPath)

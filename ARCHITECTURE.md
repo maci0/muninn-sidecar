@@ -115,6 +115,8 @@ Some agents ignore the base-URL override and reach their provider directly (code
 
 The child env covers every runtime our agents use, verified with a per-runtime interception probe (the record-upstream's cert is trusted by msc but not the client, so a successful response *proves* the request went through msc rather than directly): Node/undici `fetch` (claude, qwen, reasonix), Rust/`reqwest` (codex, grok), Bun (opencode), Deno, Python (aider), Go (agy). The non-obvious one: Node's global `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` (Node 24+), so msc sets that too — otherwise the most common agent family (Anthropic/OpenAI SDKs on undici) would silently bypass the proxy.
 
+By default every CONNECT host is terminated (the agents that need MITM often talk to a backend that isn't their nominal API host). `--mitm-host` scopes interception to the upstream + listed hosts; all others are **blind-tunneled** (`blindTunnel` — a plain TCP splice with no TLS termination), so package registries and cert-pinned services are never decrypted.
+
 Security model: the CA private key is generated locally, stored `0600`, and never leaves the machine; trust is scoped to the launched child via env vars only — msc never touches the system trust store. MITM is off unless `--mitm` is explicitly passed.
 
 ### Format-Agnostic API Handling

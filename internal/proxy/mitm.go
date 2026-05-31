@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"crypto/tls"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -36,6 +37,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer clientConn.Close()
+
+	// Scope interception: only TLS-terminate hosts we care about (the agent's LLM
+	// API). Everything else is blind-tunneled untouched, so package registries,
+	// OAuth, and cert-pinned services keep working and aren't needlessly decrypted.
+	if !p.shouldInterceptHost(stripPort(target)) {
+		p.blindTunnel(clientConn, target)
+		return
+	}
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 		return
@@ -90,6 +99,49 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		WriteTimeout:      10 * time.Minute,
 	}
 	_ = srv.Serve(newSingleConnListener(tlsConn)) // returns once the tunnel conn closes
+}
+
+// shouldInterceptHost reports whether a CONNECT target host should be
+// TLS-terminated (vs blind-tunneled). True for the upstream host, any configured
+// MITMHosts, or everything when "*" was configured. host must be port-stripped.
+func (p *Proxy) shouldInterceptHost(host string) bool {
+	if p.mitmAll {
+		return true
+	}
+	return p.mitmHosts[strings.ToLower(host)]
+}
+
+// blindTunnel forwards an opaque TCP stream between the client and the real
+// target without touching TLS — a plain CONNECT proxy. Used for hosts we don't
+// intercept. The 200 is sent only after the upstream dial succeeds so the client
+// sees a real failure if the host is unreachable.
+func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
+	upstream, err := net.DialTimeout("tcp", target, 30*time.Second)
+	if err != nil {
+		slog.Debug("mitm: blind-tunnel dial failed", "target", target, "err", err)
+		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		return
+	}
+	defer upstream.Close()
+
+	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+		return
+	}
+	slog.Debug("mitm: blind-tunnel", "target", target)
+
+	// Pipe both directions; return when either side closes.
+	done := make(chan struct{}, 2)
+	cp := func(dst, src net.Conn) {
+		io.Copy(dst, src)
+		// Unblock the peer copy: a half-close lets the other direction drain.
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+			cw.CloseWrite()
+		}
+		done <- struct{}{}
+	}
+	go cp(upstream, clientConn)
+	go cp(clientConn, upstream)
+	<-done
 }
 
 // stripPort returns host without a trailing :port, leaving bracketed IPv6 and

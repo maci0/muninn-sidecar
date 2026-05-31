@@ -54,6 +54,26 @@ func TestParseFlags(t *testing.T) {
 		}
 	})
 
+	t.Run("mitm-host scoping implies mitm", func(t *testing.T) {
+		o := &opts{}
+		_, _, err := parseFlags([]string{"--mitm-host", "api.openai.com,chatgpt.com", "--mitm-host", "extra.host", "codex"}, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !o.mitm {
+			t.Error("--mitm-host should imply --mitm")
+		}
+		want := []string{"api.openai.com", "chatgpt.com", "extra.host"}
+		if len(o.mitmHosts) != len(want) {
+			t.Fatalf("mitmHosts = %v, want %v", o.mitmHosts, want)
+		}
+		for i := range want {
+			if o.mitmHosts[i] != want[i] {
+				t.Errorf("mitmHosts[%d] = %q, want %q", i, o.mitmHosts[i], want[i])
+			}
+		}
+	})
+
 	t.Run("mitm rejects =value", func(t *testing.T) {
 		if _, _, err := parseFlags([]string{"--mitm=true", "claude"}, &opts{}); err == nil {
 			t.Error("expected error for --mitm=true")

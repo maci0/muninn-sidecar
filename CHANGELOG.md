@@ -24,6 +24,10 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   `fetch` ignores `HTTPS_PROXY` without `NODE_USE_ENV_PROXY=1`, so msc sets it.
 - **`proxy.SetMITMRoots`** — override the root CAs used to verify real upstreams
   on the MITM forward leg (private/corporate upstream CA, or tests).
+- **`--mitm-host` scoping** — by default `--mitm` intercepts every CONNECT host;
+  `--mitm-host HOST` (repeatable/comma-separated, implies `--mitm`) limits TLS
+  termination to the upstream + listed hosts and blind-tunnels everything else
+  untouched, so package registries and cert-pinned services aren't decrypted.
 
 ## [0.1.0] — 2026-05-31
 

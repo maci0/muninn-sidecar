@@ -80,6 +80,8 @@ type Proxy struct {
 	reverseProxy   *httputil.ReverseProxy // stdlib reverse proxy with our hooks
 	ca             *mitm.CA               // non-nil enables TLS-MITM of CONNECT tunnels
 	mitmTransport  *http.Transport        // TLS transport to real upstream hosts (MITM)
+	mitmHosts      map[string]bool        // hosts to TLS-terminate; others are blind-tunneled
+	mitmAll        bool                   // intercept every CONNECT host (allowlist contained "*")
 }
 
 // Config holds the parameters for creating a Proxy.
@@ -93,6 +95,7 @@ type Config struct {
 	FilterPatterns []string // tool name patterns to strip; nil = defaultFilterPatterns; []string{} = disable all filtering
 	Injector       Enricher // optional memory injector; nil = disabled
 	CA             *mitm.CA // non-nil enables TLS-MITM: CONNECT tunnels are terminated and intercepted
+	MITMHosts      []string // extra hosts to TLS-terminate (besides the upstream host); "*" intercepts all. Others are blind-tunneled untouched.
 }
 
 // New creates a Proxy. Use ListenAddr "127.0.0.1:0" in Config to bind to a
@@ -119,6 +122,28 @@ func New(cfg Config) (*Proxy, error) {
 		filterPatterns: toLowerSlice(filterPatterns),
 		injector:       cfg.Injector,
 		ca:             cfg.CA,
+	}
+
+	// MITM defaults to intercepting every CONNECT host: that's the whole point —
+	// catch agents that talk to unexpected hosts (e.g. codex ChatGPT-mode hits a
+	// backend that isn't its resolved api.openai.com upstream). Passing MITMHosts
+	// opts into scoping: only the upstream host plus the listed hosts are
+	// TLS-terminated, and everything else is blind-tunneled untouched (so package
+	// registries and cert-pinned services keep working). "*" forces intercept-all.
+	p.mitmHosts = map[string]bool{}
+	if len(cfg.MITMHosts) == 0 {
+		p.mitmAll = true
+	} else {
+		if h := strings.ToLower(upstream.Hostname()); h != "" {
+			p.mitmHosts[h] = true
+		}
+		for _, h := range cfg.MITMHosts {
+			if h == "*" {
+				p.mitmAll = true
+				continue
+			}
+			p.mitmHosts[strings.ToLower(strings.TrimSpace(h))] = true
+		}
 	}
 
 	transport := &http.Transport{
