@@ -248,6 +248,24 @@ Command-line flags take precedence over environment variables.
     --token TOKEN     MuninnDB bearer token
 ```
 
+## Limitations
+
+- **OAuth-direct / WebSocket agents.** Agents that ignore a base-URL env override
+  need `--mitm` (codex ChatGPT-mode, agy/antigravity). With `--mitm` they *run*
+  through msc, but codex ChatGPT-mode streams over a permessage-deflate WebSocket
+  that isn't decoded for capture yet — so codex runs but its turns aren't stored.
+  The session summary reports any such uncaptured upgraded streams.
+- **Single upstream without `--mitm`.** The default proxy forwards to one resolved
+  upstream (the agent's API). An agent that talks to several API hosts needs
+  `--mitm` (which intercepts per-CONNECT-host).
+- **Best-effort capture.** Captures are async and bounded: if MuninnDB is
+  unreachable or the queue (depth 256) fills, exchanges are dropped rather than
+  blocking the agent; shutdown flushing is time-bounded (~8s). Recall/injection
+  fail open — a MuninnDB hiccup never blocks or corrupts a request.
+- **MITM trust.** `--mitm` is opt-in. The CA private key is generated locally,
+  stored `0600`, and trusted only by the agent msc launches — never the system
+  trust store (`msc ca` prints the cert for trusting it elsewhere yourself).
+
 ## Prerequisites
 
 - [MuninnDB](https://github.com/scrypster/muninn) running locally (or reachable via `MUNINN_MCP_URL`)
