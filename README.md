@@ -26,10 +26,13 @@ This allows agents to magically "remember" project context, conventions, and pas
 | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
 | `grok` | `GROK_MODELS_BASE_URL` | `api.x.ai/v1`‡ |
 | `reasonix` | `DEEPSEEK_BASE_URL` | `api.deepseek.com/v1` |
+| `qwen` | `--openai-base-url` flag¶ | `dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | `agy`§ | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
 | `antigravity`*| `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
 
 *(The Gemini CLI was removed — deprecated upstream. The Gemini/Code-Assist API format is still supported for `agy`/`antigravity`.)*
+
+*¶ `qwen` (Qwen Code, a Gemini-CLI fork) takes its base URL from the `--openai-base-url` flag, not an env var, so msc injects `--auth-type openai --openai-base-url <proxy>` automatically. Set `OPENAI_BASE_URL` to redirect to a custom/local upstream (e.g. `http://127.0.0.1:11434/v1` for ollama); you supply the API key as usual.*
 
 *\* Antigravity support is currently broken. It is hidden behind the `MSC_EXPERIMENTAL_ANTIGRAVITY=1` environment variable feature gate.*
 

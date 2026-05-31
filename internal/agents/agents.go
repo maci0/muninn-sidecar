@@ -61,9 +61,13 @@ type Agent struct {
 	AltDefaultCond string   // if this env var is set and no DetectEnv vars are set, use AltDefaultURL instead
 	AltDefaultURL  string   // alternative upstream for a different auth mode
 	WaitArgs       []string // flags to prepend when executing the agent to prevent it from backgrounding
+	ProxyArgs      []string // flags to prepend that point the agent at the proxy; the literal "{proxy}" is replaced with the proxy URL at exec. For agents that take their base URL from a CLI flag rather than an env var (e.g. qwen).
 	CapturePaths   []string // path substrings that identify LLM traffic to capture
 	ExcludePaths   []string // path substrings that exclude from capture (checked first)
 }
+
+// proxyURLPlaceholder is substituted with the live proxy URL inside ProxyArgs.
+const proxyURLPlaceholder = "{proxy}"
 
 // openAIDefaultURL and openAICapturePaths are shared by all OpenAI-compatible
 // agents (codex, opencode, aider). Centralised here so a single edit covers
@@ -133,6 +137,22 @@ var Registry = map[string]Agent{
 		ExtraEnvKeys: []string{"OPENAI_BASE_URL"},
 		DetectEnv:    []string{"DEEPSEEK_BASE_URL", "OPENAI_BASE_URL"},
 		DefaultURL:   "https://api.deepseek.com/v1",
+		CapturePaths: openAIV1BaseCapturePaths,
+	},
+	// qwen (Qwen Code — a Gemini-CLI fork for Qwen models). It is OpenAI-compatible
+	// but takes its base URL from the --openai-base-url FLAG (and reads its endpoint
+	// from ~/.qwen/settings.json), not from OPENAI_BASE_URL env, so msc injects the
+	// flags via ProxyArgs instead of an env override. The base is /v1-inclusive, so
+	// DefaultURL carries it (DashScope's OpenAI-compatible endpoint by default;
+	// set OPENAI_BASE_URL to redirect to a local/custom upstream, e.g. ollama).
+	// Verified: --auth-type openai --openai-base-url <url> routes /chat/completions
+	// through the proxy. The user supplies the API key (OPENAI_API_KEY / settings).
+	"qwen": {
+		Command:      "qwen",
+		EnvKey:       "OPENAI_BASE_URL",
+		ProxyArgs:    []string{"--auth-type", "openai", "--openai-base-url", proxyURLPlaceholder},
+		DetectEnv:    []string{"OPENAI_BASE_URL"},
+		DefaultURL:   "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 		CapturePaths: openAIV1BaseCapturePaths,
 	},
 	// agy (Google Antigravity CLI) — same Code Assist / Gemini family as the
@@ -211,6 +231,17 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 	return filtered
 }
 
+// buildArgs assembles the child argv: WaitArgs, then ProxyArgs (with the
+// {proxy} placeholder substituted for the live proxy URL), then the user's args.
+func (a Agent) buildArgs(proxyURL string, args []string) []string {
+	out := make([]string, 0, len(a.WaitArgs)+len(a.ProxyArgs)+len(args))
+	out = append(out, a.WaitArgs...)
+	for _, pa := range a.ProxyArgs {
+		out = append(out, strings.ReplaceAll(pa, proxyURLPlaceholder, proxyURL))
+	}
+	return append(out, args...)
+}
+
 // Exec resolves the agent binary via PATH, builds the modified environment,
 // and runs the child process. WaitArgs (if any) are prepended to args to
 // prevent the agent from running in the background. stdin/stdout/stderr are
@@ -222,11 +253,7 @@ func (a Agent) Exec(proxyURL, upstream string, args []string) error {
 		return fmt.Errorf("agent %q not found in PATH: %w", a.Command, err)
 	}
 
-	execArgs := make([]string, 0, len(a.WaitArgs)+len(args))
-	execArgs = append(execArgs, a.WaitArgs...)
-	execArgs = append(execArgs, args...)
-
-	cmd := exec.Command(binary, execArgs...)
+	cmd := exec.Command(binary, a.buildArgs(proxyURL, args)...)
 	cmd.Env = a.BuildEnv(proxyURL, upstream)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

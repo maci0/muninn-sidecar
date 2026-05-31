@@ -101,6 +101,8 @@ internal/
 
 Each coding agent reads its API base URL from an environment variable (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `CODE_ASSIST_ENDPOINT`, etc.). `msc` overrides this variable to point at the local proxy, then forwards to the real upstream. This requires zero changes to the agent and works with any version of any supported agent.
 
+A few agents take their base URL from a CLI flag rather than an env var (e.g. Qwen Code's `--openai-base-url`). For those, the agent's `ProxyArgs` carry the flags with a `{proxy}` placeholder that `Exec` substitutes with the live proxy URL — the same transparent redirect, delivered as args instead of env.
+
 The `MSC_UPSTREAM` sentinel prevents infinite loops when msc is accidentally nested — a child msc instance reads the real upstream from the sentinel rather than picking up the inner proxy's address from the environment.
 
 ### Format-Agnostic API Handling
@@ -235,6 +237,7 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach:
 | Aider | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
 | Grok | `grok` | `GROK_MODELS_BASE_URL` | `api.x.ai/v1` |
 | reasonix | `reasonix` | `DEEPSEEK_BASE_URL` | `api.deepseek.com/v1` |
+| Qwen Code | `qwen` | `--openai-base-url` flag (injected) | `dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | Antigravity*† | `agy` / `antigravity` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 
 *\* Antigravity (`antigravity`) is currently broken and gated behind `MSC_EXPERIMENTAL_ANTIGRAVITY=1`.*

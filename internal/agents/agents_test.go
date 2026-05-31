@@ -178,6 +178,25 @@ func TestAllAgentsHaveRequiredFields(t *testing.T) {
 	}
 }
 
+func TestBuildArgsProxySubstitution(t *testing.T) {
+	// qwen takes its base URL from a flag, so ProxyArgs must be injected with the
+	// live proxy URL substituted for {proxy}, before the user's args.
+	a := Agent{ProxyArgs: []string{"--auth-type", "openai", "--openai-base-url", proxyURLPlaceholder}}
+	got := a.buildArgs("http://127.0.0.1:7777", []string{"-p", "hi"})
+	want := []string{"--auth-type", "openai", "--openai-base-url", "http://127.0.0.1:7777", "-p", "hi"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("arg %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+	if q := Registry["qwen"]; len(q.ProxyArgs) == 0 {
+		t.Error("qwen should define ProxyArgs so its base URL is injected")
+	}
+}
+
 func TestExecMissingBinary(t *testing.T) {
 	a := Agent{Command: "msc-nonexistent-binary-xyz-123", EnvKey: "FOO_URL", DefaultURL: "https://x"}
 	if err := a.Exec("http://127.0.0.1:1", "https://x", nil); err == nil {
