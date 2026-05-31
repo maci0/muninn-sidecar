@@ -20,7 +20,18 @@ jobs:
           cache: true
 
       - name: Tidy
-        run: go mod tidy && git diff --exit-code go.mod go.sum
+        # Verify `go mod tidy` is a no-op. Uses `git status --porcelain` rather
+        # than `git diff go.mod go.sum` because this module has no dependencies and
+        # thus no go.sum — `git diff` errors on the missing path, while status
+        # handles an absent file and still catches a newly-created (untracked) one.
+        run: |
+          go mod tidy
+          if [ -n "$(git status --porcelain go.mod go.sum)" ]; then
+            echo "::error::go mod tidy changed go.mod/go.sum — commit the result"
+            git status --porcelain go.mod go.sum
+            git diff go.mod
+            exit 1
+          fi
 
       - name: Format
         run: test -z "$(gofmt -l .)"
