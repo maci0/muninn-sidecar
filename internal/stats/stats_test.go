@@ -12,6 +12,20 @@ func TestSummaryEmpty(t *testing.T) {
 	}
 }
 
+func TestSummaryUpgradedOnly(t *testing.T) {
+	// A session that only spliced WebSocket upgrades (e.g. codex) captured
+	// nothing, but must still surface the uncaptured-stream notice.
+	s := &Stats{}
+	s.Upgraded.Store(2)
+	got := s.Summary()
+	if got == "" {
+		t.Fatal("expected non-empty summary when upgrades occurred")
+	}
+	if !strings.Contains(got, "2 upgraded stream") || !strings.Contains(got, "not captured") {
+		t.Fatalf("expected upgraded-stream notice in summary: %q", got)
+	}
+}
+
 func TestSummaryBasic(t *testing.T) {
 	s := &Stats{}
 	s.Captured.Store(5)

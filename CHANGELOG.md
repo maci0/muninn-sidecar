@@ -3,6 +3,23 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased]
+
+### Fixed
+
+- **MITM WebSocket/`101` upgrades** — intercepted protocol-upgrade requests (e.g.
+  codex ChatGPT-mode streams over a WebSocket) are detected and spliced raw to
+  the backend over TLS instead of erroring in the capturing reverse-proxy.
+  Verified live: codex ChatGPT-mode now runs cleanly through `--mitm`.
+
+### Added
+
+- **Uncaptured-upgrade visibility** — spliced protocol upgrades (e.g. codex's
+  WebSocket) bypass capture; the session summary now reports them
+  (`mitm: N upgraded stream(s) spliced, not captured`) so it's never silent.
+  codex's WebSocket is permessage-deflate-compressed text; full capture is
+  tracked as future work.
+
 ## [0.2.0] — 2026-05-31
 
 Headline: **opt-in TLS-MITM interception** (`--mitm`) — capture and inject for

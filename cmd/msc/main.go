@@ -264,6 +264,7 @@ func run() int {
 		Injector:     injector,
 		CA:           ca,          // nil unless --mitm; enables CONNECT/TLS interception
 		MITMHosts:    o.mitmHosts, // empty = intercept all CONNECT hosts; non-empty scopes (+ upstream)
+		Stats:        sessionStats,
 	})
 	if err != nil {
 		logerr("failed to create proxy: %v", err)

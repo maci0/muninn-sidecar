@@ -268,8 +268,9 @@ func TestMITMSpliceUpgrade(t *testing.T) {
 	defer upstream.Close()
 
 	ca := mustCA(t)
-	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
-	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: "https://api.example.invalid", Store: st, CA: ca, MITMHosts: []string{"*"}})
+	sessionStats := &stats.Stats{}
+	st := store.New("http://127.0.0.1:1", "", "t", sessionStats)
+	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: "https://api.example.invalid", Store: st, CA: ca, MITMHosts: []string{"*"}, Stats: sessionStats})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,6 +323,10 @@ func TestMITMSpliceUpgrade(t *testing.T) {
 	}
 	if echo != "echo:hello\n" {
 		t.Errorf("splice round-trip = %q, want %q", echo, "echo:hello\n")
+	}
+	// The upgrade must be counted as spliced-but-uncaptured.
+	if got := sessionStats.Upgraded.Load(); got != 1 {
+		t.Errorf("Upgraded counter = %d, want 1", got)
 	}
 }
 

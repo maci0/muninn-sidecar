@@ -32,6 +32,7 @@ type Stats struct {
 	GroundingRuns   atomic.Int64 // turns the answer-grounding rerank ran (one listwise judge call each)
 	GroundDropped   atomic.Int64 // candidates the grounding rerank dropped (judged not to answer the query)
 	BudgetTruncated atomic.Int64 // gated memories dropped because they exceeded the injection token budget
+	Upgraded        atomic.Int64 // protocol-upgrade (e.g. WebSocket) streams spliced through MITM but not captured
 
 	models sync.Map // model name → *atomic.Int64
 }
@@ -80,7 +81,9 @@ func (s *Stats) Summary() string {
 	injections := s.Injections.Load()
 	injTokens := s.InjectedTokens.Load()
 
-	if captured == 0 && dropped == 0 && injections == 0 {
+	upgraded := s.Upgraded.Load()
+
+	if captured == 0 && dropped == 0 && injections == 0 && upgraded == 0 {
 		return ""
 	}
 
@@ -140,6 +143,11 @@ func (s *Stats) Summary() string {
 		if bt := s.BudgetTruncated.Load(); bt > 0 {
 			sb.WriteString(fmt.Sprintf("\nbudget: %d memories truncated (raise --inject-budget)", bt))
 		}
+	}
+
+	// MITM-spliced protocol upgrades that bypass capture (e.g. codex's WebSocket).
+	if upgraded > 0 {
+		sb.WriteString(fmt.Sprintf("\nmitm: %d upgraded stream(s) spliced, not captured (WebSocket/upgrade)", upgraded))
 	}
 
 	// Line 4: model breakdown (only if we tracked any).

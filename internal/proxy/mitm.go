@@ -159,6 +159,9 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 		return
 	}
 	slog.Debug("mitm: splicing upgrade", "target", target, "proto", req.Header.Get("Upgrade"))
+	if p.stats != nil {
+		p.stats.Upgraded.Add(1)
+	}
 
 	// Pipe both directions until either side closes. clientBuf may hold bytes
 	// already read past the request headers.

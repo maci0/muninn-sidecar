@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/mitm"
+	"github.com/maci0/muninn-sidecar/internal/stats"
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
 
@@ -82,20 +83,22 @@ type Proxy struct {
 	mitmTransport  *http.Transport        // TLS transport to real upstream hosts (MITM)
 	mitmHosts      map[string]bool        // hosts to TLS-terminate; others are blind-tunneled
 	mitmAll        bool                   // intercept every CONNECT host (allowlist contained "*")
+	stats          *stats.Stats           // optional session counters (nil = no recording)
 }
 
 // Config holds the parameters for creating a Proxy.
 type Config struct {
-	ListenAddr     string   // e.g. "127.0.0.1:0" for random port
-	Upstream       string   // real API URL to forward to
-	AgentName      string   // agent name for tagging in MuninnDB
-	Store          Storer   // MuninnDB writer; nil = discard captures
-	CapturePaths   []string // path substrings to capture; empty = capture all
-	ExcludePaths   []string // path substrings to exclude from capture (checked first)
-	FilterPatterns []string // tool name patterns to strip; nil = defaultFilterPatterns; []string{} = disable all filtering
-	Injector       Enricher // optional memory injector; nil = disabled
-	CA             *mitm.CA // non-nil enables TLS-MITM: CONNECT tunnels are terminated and intercepted
-	MITMHosts      []string // extra hosts to TLS-terminate (besides the upstream host); "*" intercepts all. Others are blind-tunneled untouched.
+	ListenAddr     string       // e.g. "127.0.0.1:0" for random port
+	Upstream       string       // real API URL to forward to
+	AgentName      string       // agent name for tagging in MuninnDB
+	Store          Storer       // MuninnDB writer; nil = discard captures
+	CapturePaths   []string     // path substrings to capture; empty = capture all
+	ExcludePaths   []string     // path substrings to exclude from capture (checked first)
+	FilterPatterns []string     // tool name patterns to strip; nil = defaultFilterPatterns; []string{} = disable all filtering
+	Injector       Enricher     // optional memory injector; nil = disabled
+	CA             *mitm.CA     // non-nil enables TLS-MITM: CONNECT tunnels are terminated and intercepted
+	MITMHosts      []string     // extra hosts to TLS-terminate (besides the upstream host); "*" intercepts all. Others are blind-tunneled untouched.
+	Stats          *stats.Stats // optional session counters (e.g. MITM upgraded-stream count)
 }
 
 // New creates a Proxy. Use ListenAddr "127.0.0.1:0" in Config to bind to a
@@ -122,6 +125,7 @@ func New(cfg Config) (*Proxy, error) {
 		filterPatterns: toLowerSlice(filterPatterns),
 		injector:       cfg.Injector,
 		ca:             cfg.CA,
+		stats:          cfg.Stats,
 	}
 
 	// MITM defaults to intercepting every CONNECT host: that's the whole point —
