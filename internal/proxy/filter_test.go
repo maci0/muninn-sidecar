@@ -2,8 +2,61 @@ package proxy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/inject"
 )
+
+// TestInjectStripRoundTrip guards the anti-recursion symmetry: whatever
+// inject.InjectContext adds for a format, stripInjectedContextDoc must remove —
+// otherwise injected context leaks into stored memories and self-reinforces.
+// If a new format is added to InjectContext without a matching strip, this fails.
+func TestInjectStripRoundTrip(t *testing.T) {
+	block := apiformat.ContextPrefix + "recalled memory" + "</retrieved-context>"
+	// Quote-independent marker substring (JSON escapes the quotes in source="muninn").
+	const marker = "retrieved-context"
+
+	cases := []struct {
+		name, format, base, origSignal string
+	}{
+		{"anthropic", apiformat.Anthropic, `{"system":"BeHelpful","messages":[{"role":"user","content":"hi"}]}`, "BeHelpful"},
+		{"openai", apiformat.OpenAI, `{"messages":[{"role":"user","content":"hi"}]}`, ""},
+		{"gemini", apiformat.Gemini, `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`, ""},
+		{"gemini cloudcode", apiformat.GeminiCloudCode, `{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`, ""},
+		{"openai responses", apiformat.OpenAIResponses, `{"input":"hi","instructions":"BeHelpful"}`, "BeHelpful"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(tc.base), &doc); err != nil {
+				t.Fatal(err)
+			}
+			injected, err := inject.InjectContext(doc, tc.format, block)
+			if err != nil {
+				t.Fatalf("InjectContext: %v", err)
+			}
+			if !strings.Contains(string(injected), marker) {
+				t.Fatalf("inject did not add the marker: %s", injected)
+			}
+
+			// Strip on a fresh parse of the injected body.
+			var idoc map[string]any
+			if err := json.Unmarshal(injected, &idoc); err != nil {
+				t.Fatal(err)
+			}
+			stripInjectedContextDoc(idoc)
+			out, _ := json.Marshal(idoc)
+			if strings.Contains(string(out), marker) {
+				t.Errorf("strip left injected context behind (recursion leak): %s", out)
+			}
+			if tc.origSignal != "" && !strings.Contains(string(out), tc.origSignal) {
+				t.Errorf("strip removed original content %q: %s", tc.origSignal, out)
+			}
+		})
+	}
+}
 
 func TestFilterAnthropicToolUse(t *testing.T) {
 	body := json.RawMessage(`{
