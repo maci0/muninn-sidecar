@@ -43,6 +43,23 @@ func TestParseFlags(t *testing.T) {
 		}
 	})
 
+	t.Run("mitm flag", func(t *testing.T) {
+		o := &opts{}
+		rem, _, err := parseFlags([]string{"--mitm", "claude"}, o)
+		if err != nil || !o.mitm {
+			t.Fatalf("--mitm not parsed: err=%v mitm=%v", err, o.mitm)
+		}
+		if len(rem) != 1 || rem[0] != "claude" {
+			t.Errorf("agent should follow --mitm: %v", rem)
+		}
+	})
+
+	t.Run("mitm rejects =value", func(t *testing.T) {
+		if _, _, err := parseFlags([]string{"--mitm=true", "claude"}, &opts{}); err == nil {
+			t.Error("expected error for --mitm=true")
+		}
+	})
+
 	t.Run("=value syntax", func(t *testing.T) {
 		o := &opts{}
 		if _, _, err := parseFlags([]string{"--vault=x", "claude"}, o); err != nil || o.vault != "x" {

@@ -235,6 +235,46 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 	return filtered
 }
 
+// BuildMITMEnv constructs the child environment for TLS-MITM mode. Instead of
+// overriding the agent's API base-URL env var, it points the standard proxy
+// variables (HTTPS_PROXY/HTTP_PROXY/ALL_PROXY) at msc and makes the child trust
+// msc's CA so the minted leaf certs verify. This catches agents that ignore a
+// base-URL override (codex ChatGPT-mode, grok session auth, agy) and turns msc
+// into a transparent HTTPS proxy. caCertPath is the PEM file the local CA wrote.
+func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath string) []string {
+	env := os.Environ()
+
+	// Lowercase variants are honored by curl/libcurl; uppercase by Go, Node, and
+	// most runtimes. Node reads NODE_EXTRA_CA_CERTS; OpenSSL/Python read
+	// SSL_CERT_FILE; requests reads REQUESTS_CA_BUNDLE; curl reads CURL_CA_BUNDLE.
+	replace := map[string]string{
+		"HTTPS_PROXY":         proxyURL,
+		"https_proxy":         proxyURL,
+		"HTTP_PROXY":          proxyURL,
+		"http_proxy":          proxyURL,
+		"ALL_PROXY":           proxyURL,
+		"all_proxy":           proxyURL,
+		"NODE_EXTRA_CA_CERTS": caCertPath,
+		"SSL_CERT_FILE":       caCertPath,
+		"REQUESTS_CA_BUNDLE":  caCertPath,
+		"CURL_CA_BUNDLE":      caCertPath,
+		mscSentinel:           upstream,
+	}
+
+	filtered := make([]string, 0, len(env)+len(replace))
+	for _, e := range env {
+		key, _, _ := strings.Cut(e, "=")
+		if _, ok := replace[key]; ok {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	for k, v := range replace {
+		filtered = append(filtered, k+"="+v)
+	}
+	return filtered
+}
+
 // buildArgs assembles the child argv: WaitArgs, then ProxyArgs (with the
 // {proxy} placeholder substituted for the live proxy URL), then the user's args.
 func (a Agent) buildArgs(proxyURL string, args []string) []string {
@@ -252,17 +292,31 @@ func (a Agent) buildArgs(proxyURL string, args []string) []string {
 // inherited so the user interacts with the agent normally. Returns the
 // child's exit error, if any.
 func (a Agent) Exec(proxyURL, upstream string, args []string) error {
+	return a.runArgv(a.BuildEnv(proxyURL, upstream), a.buildArgs(proxyURL, args))
+}
+
+// ExecMITM runs the agent in TLS-MITM mode: the child trusts msc's CA (via
+// caCertPath) and routes HTTPS through msc as a CONNECT proxy, rather than
+// having its API base-URL env var overridden. ProxyArgs are intentionally NOT
+// applied — in MITM mode the agent keeps its real upstream URL and msc
+// intercepts transparently; only WaitArgs are prepended.
+func (a Agent) ExecMITM(proxyURL, upstream, caCertPath string, args []string) error {
+	argv := append(append([]string{}, a.WaitArgs...), args...)
+	return a.runArgv(a.BuildMITMEnv(proxyURL, upstream, caCertPath), argv)
+}
+
+// runArgv looks up the agent binary and executes it with the given environment
+// and already-assembled argv, inheriting stdin/stdout/stderr.
+func (a Agent) runArgv(env []string, argv []string) error {
 	binary, err := exec.LookPath(a.Command)
 	if err != nil {
 		return fmt.Errorf("agent %q not found in PATH: %w", a.Command, err)
 	}
-
-	cmd := exec.Command(binary, a.buildArgs(proxyURL, args)...)
-	cmd.Env = a.BuildEnv(proxyURL, upstream)
+	cmd := exec.Command(binary, argv...)
+	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
 	return cmd.Run()
 }
 

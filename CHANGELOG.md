@@ -5,16 +5,20 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ## [Unreleased]
 
-### Added (in progress)
+### Added
 
-- **TLS-MITM interception (opt-in)** — groundwork for intercepting agents that
-  don't honor a base-URL env override (codex ChatGPT-mode, grok session auth,
-  agy) and for using msc as a transparent HTTPS_PROXY. First increment: a local
-  certificate authority (`internal/mitm`) that auto-generates/persists a CA
-  (0600 key, local-only) and mints cached per-host leaf certs signed by it.
-  Subsequent increments: the CONNECT proxy + TLS termination wired to the
-  existing recall/inject + capture pipeline, and a `--mitm` flag that injects
-  CA trust into the child (`NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE`).
+- **TLS-MITM interception (`--mitm`, opt-in)** — intercept agents that don't
+  honor a base-URL env override (codex ChatGPT-mode, grok session auth, agy) and
+  use msc as a transparent HTTPS proxy. A local certificate authority
+  (`internal/mitm`) auto-generates/persists a CA (0600 key, local-only, under the
+  user config dir) and mints cached per-host leaf certs signed by it. With
+  `--mitm`, msc accepts `CONNECT` tunnels, terminates TLS with a minted leaf,
+  runs the decrypted request through the same recall/inject + capture pipeline as
+  the plain path, and re-originates TLS to the real host. The child is pointed at
+  msc via `HTTP(S)_PROXY`/`ALL_PROXY` (upper and lower case) and told to trust the
+  CA via `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` /
+  `CURL_CA_BUNDLE`. Off by default; the CA private key never leaves the machine
+  and trust is scoped to the launched child only, never the system trust store.
 
 ## [0.1.0] — 2026-05-31
 

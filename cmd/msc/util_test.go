@@ -1,6 +1,43 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestMITMCADir(t *testing.T) {
+	// Pin a config home so the test is deterministic and writes nowhere global.
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	dir, err := mitmCADir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(dir, tmp) {
+		t.Errorf("CA dir %q not under config home %q", dir, tmp)
+	}
+	if filepath.Base(dir) != "mitm" {
+		t.Errorf("expected dir to end in .../mitm, got %q", dir)
+	}
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("CA dir not created: %v", err)
+	}
+	if !fi.IsDir() {
+		t.Error("CA dir is not a directory")
+	}
+	if perm := fi.Mode().Perm(); perm != 0o700 {
+		t.Errorf("CA dir perms = %v, want 0700", perm)
+	}
+	// Idempotent: a second call returns the same path without error.
+	dir2, err := mitmCADir()
+	if err != nil || dir2 != dir {
+		t.Errorf("second call: dir=%q err=%v, want %q", dir2, err, dir)
+	}
+}
 
 func TestLevenshtein(t *testing.T) {
 	cases := []struct {

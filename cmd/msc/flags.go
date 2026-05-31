@@ -35,6 +35,7 @@ type opts struct {
 	groundTopK      int           // candidates to ground per recall (0 = default 3)
 	groundTimeout   time.Duration // in-flight grounding-call timeout (0 = default 10s); bounds how long a slow judge can stall a request
 	noAutoCalibrate bool          // disable self-tuning of the injection threshold
+	mitm            bool          // intercept HTTPS via a local CA + CONNECT proxy instead of a base-URL override
 }
 
 // parseAction signals a special action from parseFlags instead of os.Exit.
@@ -106,7 +107,7 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			switch key {
 			case "-h", "--help", "-v", "--version", "-d", "--debug",
 				"-q", "--quiet", "-n", "--dry-run", "-j", "--json",
-				"-f", "--force", "--no-inject", "--no-auto-calibrate", "--log-json":
+				"-f", "--force", "--no-inject", "--no-auto-calibrate", "--log-json", "--mitm":
 				return nil, actionNone, fmt.Errorf("%s does not accept a value", key)
 			}
 		}
@@ -150,6 +151,10 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			continue
 		case "--log-json":
 			o.logJSON = true
+			i++
+			continue
+		case "--mitm":
+			o.mitm = true
 			i++
 			continue
 		case "--inject-budget":

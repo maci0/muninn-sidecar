@@ -86,8 +86,12 @@ internal/
     eval_cv.go            Cross-validation engine + method study entry point
     eval_live.go          Live end-to-end evaluation against a real MuninnDB
   mcpclient/client.go     Shared JSON-RPC 2.0 client for MuninnDB
+  mitm/
+    ca.go                 Local CA: generate/persist + mint cached per-host leaf certs
+    host.go               Host normalization & SAN selection (DNS vs IP)
   proxy/
     proxy.go              Reverse proxy, request/response capture, token extraction
+    mitm.go               CONNECT handler: TLS-terminate, intercept, re-originate TLS
     filter.go             Anti-recursion filters (strip injected context, tool calls)
     stream.go             SSE/ndjson stream capture and synthetic response building
     context.go            Request-scoped capture metadata via context.Value
@@ -104,6 +108,12 @@ Each coding agent reads its API base URL from an environment variable (`ANTHROPI
 A few agents take their base URL from a CLI flag rather than an env var (e.g. Qwen Code's `--openai-base-url`). For those, the agent's `ProxyArgs` carry the flags with a `{proxy}` placeholder that `Exec` substitutes with the live proxy URL — the same transparent redirect, delivered as args instead of env.
 
 The `MSC_UPSTREAM` sentinel prevents infinite loops when msc is accidentally nested — a child msc instance reads the real upstream from the sentinel rather than picking up the inner proxy's address from the environment.
+
+### TLS-MITM Interception (opt-in, `--mitm`)
+
+Some agents ignore the base-URL override and reach their provider directly (codex ChatGPT-subscription mode, grok session auth, agy/antigravity OAuth). For these, `--mitm` makes msc a transparent HTTPS proxy instead. A local certificate authority (`internal/mitm`) generates and persists a CA under the user config dir (`~/.config/muninn-sidecar/mitm/`, `0600` key) and mints cached per-host leaf certs on demand. The child is launched with `HTTP(S)_PROXY`/`ALL_PROXY` (both cases) pointing at msc and `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE` pointing at the CA cert. When the agent opens an HTTPS `CONNECT` tunnel, `proxy.handleConnect` hijacks it, terminates TLS with a minted leaf, and serves the decrypted requests through the **same** recall/inject + capture pipeline (`instrument`) as the plain path, re-originating TLS to the real upstream via a per-tunnel `httputil.ReverseProxy`.
+
+Security model: the CA private key is generated locally, stored `0600`, and never leaves the machine; trust is scoped to the launched child via env vars only — msc never touches the system trust store. MITM is off unless `--mitm` is explicitly passed.
 
 ### Format-Agnostic API Handling
 

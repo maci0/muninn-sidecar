@@ -40,9 +40,9 @@ This allows agents to magically "remember" project context, conventions, and pas
 
 *‡ Setting `GROK_MODELS_BASE_URL` switches grok to API-key (Bearer) auth, so an xAI API key must be configured; grok then routes inference (OpenAI-compatible) through the proxy.*
 
-*◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`). In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend directly and ignores `OPENAI_BASE_URL`, so the proxy is bypassed and nothing is captured. `opencode`/`aider` use API-key auth and are unaffected.*
+*◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`). In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend directly and ignores `OPENAI_BASE_URL`, so the env-override path is bypassed — use `--mitm` to intercept it transparently.*
 
-*§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override — so the proxy cannot currently capture or inject for it (same limitation as `antigravity`).*
+*§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override. The env-override path can't capture or inject for it (same limitation as `antigravity`); `--mitm` is the way to intercept these.*
 
 ### Installation
 
@@ -137,6 +137,34 @@ Recall on the latest user message → gate on the auto-calibrated cosine confide
 
 A downstream eval across **~10 local models** (Qwen2.5/Qwen3, Gemma2/3, Llama3.2, Nemotron, Phi3.5, Granite) and a broad dataset zoo seeded from HuggingFace (extractive, multi-hop, yes/no, claim-verification, scientific, medical, code, multilingual, long-narrative, informal — see `scripts/fetch_hf_datasets.py`) found a clean law: **injection's value ≈ retrieval accuracy × the model's ability to use context, and a wrong injection never helps.** It's most stark on questions a model *cannot* answer without memory — agent-memory facts (F1 0.00 → 0.67–0.88) and NL→code recall (0.03 → 0.81). That's exactly why the sidecar both recalls accurately and *gates* (inject confident recalls, suppress the rest). An optional answer-grounding rerank (`--ground-url` / `--ground-cmd`) adds a per-recall LLM precision check for harm-prone vaults. See [docs/recall-and-injection.md](docs/recall-and-injection.md) for the design, [docs/model-eval.md](docs/model-eval.md) for the cross-model results, and [docs/experiments.md](docs/experiments.md) for the full study log.
 
+### TLS-MITM mode (`--mitm`)
+
+The default path overrides the agent's API base-URL env var. Some agents ignore
+that override and talk to their provider directly (codex in ChatGPT-subscription
+mode, grok session auth, agy/antigravity OAuth). `--mitm` intercepts those by
+turning msc into a transparent HTTPS proxy:
+
+1. On first use, msc creates a local certificate authority under your config dir
+   (`~/.config/muninn-sidecar/mitm/`). The CA private key is `0600`, **never leaves
+   the machine**, and is trusted only by the agent msc launches — never installed
+   into the system trust store.
+2. The child is launched with `HTTP(S)_PROXY` / `ALL_PROXY` (upper and lower case)
+   pointing at msc, and `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` /
+   `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` pointing at the CA cert so the minted
+   leaf certs verify.
+3. The agent opens an HTTPS `CONNECT` tunnel through msc. msc replies `200`,
+   completes the TLS handshake with a per-host leaf cert it mints on the fly, then
+   runs the decrypted request through the **same recall/inject + capture pipeline**
+   as the plain path, re-originating TLS to the real upstream.
+
+```
+msc --mitm claude
+```
+
+MITM is **off by default** — only the explicit `--mitm` flag enables it. Use it for
+agents that bypass the base-URL override; the plain proxy remains the default for
+everything else.
+
 ### Streaming
 
 SSE streaming responses are handled incrementally — chunks flow through to the agent in real-time. Text deltas are accumulated from content events across all API formats (Anthropic, OpenAI, and Gemini). At stream completion, a synthetic response is built from the accumulated text for storage, with usage metadata merged from the last usage-bearing event. Falls back to the last `data:` line if no text deltas or tool names were captured.
@@ -176,6 +204,9 @@ Command-line flags take precedence over environment variables.
     --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
     --ground-topk K       Candidates to ground per recall (default: 3)
     --ground-timeout D    In-flight grounding-call timeout (default: 10s); a slow judge fails open to the cosine gate
+    --mitm            Intercept HTTPS via a local CA + CONNECT proxy instead of a base-URL
+                      override (for agents that ignore *_BASE_URL); the child is told to
+                      trust msc's CA via NODE_EXTRA_CA_CERTS / SSL_CERT_FILE
     --log-json        Emit logs as JSON (for log aggregation pipelines)
     --vault NAME      MuninnDB vault name
     --mcp-url URL     MuninnDB MCP endpoint

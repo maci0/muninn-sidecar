@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/agents"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/inject"
+	"github.com/maci0/muninn-sidecar/internal/mitm"
 	"github.com/maci0/muninn-sidecar/internal/proxy"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 	"github.com/maci0/muninn-sidecar/internal/store"
@@ -189,9 +191,30 @@ func run() int {
 	upstream := agent.Resolve()
 	slog.Debug("resolved upstream", "agent", cmd, "upstream", upstream)
 
+	// TLS-MITM mode: load/create the local CA so the proxy can intercept HTTPS
+	// CONNECT tunnels and the child can be told to trust it. Built before the
+	// dry-run so the preview can report the CA path.
+	var (
+		ca         *mitm.CA
+		caCertPath string
+	)
+	if o.mitm {
+		dir, err := mitmCADir()
+		if err != nil {
+			logerr("%v", err)
+			return 1
+		}
+		ca, err = mitm.LoadOrCreateCA(dir)
+		if err != nil {
+			logerr("failed to load MITM CA: %v", err)
+			return 1
+		}
+		caCertPath = filepath.Join(dir, "ca-cert.pem")
+	}
+
 	// --dry-run: show what would happen without launching anything.
 	if o.dryRun {
-		return printDryRun(o, cmd, agent, upstream, mcpURL, vault, healthErr)
+		return printDryRun(o, cmd, agent, upstream, mcpURL, vault, healthErr, caCertPath)
 	}
 
 	// Optional answer-grounding rerank (opt-in precision step, docs §B4): a fast
@@ -239,6 +262,7 @@ func run() int {
 		CapturePaths: agent.CapturePaths,
 		ExcludePaths: agent.ExcludePaths,
 		Injector:     injector,
+		CA:           ca, // nil unless --mitm; enables CONNECT/TLS interception
 	})
 	if err != nil {
 		logerr("failed to create proxy: %v", err)
@@ -253,7 +277,11 @@ func run() int {
 
 	proxyURL := fmt.Sprintf("http://%s", addr)
 	if !o.quiet {
-		logf("proxying %s traffic via %s -> %s", cmd, proxyURL, upstream)
+		if o.mitm {
+			logf("MITM-proxying %s HTTPS via %s (CA: %s)", cmd, proxyURL, caCertPath)
+		} else {
+			logf("proxying %s traffic via %s -> %s", cmd, proxyURL, upstream)
+		}
 		logf("storing in vault %q", vault)
 		if o.force {
 			logf("warning: MuninnDB check skipped (--force); captures may be lost if unreachable")
@@ -273,7 +301,12 @@ func run() int {
 	}
 	doneCh := make(chan exitResult, 1)
 	go func() {
-		err := agent.Exec(proxyURL, upstream, agentArgs)
+		var err error
+		if o.mitm {
+			err = agent.ExecMITM(proxyURL, upstream, caCertPath, agentArgs)
+		} else {
+			err = agent.Exec(proxyURL, upstream, agentArgs)
+		}
 		code := 0
 		if err != nil {
 			code = 1
@@ -327,7 +360,7 @@ func run() int {
 
 // printDryRun outputs a preview of what msc would do without launching anything.
 // Called when --dry-run is set, before any proxy or agent is started.
-func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vault string, healthErr error) int {
+func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vault string, healthErr error, caCertPath string) int {
 	binary, _ := exec.LookPath(agent.Command)
 	if binary == "" {
 		binary = "(not found in PATH)"
@@ -345,19 +378,32 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 			MuninnError  string            `json:"muninn_error,omitempty"`
 			Inject       bool              `json:"inject"`
 			InjectBudget int               `json:"inject_budget,omitempty"`
+			MITM         bool              `json:"mitm"`
+			MITMCACert   string            `json:"mitm_ca_cert,omitempty"`
 		}
-		envMap := map[string]string{agent.EnvKey: "http://127.0.0.1:<port>"}
-		for _, k := range agent.ExtraEnvKeys {
-			envMap[k] = "http://127.0.0.1:<port>"
+		var envMap map[string]string
+		if o.mitm {
+			envMap = map[string]string{
+				"HTTPS_PROXY":         "http://127.0.0.1:<port>",
+				"NODE_EXTRA_CA_CERTS": caCertPath,
+				"SSL_CERT_FILE":       caCertPath,
+			}
+		} else {
+			envMap = map[string]string{agent.EnvKey: "http://127.0.0.1:<port>"}
+			for _, k := range agent.ExtraEnvKeys {
+				envMap[k] = "http://127.0.0.1:<port>"
+			}
 		}
 		info := dryRunInfo{
-			Agent:     cmd,
-			Binary:    binary,
-			Upstream:  upstream,
-			Env:       envMap,
-			Vault:     vault,
-			MuninnURL: mcpURL,
-			Inject:    !o.noInject,
+			Agent:      cmd,
+			Binary:     binary,
+			Upstream:   upstream,
+			Env:        envMap,
+			Vault:      vault,
+			MuninnURL:  mcpURL,
+			Inject:     !o.noInject,
+			MITM:       o.mitm,
+			MITMCACert: caCertPath,
 		}
 		if o.force {
 			info.MuninnStatus = "unchecked"
@@ -386,9 +432,16 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	fmt.Fprintf(os.Stdout, "Agent:    %s\n", cmd)
 	fmt.Fprintf(os.Stdout, "Binary:   %s\n", binary)
 	fmt.Fprintf(os.Stdout, "Upstream: %s\n", upstream)
-	fmt.Fprintf(os.Stdout, "Env:      %s=http://127.0.0.1:<port>\n", agent.EnvKey)
-	for _, k := range agent.ExtraEnvKeys {
-		fmt.Fprintf(os.Stdout, "          %s=http://127.0.0.1:<port>\n", k)
+	if o.mitm {
+		fmt.Fprintf(os.Stdout, "Mode:     TLS-MITM (transparent HTTPS proxy)\n")
+		fmt.Fprintf(os.Stdout, "Env:      HTTPS_PROXY=http://127.0.0.1:<port>\n")
+		fmt.Fprintf(os.Stdout, "          NODE_EXTRA_CA_CERTS=%s\n", caCertPath)
+		fmt.Fprintf(os.Stdout, "          SSL_CERT_FILE=%s\n", caCertPath)
+	} else {
+		fmt.Fprintf(os.Stdout, "Env:      %s=http://127.0.0.1:<port>\n", agent.EnvKey)
+		for _, k := range agent.ExtraEnvKeys {
+			fmt.Fprintf(os.Stdout, "          %s=http://127.0.0.1:<port>\n", k)
+		}
 	}
 	fmt.Fprintf(os.Stdout, "Vault:    %s\n", vault)
 	var muninnStatus string

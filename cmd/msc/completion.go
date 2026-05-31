@@ -19,7 +19,7 @@ func cmdCompletion(shell string) int {
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "-h --help -v --version -d --debug -q --quiet -n --dry-run -j --json -f --force --no-inject --no-auto-calibrate --inject-budget --inject-min-score --recall-mode --log-json --vault --mcp-url --token" -- "$cur"))
+        COMPREPLY=($(compgen -W "-h --help -v --version -d --debug -q --quiet -n --dry-run -j --json -f --force --no-inject --no-auto-calibrate --mitm --inject-budget --inject-min-score --recall-mode --log-json --vault --mcp-url --token" -- "$cur"))
         return
     fi
 
@@ -78,6 +78,7 @@ _msc() {
         {-f,--force}'[Launch even if MuninnDB is unreachable (captures lost)]'
         '--no-inject[Disable memory injection]'
         '--no-auto-calibrate[Keep the injection threshold fixed]'
+        '--mitm[Intercept HTTPS via a local CA + CONNECT proxy]'
         '--inject-budget[Max tokens to inject per request]:budget:'
         '--inject-min-score[Min cosine to inject a memory (0-1)]:score:'
         '--recall-mode[MuninnDB recall mode]:mode:(semantic recent balanced deep)'
@@ -117,6 +118,7 @@ complete -c msc -l json -s j -d "Output as JSON"
 complete -c msc -l force -s f -d "Launch even if MuninnDB is unreachable"
 complete -c msc -l no-inject -d "Disable memory injection"
 complete -c msc -l no-auto-calibrate -d "Keep the injection threshold fixed"
+complete -c msc -l mitm -d "Intercept HTTPS via a local CA + CONNECT proxy"
 complete -c msc -l inject-budget -r -d "Max tokens to inject per request"
 complete -c msc -l inject-min-score -r -d "Min cosine to inject a memory (0-1)"
 complete -c msc -l recall-mode -r -a "semantic recent balanced deep" -d "MuninnDB recall mode"

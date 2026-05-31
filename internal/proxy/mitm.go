@@ -126,9 +126,9 @@ func (l *singleConnListener) Accept() (net.Conn, error) {
 	return nil, net.ErrClosed
 }
 
-func (l *singleConnListener) Close() error { l.signalDone(); return nil }
+func (l *singleConnListener) Close() error   { l.signalDone(); return nil }
 func (l *singleConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
-func (l *singleConnListener) signalDone()  { l.closed.Do(func() { close(l.done) }) }
+func (l *singleConnListener) signalDone()    { l.closed.Do(func() { close(l.done) }) }
 
 // notifyConn calls onClose exactly once when the connection is closed, so the
 // listener learns the served connection has ended.

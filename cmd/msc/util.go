@@ -3,7 +3,27 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 )
+
+// mitmCADir returns the directory holding msc's TLS-MITM certificate authority,
+// creating it (0700) if needed. The CA persists across runs so a child only has
+// to trust it once. Prefers the user config dir, falling back to ~/.muninn-sidecar.
+func mitmCADir() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		home, herr := os.UserHomeDir()
+		if herr != nil {
+			return "", fmt.Errorf("cannot locate a config directory for the MITM CA: %w", herr)
+		}
+		base = filepath.Join(home, ".config")
+	}
+	dir := filepath.Join(base, "muninn-sidecar", "mitm")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("creating MITM CA dir: %w", err)
+	}
+	return dir, nil
+}
 
 // logf prints a human-friendly message to stderr with the msc: prefix.
 func logf(format string, args ...any) {

@@ -163,6 +163,9 @@ Flags:
       --inject-min-score F  Min cosine score to inject a memory, 0-1 (default: 0.6)
       --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
       --no-auto-calibrate   Disable self-tuning of the injection threshold (keep min-score fixed)
+      --mitm             Intercept HTTPS via a local CA + CONNECT proxy instead of a
+                         base-URL override (for agents that ignore *_BASE_URL); the
+                         child is told to trust msc's CA (NODE_EXTRA_CA_CERTS/SSL_CERT_FILE)
       --log-json         Emit logs as JSON (for log aggregation pipelines)
       --vault NAME       MuninnDB vault name (default: current directory name, fallback: sidecar)
       --mcp-url URL      MuninnDB MCP endpoint (default: http://127.0.0.1:8750/mcp)

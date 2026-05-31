@@ -237,3 +237,94 @@ func TestExecRunsTrue(t *testing.T) {
 		t.Errorf("Exec true should succeed, got %v", err)
 	}
 }
+
+func TestBuildMITMEnv(t *testing.T) {
+	const (
+		proxyURL = "http://127.0.0.1:9999"
+		upstream = "https://api.anthropic.com"
+		caPath   = "/tmp/msc/ca-cert.pem"
+	)
+	agent := Registry["claude"]
+	env := agent.BuildMITMEnv(proxyURL, upstream, caPath)
+
+	got := map[string]string{}
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		got[k] = v
+	}
+
+	// Both cases for HTTP and HTTPS proxy vars must point at msc.
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+		if got[k] != proxyURL {
+			t.Errorf("%s = %q, want %q", k, got[k], proxyURL)
+		}
+	}
+	// CA-trust vars across runtimes must point at the CA cert.
+	for _, k := range []string{"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"} {
+		if got[k] != caPath {
+			t.Errorf("%s = %q, want %q", k, got[k], caPath)
+		}
+	}
+	if got[mscSentinel] != upstream {
+		t.Errorf("%s = %q, want %q", mscSentinel, got[mscSentinel], upstream)
+	}
+	// MITM mode must NOT override the agent's base-URL env var (that's the point:
+	// interception is transparent for agents that ignore it).
+	if _, ok := got[agent.EnvKey]; ok {
+		t.Errorf("MITM env should not set the base-URL key %q", agent.EnvKey)
+	}
+}
+
+func TestBuildMITMEnvReplacesExisting(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://old.example.com")
+	t.Setenv("NODE_EXTRA_CA_CERTS", "/old/ca.pem")
+
+	agent := Registry["claude"]
+	env := agent.BuildMITMEnv("http://127.0.0.1:9999", "https://api.anthropic.com", "/new/ca.pem")
+
+	var httpsCount, caCount int
+	for _, e := range env {
+		if strings.HasPrefix(e, "HTTPS_PROXY=") {
+			httpsCount++
+		}
+		if strings.HasPrefix(e, "NODE_EXTRA_CA_CERTS=") {
+			caCount++
+		}
+	}
+	if httpsCount != 1 {
+		t.Errorf("expected HTTPS_PROXY to appear once, got %d", httpsCount)
+	}
+	if caCount != 1 {
+		t.Errorf("expected NODE_EXTRA_CA_CERTS to appear once, got %d", caCount)
+	}
+}
+
+func TestExecMITMMissingBinary(t *testing.T) {
+	a := Agent{Command: "msc-nonexistent-binary-xyz-123", EnvKey: "FOO_URL", DefaultURL: "https://x"}
+	if err := a.ExecMITM("http://127.0.0.1:1", "https://x", "/tmp/ca.pem", nil); err == nil {
+		t.Error("expected error for missing binary")
+	}
+}
+
+func FuzzBuildMITMEnv(f *testing.F) {
+	f.Add("http://127.0.0.1:9", "https://up", "/ca.pem")
+	f.Fuzz(func(t *testing.T, proxyURL, upstream, caPath string) {
+		a := Agent{Command: "claude", EnvKey: "ANTHROPIC_BASE_URL"}
+		env := a.BuildMITMEnv(proxyURL, upstream, caPath)
+		// Must never panic; every entry is a well-formed key=value pair, and no
+		// proxy/CA key is duplicated.
+		seen := map[string]int{}
+		for _, e := range env {
+			if !strings.Contains(e, "=") {
+				t.Fatalf("malformed env entry: %q", e)
+			}
+			k, _, _ := strings.Cut(e, "=")
+			seen[k]++
+		}
+		for _, k := range []string{"HTTPS_PROXY", "https_proxy", "NODE_EXTRA_CA_CERTS", mscSentinel} {
+			if seen[k] != 1 {
+				t.Fatalf("key %q appears %d times, want 1", k, seen[k])
+			}
+		}
+	})
+}
