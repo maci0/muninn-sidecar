@@ -21,7 +21,7 @@ This allows agents to magically "remember" project context, conventions, and pas
 | Agent | Env var | Default upstream |
 |-------|---------|-----------------|
 | `claude` | `ANTHROPIC_BASE_URL` | `api.anthropic.com` |
-| `codex` | `OPENAI_BASE_URL` | `api.openai.com` |
+| `codex` | `OPENAI_BASE_URL`◊ | `api.openai.com` |
 | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
 | `grok` | `GROK_MODELS_BASE_URL` | `api.x.ai/v1`‡ |
@@ -39,6 +39,8 @@ This allows agents to magically "remember" project context, conventions, and pas
 *† When `GEMINI_API_KEY` is set and `CODE_ASSIST_ENDPOINT` is not, the upstream is `generativelanguage.googleapis.com` instead.*
 
 *‡ Setting `GROK_MODELS_BASE_URL` switches grok to API-key (Bearer) auth, so an xAI API key must be configured; grok then routes inference (OpenAI-compatible) through the proxy.*
+
+*◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`). In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend directly and ignores `OPENAI_BASE_URL`, so the proxy is bypassed and nothing is captured. `opencode`/`aider` use API-key auth and are unaffected.*
 
 *§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override — so the proxy cannot currently capture or inject for it (same limitation as `antigravity`).*
 

@@ -95,6 +95,10 @@ var Registry = map[string]Agent{
 		CapturePaths: []string{"/v1/messages"},
 		ExcludePaths: []string{"/count_tokens"},
 	},
+	// codex respects OPENAI_BASE_URL only in API-key mode (OPENAI_API_KEY). In
+	// ChatGPT-subscription mode (auth_mode: chatgpt in ~/.codex/auth.json) it talks
+	// to the ChatGPT backend directly and ignores the env override, so the proxy is
+	// bypassed and nothing is captured — documented in the README.
 	"codex": {
 		Command:      "codex",
 		EnvKey:       "OPENAI_BASE_URL",
