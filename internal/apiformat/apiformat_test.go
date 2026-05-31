@@ -528,3 +528,38 @@ func TestTruncateQuery(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractSSEToolNameBranches(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{"anthropic tool_use", `{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read"}}`, "Read"},
+		{"anthropic text block", `{"type":"content_block_start","content_block":{"type":"text"}}`, ""},
+		{"anthropic no content_block", `{"type":"content_block_start"}`, ""},
+		{"responses function_call", `{"type":"response.output_item.added","item":{"type":"function_call","name":"shell"}}`, "shell"},
+		{"responses non-fn item", `{"type":"response.output_item.added","item":{"type":"message"}}`, ""},
+		{"responses no item", `{"type":"response.output_item.added"}`, ""},
+		{"openai chat tool_calls", `{"choices":[{"delta":{"tool_calls":[{"function":{"name":"Edit"}}]}}]}`, "Edit"},
+		{"openai chat arg-only chunk", `{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{}"}}]}}]}`, ""},
+		{"openai chat no tool_calls", `{"choices":[{"delta":{"content":"hi"}}]}`, ""},
+		{"gemini functionCall", `{"candidates":[{"content":{"parts":[{"text":"x"},{"functionCall":{"name":"grep"}}]}}]}`, "grep"},
+		{"gemini no functionCall", `{"candidates":[{"content":{"parts":[{"text":"x"}]}}]}`, ""},
+		{"gemini empty candidates content", `{"candidates":[{}]}`, ""},
+		{"gemini content no parts", `{"candidates":[{"content":{}}]}`, ""},
+		{"gemini part not object", `{"candidates":[{"content":{"parts":["str"]}}]}`, ""},
+		{"unknown shape", `{"foo":"bar"}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(c.doc), &doc); err != nil {
+				t.Fatalf("bad test doc: %v", err)
+			}
+			if got := ExtractSSEToolName(doc); got != c.want {
+				t.Errorf("ExtractSSEToolName(%s) = %q, want %q", c.doc, got, c.want)
+			}
+		})
+	}
+}
