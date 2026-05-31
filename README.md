@@ -267,8 +267,10 @@ Command-line flags take precedence over environment variables.
 - **Secret redaction is best-effort.** Captured content is scrubbed of well-known
   credential formats before storage, but the patterns are conservative and not
   exhaustive — it reduces, not eliminates, the risk of a secret reaching the
-  store. Don't rely on it as a reason to paste secrets into an agent. Disable it
-  with `--no-redact` in trusted environments where full-fidelity capture is wanted.
+  store. Don't rely on it as a reason to paste secrets into an agent. It runs both
+  before storage (disable with `--no-redact` for full-fidelity local capture) and,
+  always, on recalled memory content before injection (so old/cross-client secrets
+  aren't re-sent to the provider).
 - **MITM trust.** `--mitm` is opt-in. The CA private key is generated locally,
   stored `0600`, and trusted only by the agent msc launches — never the system
   trust store (`msc ca` prints the cert for trusting it elsewhere yourself).

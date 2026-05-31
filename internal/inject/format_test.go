@@ -8,6 +8,22 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
 )
 
+func TestFormatContextBlockRedactsSecrets(t *testing.T) {
+	// Defense in depth: a recalled memory carrying a secret (stored by another
+	// client or before write-side redaction) must not be injected verbatim.
+	secret := "sk-" + strings.Repeat("a", 30)
+	mems := []memory{
+		{ID: "1", Concept: "deploy notes", Content: "the key is " + secret, Score: 0.9},
+	}
+	block, _, _ := formatContextBlock(mems, 2048)
+	if strings.Contains(block, secret) {
+		t.Errorf("secret leaked into injected block: %s", block)
+	}
+	if !strings.Contains(block, "[REDACTED]") {
+		t.Errorf("expected redaction marker in injected block: %s", block)
+	}
+}
+
 func TestFormatContextBlock(t *testing.T) {
 	t.Run("multiple memories within budget", func(t *testing.T) {
 		mems := []memory{

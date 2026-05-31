@@ -41,8 +41,13 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   corrupting prose. Also catches sensitive `key=value` / `key: value` assignments
   (`API_KEY=…`, `DB_PASSWORD: …`, `client_secret=…`, incl. identifier-prefixed env
   vars) — the common case of a pasted `.env` file or shell export — redacting the
-  value while keeping the key for context. Disable with `--no-redact` in trusted
-  environments.
+  value while keeping the key for context. Applied on **both** sides: before
+  storing a captured exchange (disable with `--no-redact` for full-fidelity local
+  capture in trusted environments), and — always, as defense in depth — to
+  recalled memory content before it is injected into an outgoing request, so a
+  secret stored by another client or before redaction existed isn't re-transmitted
+  to the provider in a session where it wasn't otherwise present. (Redaction logic
+  lives in the shared `internal/redact` package.)
 - **`msc ca` command** — prints the TLS-MITM CA certificate path + SHA-256
   fingerprint (creating the CA if needed); `--json` includes the PEM. Lets users
   trust msc's CA in tools it doesn't launch itself (browsers, system store,

@@ -1,4 +1,4 @@
-package store
+package redact
 
 import (
 	"strings"
@@ -34,8 +34,8 @@ func TestRedactSecrets(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			in := "prefix " + tc.secret + " suffix"
-			got := redactSecrets(in)
-			if !strings.Contains(got, redactionMarker) {
+			got := Secrets(in)
+			if !strings.Contains(got, Marker) {
 				t.Errorf("expected redaction marker, got %q", got)
 			}
 			if strings.Contains(got, tc.core) {
@@ -56,7 +56,7 @@ func TestRedactSecrets(t *testing.T) {
 		"",
 	}
 	for _, c := range clean {
-		if got := redactSecrets(c); got != c {
+		if got := Secrets(c); got != c {
 			t.Errorf("clean text altered: %q -> %q", c, got)
 		}
 	}
@@ -75,8 +75,8 @@ func TestRedactKeyValueSecrets(t *testing.T) {
 	}
 	for _, tc := range redacted {
 		t.Run(tc.name, func(t *testing.T) {
-			got := redactSecrets(tc.in)
-			if !strings.Contains(got, redactionMarker) {
+			got := Secrets(tc.in)
+			if !strings.Contains(got, Marker) {
 				t.Errorf("expected redaction, got %q", got)
 			}
 			// The key name must survive (context); the value must not.
@@ -98,7 +98,7 @@ func TestRedactKeyValueSecrets(t *testing.T) {
 		"discuss the api_key design",         // no separator+value
 	}
 	for _, c := range clean {
-		if got := redactSecrets(c); got != c {
+		if got := Secrets(c); got != c {
 			t.Errorf("false positive: %q -> %q", c, got)
 		}
 	}
@@ -108,11 +108,11 @@ func TestRedactSecretsMultiple(t *testing.T) {
 	k1 := "sk-" + strings.Repeat("a", 28)
 	k2 := "AKIA" + strings.Repeat("Z", 16)
 	in := "k1=" + k1 + " and k2=" + k2 + " end"
-	got := redactSecrets(in)
+	got := Secrets(in)
 	if strings.Contains(got, k1) || strings.Contains(got, k2) {
 		t.Errorf("not all secrets redacted: %q", got)
 	}
-	if n := strings.Count(got, redactionMarker); n != 2 {
+	if n := strings.Count(got, Marker); n != 2 {
 		t.Errorf("expected 2 redactions, got %d: %q", n, got)
 	}
 	if !strings.HasPrefix(got, "k1=") || !strings.HasSuffix(got, "end") {
@@ -126,15 +126,15 @@ func FuzzRedactSecrets(f *testing.F) {
 	f.Add("")
 	f.Add("Bearer xyz")
 	f.Fuzz(func(t *testing.T, s string) {
-		got := redactSecrets(s)
+		got := Secrets(s)
 		// Idempotence: the marker contains no secret pattern, so a second pass
 		// must change nothing. (Also exercises no-panic on arbitrary input.)
-		if got2 := redactSecrets(got); got2 != got {
+		if got2 := Secrets(got); got2 != got {
 			t.Fatalf("redaction not idempotent: %q -> %q -> %q", s, got, got2)
 		}
 		// A changed result always contains the marker; an unchanged result means
 		// nothing matched.
-		if got != s && !strings.Contains(got, redactionMarker) {
+		if got != s && !strings.Contains(got, Marker) {
 			t.Fatalf("changed input without inserting a marker: %q -> %q", s, got)
 		}
 	})

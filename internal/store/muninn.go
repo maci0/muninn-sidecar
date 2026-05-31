@@ -16,6 +16,7 @@ import (
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
+	"github.com/maci0/muninn-sidecar/internal/redact"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -247,8 +248,8 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	// they enter long-term memory, where they would persist and resurface on
 	// recall. Applied here so both the concept and content are scrubbed.
 	if s.redact.Load() {
-		userMsg = redactSecrets(userMsg)
-		assistantMsg = redactSecrets(assistantMsg)
+		userMsg = redact.Secrets(userMsg)
+		assistantMsg = redact.Secrets(assistantMsg)
 	}
 
 	// Skip system-generated noise (context continuations, summary tasks).

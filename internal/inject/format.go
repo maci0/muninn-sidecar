@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
 // entryChars estimates the character length a memory contributes to a context
@@ -64,14 +65,20 @@ func formatContextBlock(memories []memory, budget int) (string, int, int) {
 
 	totalChars := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
 	for _, m := range kept {
+		// Defense in depth: scrub secrets from recalled content before it is
+		// injected into the outgoing request. A memory stored by another client
+		// (or before write-side redaction existed) must not be re-transmitted to
+		// the provider in a session where it wasn't otherwise present.
+		concept := redact.Secrets(m.Concept)
+		content := redact.Secrets(m.Content)
 		sb.WriteByte('[')
-		sb.WriteString(m.Concept)
+		sb.WriteString(concept)
 		sb.WriteString("] (relevance: ")
 		sb.WriteString(strconv.FormatFloat(m.Score, 'f', 2, 64))
 		sb.WriteString(")\n")
-		sb.WriteString(m.Content)
+		sb.WriteString(content)
 		sb.WriteString("\n\n")
-		totalChars += entryChars(m)
+		totalChars += len(concept) + len(content) + 23
 	}
 
 	sb.WriteString(apiformat.ContextSuffix)
