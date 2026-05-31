@@ -101,6 +101,56 @@ func newFakeServer(handler http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(handler)
 }
 
+func TestNormalizeRelevance(t *testing.T) {
+	// Core injection-quality invariant: the gate ranks/thresholds on the embedding
+	// cosine (VectorScore), NOT the recency/graph-inflated composite Score. After
+	// normalization, Score must equal VectorScore wherever a cosine is present.
+	t.Run("cosine present -> Score becomes cosine", func(t *testing.T) {
+		mems := []memory{
+			{ID: "1", Score: 0.95, VectorScore: 0.40}, // composite inflated; cosine low
+			{ID: "2", Score: 0.10, VectorScore: 0.80}, // composite low; cosine high
+		}
+		if !normalizeRelevance(mems) {
+			t.Fatal("expected anyVector=true when cosine present")
+		}
+		if mems[0].Score != 0.40 || mems[1].Score != 0.80 {
+			t.Errorf("Score not remapped to cosine: %v", []float64{mems[0].Score, mems[1].Score})
+		}
+	})
+
+	t.Run("no cosine -> composite kept, anyVector false", func(t *testing.T) {
+		mems := []memory{{ID: "1", Score: 0.7}} // VectorScore zero/absent
+		if normalizeRelevance(mems) {
+			t.Error("expected anyVector=false when no cosine present")
+		}
+		if mems[0].Score != 0.7 {
+			t.Errorf("composite Score should be kept as fallback, got %v", mems[0].Score)
+		}
+	})
+
+	t.Run("mixed -> per-memory", func(t *testing.T) {
+		mems := []memory{
+			{ID: "1", Score: 0.9, VectorScore: 0.3},
+			{ID: "2", Score: 0.6}, // no cosine -> keep composite
+		}
+		if !normalizeRelevance(mems) {
+			t.Fatal("expected anyVector=true (one memory has cosine)")
+		}
+		if mems[0].Score != 0.3 {
+			t.Errorf("memory with cosine should use it, got %v", mems[0].Score)
+		}
+		if mems[1].Score != 0.6 {
+			t.Errorf("memory without cosine should keep composite, got %v", mems[1].Score)
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		if normalizeRelevance(nil) {
+			t.Error("empty input should report anyVector=false")
+		}
+	})
+}
+
 func TestEnrichAnthropic(t *testing.T) {
 	mems := []memory{
 		{ID: "m1", Concept: "user preference", Content: "User prefers Go", Score: 0.85},
