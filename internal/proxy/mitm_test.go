@@ -503,8 +503,11 @@ func FuzzShouldInterceptHost(f *testing.F) {
 	f.Add("api.anthropic.com")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, host string) {
-		// Pure lookup: never panics and is deterministic.
-		if p.shouldInterceptHost(host) != p.shouldInterceptHost(host) {
+		// Pure lookup: never panics and is deterministic. (Separate vars so the
+		// repeated call isn't flagged as an identical-expression comparison.)
+		first := p.shouldInterceptHost(host)
+		second := p.shouldInterceptHost(host)
+		if first != second {
 			t.Fatal("non-deterministic result")
 		}
 	})

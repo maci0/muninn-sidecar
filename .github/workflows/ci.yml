@@ -16,8 +16,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
+          # Latest 1.25.x patch (not the vulnerable 1.25.0 the go.mod directive
+          # would pin): picks up stdlib security backports so govulncheck is clean,
+          # while staying on the 1.25 line that the pinned staticcheck supports.
+          go-version: "1.25"
+          cache: false # no third-party deps / no go.sum to cache
 
       - name: Tidy
         # Verify `go mod tidy` is a no-op. Uses `git status --porcelain` rather
@@ -59,8 +62,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
+          # Latest 1.25.x patch (not the vulnerable 1.25.0 the go.mod directive
+          # would pin): picks up stdlib security backports so govulncheck is clean,
+          # while staying on the 1.25 line that the pinned staticcheck supports.
+          go-version: "1.25"
+          cache: false # no third-party deps / no go.sum to cache
 
       # Run a short campaign over every fuzz target. The seed corpora (including
       # past crashers) run under `go test` above; this also explores new inputs
@@ -77,8 +83,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
+          # Latest 1.25.x patch (not the vulnerable 1.25.0 the go.mod directive
+          # would pin): picks up stdlib security backports so govulncheck is clean,
+          # while staying on the 1.25 line that the pinned staticcheck supports.
+          go-version: "1.25"
+          cache: false # no third-party deps / no go.sum to cache
 
       # Scan reachable code against the Go vulnerability DB. The module has no
       # third-party dependencies, so this primarily catches stdlib CVEs tied to
