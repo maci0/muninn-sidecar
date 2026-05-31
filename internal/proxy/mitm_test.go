@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -243,6 +245,128 @@ func TestMITMBlindTunnel(t *testing.T) {
 	if hits.Load() != 1 {
 		t.Errorf("upstream hits = %d, want 1", hits.Load())
 	}
+}
+
+// TestMITMSpliceUpgrade drives an intercepted WebSocket-style upgrade end to
+// end: client -> CONNECT -> msc TLS-terminate -> detect Upgrade -> raw splice to
+// a 101-echo backend. Proves the agent's upgraded stream works through MITM.
+func TestMITMSpliceUpgrade(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isUpgradeRequest(r) {
+			http.Error(w, "expected upgrade", http.StatusBadRequest)
+			return
+		}
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		line, _ := buf.ReadString('\n') // read what the client sends post-upgrade
+		io.WriteString(conn, "echo:"+line)
+	}))
+	defer upstream.Close()
+
+	ca := mustCA(t)
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: "https://api.example.invalid", Store: st, CA: ca, MITMHosts: []string{"*"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstreamPool := x509.NewCertPool()
+	upstreamPool.AddCert(upstream.Certificate())
+	p.SetMITMRoots(upstreamPool) // the splice's TLS dial must trust the test backend
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	hostport := strings.TrimPrefix(upstream.URL, "https://") // 127.0.0.1:PORT
+
+	// Manual client: CONNECT, then TLS (trusting msc CA), then the ws upgrade.
+	raw, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", hostport, hostport)
+	br := bufio.NewReader(raw)
+	connResp, err := http.ReadResponse(br, &http.Request{Method: "CONNECT"})
+	if err != nil || connResp.StatusCode != 200 {
+		t.Fatalf("CONNECT failed: resp=%v err=%v", connResp, err)
+	}
+
+	caPool := x509.NewCertPool()
+	caPool.AppendCertsFromPEM(ca.CertPEM())
+	tconn := tls.Client(raw, &tls.Config{RootCAs: caPool, ServerName: "127.0.0.1"})
+	if err := tconn.Handshake(); err != nil {
+		t.Fatalf("client TLS handshake with msc leaf failed: %v", err)
+	}
+	fmt.Fprintf(tconn, "GET /ws HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n", "127.0.0.1")
+
+	tbr := bufio.NewReader(tconn)
+	upResp, err := http.ReadResponse(tbr, nil)
+	if err != nil {
+		t.Fatalf("reading upgrade response: %v", err)
+	}
+	if upResp.StatusCode != 101 {
+		t.Fatalf("expected 101 through MITM splice, got %d", upResp.StatusCode)
+	}
+
+	// Post-upgrade bytes must round-trip through the splice.
+	io.WriteString(tconn, "hello\n")
+	echo, err := tbr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading echo: %v", err)
+	}
+	if echo != "echo:hello\n" {
+		t.Errorf("splice round-trip = %q, want %q", echo, "echo:hello\n")
+	}
+}
+
+func TestIsUpgradeRequest(t *testing.T) {
+	mk := func(upgrade, conn string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Header.Del("Connection")
+		if upgrade != "" {
+			r.Header.Set("Upgrade", upgrade)
+		}
+		if conn != "" {
+			r.Header.Set("Connection", conn)
+		}
+		return r
+	}
+	cases := []struct {
+		up, conn string
+		want     bool
+	}{
+		{"websocket", "Upgrade", true},
+		{"websocket", "keep-alive, Upgrade", true}, // multi-token
+		{"h2c", "upgrade", true},                   // case-insensitive token
+		{"websocket", "keep-alive", false},         // no upgrade token
+		{"", "Upgrade", false},                     // no Upgrade header
+		{"", "", false},
+	}
+	for _, c := range cases {
+		if got := isUpgradeRequest(mk(c.up, c.conn)); got != c.want {
+			t.Errorf("isUpgradeRequest(up=%q conn=%q) = %v, want %v", c.up, c.conn, got, c.want)
+		}
+	}
+}
+
+func FuzzIsUpgradeRequest(f *testing.F) {
+	f.Add("websocket", "Upgrade")
+	f.Add("", "keep-alive")
+	f.Fuzz(func(t *testing.T, upgrade, conn string) {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Header.Set("Upgrade", upgrade)
+		r.Header.Set("Connection", conn)
+		// Never panics; if it reports an upgrade, the Upgrade header is non-empty.
+		if isUpgradeRequest(r) && r.Header.Get("Upgrade") == "" {
+			t.Fatal("reported upgrade with empty Upgrade header")
+		}
+	})
 }
 
 func TestShouldInterceptHost(t *testing.T) {

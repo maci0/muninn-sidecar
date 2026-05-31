@@ -80,6 +80,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Protocol upgrades (e.g. codex ChatGPT-mode streams responses over a
+		// WebSocket) can't be routed through the capturing reverse-proxy — it
+		// errors on the 101. Splice those raw to the backend so the agent works;
+		// the upgraded stream isn't captured (yet).
+		if isUpgradeRequest(req) {
+			p.spliceUpgrade(w, req, target)
+			return
+		}
 		// Decrypted request: give it an absolute URL targeting the real host so
 		// the shared pipeline and the reverse proxy treat it like the plain path.
 		req.URL.Scheme = "https"
@@ -99,6 +107,65 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		WriteTimeout:      10 * time.Minute,
 	}
 	_ = srv.Serve(newSingleConnListener(tlsConn)) // returns once the tunnel conn closes
+}
+
+// isUpgradeRequest reports whether req is an HTTP protocol upgrade (WebSocket
+// etc.): an "Upgrade" header plus a "Connection: Upgrade" token (case-insensitive).
+func isUpgradeRequest(req *http.Request) bool {
+	if req.Header.Get("Upgrade") == "" {
+		return false
+	}
+	for _, v := range req.Header.Values("Connection") {
+		for _, tok := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(tok), "upgrade") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// spliceUpgrade handles an intercepted protocol-upgrade request by re-originating
+// TLS to the real backend and copying bytes verbatim in both directions. The
+// capturing reverse-proxy can't drive a 101 upgrade under MITM, so this keeps the
+// agent working at the cost of not capturing the upgraded stream.
+func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target string) {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "proxy: upgrade not supported")
+		return
+	}
+	clientConn, clientBuf, err := hj.Hijack()
+	if err != nil {
+		slog.Debug("mitm: upgrade hijack failed", "target", target, "err", err)
+		return
+	}
+	defer clientConn.Close()
+
+	cfg := p.mitmTransport.TLSClientConfig.Clone()
+	cfg.ServerName = stripPort(target)
+	backend, err := tls.Dial("tcp", target, cfg)
+	if err != nil {
+		slog.Debug("mitm: upgrade backend dial failed", "target", target, "err", err)
+		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		return
+	}
+	defer backend.Close()
+
+	// Forward the original upgrade request verbatim (origin-form URI + all
+	// headers, incl. Upgrade/Connection/Sec-WebSocket-*).
+	if err := req.Write(backend); err != nil {
+		slog.Debug("mitm: upgrade request write failed", "target", target, "err", err)
+		return
+	}
+	slog.Debug("mitm: splicing upgrade", "target", target, "proto", req.Header.Get("Upgrade"))
+
+	// Pipe both directions until either side closes. clientBuf may hold bytes
+	// already read past the request headers.
+	done := make(chan struct{}, 2)
+	go func() { io.Copy(backend, clientBuf); done <- struct{}{} }()
+	go func() { io.Copy(clientConn, backend); done <- struct{}{} }()
+	<-done
 }
 
 // shouldInterceptHost reports whether a CONNECT target host should be

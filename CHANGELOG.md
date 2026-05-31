@@ -33,14 +33,15 @@ with a locally-trusted CA.
   termination to the upstream + listed hosts and blind-tunnels everything else
   untouched, so package registries and cert-pinned services aren't decrypted.
 
-### Known limitations
+### Fixed
 
-- **MITM + `101` protocol upgrades** — verified live that `--mitm` intercepts
-  every agent runtime (claude end-to-end: intercept→inject→capture→store). codex
-  ChatGPT-mode is intercepted at the TLS layer (`chatgpt.com/backend-api/codex/responses`),
-  but that endpoint does a `101 Switching Protocols` upgrade the capturing
-  reverse-proxy can't splice yet, so its exchanges aren't stored. Normal
-  request/response and SSE agents are unaffected.
+- **MITM WebSocket/`101` upgrades** — intercepted protocol-upgrade requests
+  (e.g. codex ChatGPT-mode streams over a WebSocket) are now detected and spliced
+  raw to the backend over TLS instead of erroring in the capturing reverse-proxy
+  (`internal error: 101 switching protocols response with non-writable body`).
+  Verified live: codex ChatGPT-mode now runs cleanly through `--mitm` (was
+  erroring + retrying). The upgraded stream itself isn't parsed for capture yet,
+  so codex's WebSocket-framed turns aren't stored — but the agent works.
 
 ### Changed
 
