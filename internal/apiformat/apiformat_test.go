@@ -606,3 +606,68 @@ func TestExtractSSEToolNameBranches(t *testing.T) {
 		})
 	}
 }
+
+func TestToolInputKey(t *testing.T) {
+	cases := []struct {
+		name  string
+		input map[string]any
+		want  string
+	}{
+		{"file_path first priority", map[string]any{"file_path": "/a", "command": "ls"}, "/a"},
+		{"later key when earlier absent", map[string]any{"path": "/p"}, "/p"},
+		{"empty string skipped", map[string]any{"command": "", "query": "q"}, "q"},
+		{"non-string skipped", map[string]any{"pattern": 42, "url": "u"}, "u"},
+		{"no recognized key", map[string]any{"other": "x"}, ""},
+		{"empty map", map[string]any{}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := toolInputKey(c.input); got != c.want {
+				t.Errorf("toolInputKey(%v) = %q, want %q", c.input, got, c.want)
+			}
+		})
+	}
+}
+
+func TestExtractFromMessages(t *testing.T) {
+	// Extractor returns the message's "x" field as text.
+	ex := func(m map[string]any) string { s, _ := m["x"].(string); return s }
+
+	t.Run("no messages array", func(t *testing.T) {
+		if got := extractFromMessages(map[string]any{}, ex); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("skips non-map and non-user, returns user text", func(t *testing.T) {
+		// Backward walk hits the trailing non-map then the assistant (both
+		// skipped) before returning the user message.
+		doc := map[string]any{"messages": []any{
+			map[string]any{"role": "user", "x": "deep"},
+			map[string]any{"role": "assistant", "x": "reply"},
+			"not-a-map",
+		}}
+		if got := extractFromMessages(doc, ex); got != "deep" {
+			t.Errorf("expected 'deep', got %q", got)
+		}
+	})
+
+	t.Run("skips user with empty extract, returns earlier", func(t *testing.T) {
+		doc := map[string]any{"messages": []any{
+			map[string]any{"role": "user", "x": "earlier"},
+			map[string]any{"role": "user", "x": ""},
+		}}
+		if got := extractFromMessages(doc, ex); got != "earlier" {
+			t.Errorf("expected 'earlier', got %q", got)
+		}
+	})
+
+	t.Run("no user message", func(t *testing.T) {
+		doc := map[string]any{"messages": []any{
+			map[string]any{"role": "assistant", "x": "reply"},
+		}}
+		if got := extractFromMessages(doc, ex); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+}
