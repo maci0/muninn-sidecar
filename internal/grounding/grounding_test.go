@@ -128,6 +128,50 @@ func TestHTTPGrounder(t *testing.T) {
 	if m := bad.Relevant(context.Background(), "q", []string{"p"}); !m[0] {
 		t.Error("unreachable grounder must fail open (true)")
 	}
+
+	// A malformed base URL makes request construction fail -> fail open.
+	mal := New("", "http://\x7f-bad", "m", "", 5*time.Second)
+	if m := mal.Relevant(context.Background(), "q", []string{"p"}); !m[0] {
+		t.Error("malformed URL must fail open (true)")
+	}
+
+	// No passages: nothing to ground.
+	if m := g.Relevant(context.Background(), "q", nil); m != nil {
+		t.Errorf("empty passages should return nil, got %v", m)
+	}
+
+	// HTTP error status fails open (all true).
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer errSrv.Close()
+	ge := New("", errSrv.URL, "m", "", 5*time.Second)
+	if m := ge.Relevant(context.Background(), "q", []string{"p"}); !m[0] {
+		t.Error("error status must fail open (true)")
+	}
+
+	// Unparseable response body fails open (all true).
+	junkSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`not json`))
+	}))
+	defer junkSrv.Close()
+	gj := New("", junkSrv.URL, "m", "", 5*time.Second)
+	if m := gj.Relevant(context.Background(), "q", []string{"p"}); !m[0] {
+		t.Error("unparseable response must fail open (true)")
+	}
+
+	// API key set: the request must carry an Authorization header.
+	var gotAuth string
+	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"choices":[{"message":{"content":"1: yes"}}]}`))
+	}))
+	defer authSrv.Close()
+	gk := New("", authSrv.URL, "m", "secret-key", 5*time.Second)
+	gk.Relevant(context.Background(), "q", []string{"p"})
+	if gotAuth != "Bearer secret-key" {
+		t.Errorf("expected bearer auth header, got %q", gotAuth)
+	}
 }
 
 func TestCLIGrounder(t *testing.T) {
@@ -141,6 +185,10 @@ func TestCLIGrounder(t *testing.T) {
 	gf := &cliGrounder{name: "false", argv: []string{"false"}, timeout: 5 * time.Second}
 	if m := gf.Relevant(context.Background(), "q", []string{"p"}); !m[0] {
 		t.Error("failing command must fail open (true)")
+	}
+	// No passages: nothing to ground.
+	if m := g.Relevant(context.Background(), "q", nil); m != nil {
+		t.Errorf("empty passages should return nil, got %v", m)
 	}
 }
 
