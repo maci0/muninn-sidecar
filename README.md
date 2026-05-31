@@ -212,6 +212,7 @@ SSE streaming responses are handled incrementally — chunks flow through to the
 | `MUNINN_MCP_URL` | MuninnDB MCP endpoint (default: `http://127.0.0.1:8750/mcp`) |
 | `MUNINN_TOKEN` | MuninnDB bearer token (default: reads `~/.muninn/mcp.token`) |
 | `MSC_VAULT` | MuninnDB vault name (default: current directory name, fallback: `sidecar`) |
+| `MSC_WS_DEBUG` | When set, log the envelope `type` and size of every decoded WebSocket message under `--mitm` (not the content) — to map a new agent's WebSocket protocol for capture |
 
 Command-line flags take precedence over environment variables.
 
@@ -252,8 +253,11 @@ Command-line flags take precedence over environment variables.
 - **OAuth-direct / WebSocket agents.** Agents that ignore a base-URL env override
   need `--mitm` (codex ChatGPT-mode, agy). codex ChatGPT-mode streams
   over a permessage-deflate WebSocket; msc decodes and captures it (RFC 6455 +
-  RFC 7692). Other WebSocket protocols are spliced through but not decoded — they
-  run but aren't captured (the session summary reports such streams).
+  RFC 7692). Other WebSocket protocols (e.g. grok's gateway mode) are spliced
+  through but not decoded — they run but aren't captured (the session summary
+  reports such streams). See [docs/websocket-agents.md](docs/websocket-agents.md)
+  for which agents stream over WebSocket and how to map a new protocol with
+  `MSC_WS_DEBUG`.
 - **Single upstream without `--mitm`.** The default proxy forwards to one resolved
   upstream (the agent's API). An agent that talks to several API hosts needs
   `--mitm` (which intercepts per-CONNECT-host).

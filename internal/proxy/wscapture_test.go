@@ -100,6 +100,34 @@ func FuzzWSExchangeMessages(f *testing.F) {
 	})
 }
 
+func TestWSMessageType(t *testing.T) {
+	cases := map[string]string{
+		`{"type":"response.create","input":[]}`: "response.create",
+		`{"type":"gw.message","payload":{}}`:    "gw.message",
+		`{"foo":"bar"}`:                         "",
+		`{"type":123}`:                          "", // non-string type
+		`not json`:                              "",
+		``:                                      "",
+		`[]`:                                    "",
+	}
+	for in, want := range cases {
+		if got := wsMessageType([]byte(in)); got != want {
+			t.Errorf("wsMessageType(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func FuzzWSMessageType(f *testing.F) {
+	f.Add(`{"type":"response.completed"}`)
+	f.Add(`{"type":["x"]}`)
+	f.Add(`garbage`)
+	f.Add(``)
+	f.Fuzz(func(t *testing.T, data string) {
+		// Arbitrary bytes must never panic; result is only ever the type field.
+		_ = wsMessageType([]byte(data))
+	})
+}
+
 func TestWSExchangeNoRequestNoStore(t *testing.T) {
 	rec := &recordStore{}
 	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}}

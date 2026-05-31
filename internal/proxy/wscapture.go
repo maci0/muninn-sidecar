@@ -7,12 +7,34 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
+
+// wsDebug, when MSC_WS_DEBUG is set, makes the parser log the envelope `type`
+// (and size) of every decoded WebSocket message. msc captures codex's
+// Responses-API WebSocket out of the box; other agents stream over proprietary
+// WebSocket protocols (e.g. grok's gateway at wss://grok.com/ws/gw/) whose
+// envelope is unknown without observing live traffic. This flag surfaces the
+// message shape — not the content — so a new protocol can be mapped. Read once.
+var wsDebug = os.Getenv("MSC_WS_DEBUG") != ""
+
+// wsMessageType extracts the JSON `type` field from a decoded WebSocket text
+// message for diagnostics, or "" if the message isn't a JSON object with a
+// string `type`. Returns only the discriminator field, never message content.
+func wsMessageType(msg []byte) string {
+	var env struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(msg, &env) != nil {
+		return ""
+	}
+	return env.Type
+}
 
 // wsExchange pairs codex's WebSocket messages into captured exchanges. codex
 // frames the OpenAI Responses API over a WebSocket: the client sends
@@ -192,6 +214,9 @@ func runWSParser(dir string, ch <-chan []byte, deflate bool, onMessage func(dir 
 			return
 		}
 		if msg != nil {
+			if wsDebug {
+				slog.Info("ws message", "dir", dir, "type", wsMessageType(msg), "bytes", len(msg))
+			}
 			onMessage(dir, msg)
 		}
 	}

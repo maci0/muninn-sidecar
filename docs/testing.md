@@ -18,7 +18,7 @@ surfaces) has a Go fuzz target.
 
 ## Fuzzing
 
-51 fuzz targets cover the untrusted-input surfaces:
+52 fuzz targets cover the untrusted-input surfaces:
 
 - **apiformat** — request/response extraction, recent-context, system-reminder
   strip, truncation (UTF-8 + length invariants), SSE delta/tool-name.
