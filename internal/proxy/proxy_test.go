@@ -1359,6 +1359,93 @@ func TestStreamCapturePreservesUsage(t *testing.T) {
 	}
 }
 
+func TestBuildRespBodyBranches(t *testing.T) {
+	// Each fallback/merge branch of buildRespBody and buildSyntheticResp.
+	t.Run("tool_use only, no text", func(t *testing.T) {
+		sc := &streamCapture{toolNames: []string{"Read", "Edit"}}
+		var doc map[string]any
+		if err := json.Unmarshal(sc.buildRespBody(), &doc); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		content, _ := doc["content"].([]any)
+		if len(content) != 2 {
+			t.Fatalf("expected 2 tool_use blocks, got %v", doc["content"])
+		}
+		if b, _ := content[0].(map[string]any); b["type"] != "tool_use" || b["name"] != "Read" {
+			t.Errorf("unexpected first block: %v", content[0])
+		}
+	})
+
+	t.Run("gemini usageMetadata merge", func(t *testing.T) {
+		sc := &streamCapture{usageJSON: `{"usageMetadata":{"totalTokenCount":7}}`}
+		sc.textAccum.WriteString("hi")
+		var doc map[string]any
+		_ = json.Unmarshal(sc.buildRespBody(), &doc)
+		if _, ok := doc["usageMetadata"].(map[string]any); !ok {
+			t.Errorf("expected usageMetadata merged, got %v", doc)
+		}
+	})
+
+	t.Run("openai responses nested usage merge", func(t *testing.T) {
+		sc := &streamCapture{usageJSON: `{"response":{"usage":{"input_tokens":3}}}`}
+		sc.textAccum.WriteString("hi")
+		var doc map[string]any
+		_ = json.Unmarshal(sc.buildRespBody(), &doc)
+		u, ok := doc["usage"].(map[string]any)
+		if !ok || u["input_tokens"].(float64) != 3 {
+			t.Errorf("expected nested response.usage merged, got %v", doc)
+		}
+	})
+
+	t.Run("valid-JSON lastData passthrough", func(t *testing.T) {
+		sc := &streamCapture{lastData: `{"foo":"bar"}`}
+		got := string(sc.buildRespBody())
+		if got != `{"foo":"bar"}` {
+			t.Errorf("expected raw lastData passthrough, got %s", got)
+		}
+	})
+
+	t.Run("non-JSON lastData marshaled as string", func(t *testing.T) {
+		sc := &streamCapture{lastData: "plain text [DONE]"}
+		got := string(sc.buildRespBody())
+		if got != `"plain text [DONE]"` {
+			t.Errorf("expected JSON-string-encoded lastData, got %s", got)
+		}
+	})
+
+	t.Run("no data lines -> stream marker", func(t *testing.T) {
+		sc := &streamCapture{totalLen: 99}
+		var doc map[string]any
+		if err := json.Unmarshal(sc.buildRespBody(), &doc); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if doc["_stream"] != true || doc["_bytes"].(float64) != 99 {
+			t.Errorf("expected stream marker with _bytes=99, got %v", doc)
+		}
+	})
+}
+
+func FuzzBuildRespBody(f *testing.F) {
+	f.Add("answer", "Read", `{"usage":{"output_tokens":5}}`, "")
+	f.Add("", "", "", `{"choices":[]}`)
+	f.Add("", "", "", "raw non-json")
+	f.Add("", "", "", "")
+	f.Fuzz(func(t *testing.T, text, tool, usage, lastData string) {
+		// Any combination of accumulated state must yield valid JSON and never panic.
+		sc := &streamCapture{lastData: lastData, usageJSON: usage, totalLen: len(lastData)}
+		if text != "" {
+			sc.textAccum.WriteString(text)
+		}
+		if tool != "" {
+			sc.toolNames = []string{tool}
+		}
+		out := sc.buildRespBody()
+		if !json.Valid(out) {
+			t.Fatalf("buildRespBody produced invalid JSON: %s", out)
+		}
+	})
+}
+
 func TestExtractStreamToolName(t *testing.T) {
 	tests := []struct {
 		name string
