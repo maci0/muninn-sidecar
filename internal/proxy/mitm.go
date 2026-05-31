@@ -55,6 +55,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("mitm: TLS handshake failed", "target", target, "err", err)
 		return
 	}
+	slog.Debug("mitm: intercepting tunnel", "target", target, "sni", tlsConn.ConnectionState().ServerName)
 
 	// One reverse proxy per tunnel, forwarding to the real host over TLS.
 	rp := &httputil.ReverseProxy{

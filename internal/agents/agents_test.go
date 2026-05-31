@@ -259,11 +259,16 @@ func TestBuildMITMEnv(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got[k], proxyURL)
 		}
 	}
-	// CA-trust vars across runtimes must point at the CA cert.
-	for _, k := range []string{"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"} {
+	// CA-trust vars across runtimes (Node/Bun, OpenSSL/curl, Python, Deno) must
+	// point at the CA cert.
+	for _, k := range []string{"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "DENO_CERT"} {
 		if got[k] != caPath {
 			t.Errorf("%s = %q, want %q", k, got[k], caPath)
 		}
+	}
+	// Node's undici fetch ignores proxy env without this; required for claude/qwen/reasonix.
+	if got["NODE_USE_ENV_PROXY"] != "1" {
+		t.Errorf("NODE_USE_ENV_PROXY = %q, want 1", got["NODE_USE_ENV_PROXY"])
 	}
 	if got[mscSentinel] != upstream {
 		t.Errorf("%s = %q, want %q", mscSentinel, got[mscSentinel], upstream)

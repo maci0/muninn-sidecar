@@ -247,6 +247,16 @@ func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath string) []string {
 	// Lowercase variants are honored by curl/libcurl; uppercase by Go, Node, and
 	// most runtimes. Node reads NODE_EXTRA_CA_CERTS; OpenSSL/Python read
 	// SSL_CERT_FILE; requests reads REQUESTS_CA_BUNDLE; curl reads CURL_CA_BUNDLE.
+	//
+	// NODE_USE_ENV_PROXY=1 is critical: Node's global fetch (undici) — used by
+	// the Anthropic/OpenAI SDKs that claude, qwen, and reasonix run on — ignores
+	// HTTP(S)_PROXY env unless this is set (Node 24+; harmlessly ignored on older
+	// Node). Verified empirically: without it those agents bypass the proxy.
+	//
+	// CA trust spans every runtime we support (verified with a per-runtime probe):
+	// Node/Bun read NODE_EXTRA_CA_CERTS; OpenSSL/curl/Python/Go read SSL_CERT_FILE;
+	// curl also CURL_CA_BUNDLE; Python-requests REQUESTS_CA_BUNDLE; Deno DENO_CERT.
+	// Rust/reqwest (codex, grok) honors HTTPS_PROXY + the system store (SSL_CERT_FILE).
 	replace := map[string]string{
 		"HTTPS_PROXY":         proxyURL,
 		"https_proxy":         proxyURL,
@@ -254,10 +264,12 @@ func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath string) []string {
 		"http_proxy":          proxyURL,
 		"ALL_PROXY":           proxyURL,
 		"all_proxy":           proxyURL,
+		"NODE_USE_ENV_PROXY":  "1",
 		"NODE_EXTRA_CA_CERTS": caCertPath,
 		"SSL_CERT_FILE":       caCertPath,
 		"REQUESTS_CA_BUNDLE":  caCertPath,
 		"CURL_CA_BUNDLE":      caCertPath,
+		"DENO_CERT":           caCertPath,
 		mscSentinel:           upstream,
 	}
 

@@ -17,8 +17,13 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   the plain path, and re-originates TLS to the real host. The child is pointed at
   msc via `HTTP(S)_PROXY`/`ALL_PROXY` (upper and lower case) and told to trust the
   CA via `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` /
-  `CURL_CA_BUNDLE`. Off by default; the CA private key never leaves the machine
-  and trust is scoped to the launched child only, never the system trust store.
+  `CURL_CA_BUNDLE` / `DENO_CERT`, plus `NODE_USE_ENV_PROXY=1`. Off by default; the
+  CA private key never leaves the machine and trust is scoped to the launched
+  child only, never the system trust store. Interception verified per-runtime
+  (Node/undici, Rust/reqwest, Bun, Deno, Python, Go) — notably, Node's global
+  `fetch` ignores `HTTPS_PROXY` without `NODE_USE_ENV_PROXY=1`, so msc sets it.
+- **`proxy.SetMITMRoots`** — override the root CAs used to verify real upstreams
+  on the MITM forward leg (private/corporate upstream CA, or tests).
 
 ## [0.1.0] — 2026-05-31
 

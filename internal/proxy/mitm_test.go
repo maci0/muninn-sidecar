@@ -114,7 +114,7 @@ func TestMITMInterceptsHTTPS(t *testing.T) {
 	// server's self-signed cert there.
 	upstreamPool := x509.NewCertPool()
 	upstreamPool.AddCert(upstream.Certificate())
-	p.mitmTransport.TLSClientConfig.RootCAs = upstreamPool
+	p.SetMITMRoots(upstreamPool)
 
 	addr, err := p.Start()
 	if err != nil {
@@ -169,6 +169,26 @@ func TestMITMInterceptsHTTPS(t *testing.T) {
 	if sessionStats.Injections.Load() != 1 {
 		t.Errorf("expected 1 injection through MITM, got %d", sessionStats.Injections.Load())
 	}
+}
+
+func TestSetMITMRoots(t *testing.T) {
+	ca, err := mitm.LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: "https://x.invalid", Store: st, CA: ca})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	p.SetMITMRoots(pool)
+	if p.mitmTransport.TLSClientConfig.RootCAs != pool {
+		t.Error("SetMITMRoots did not apply the pool to the MITM transport")
+	}
+
+	// Guard: a zero-value Proxy (no transport) is a safe no-op, not a panic.
+	(&Proxy{}).SetMITMRoots(pool)
 }
 
 func TestSingleConnListener(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -167,6 +168,18 @@ func New(cfg Config) (*Proxy, error) {
 
 // ListenAddr returns the actual address the proxy is listening on.
 func (p *Proxy) ListenAddr() string { return p.listenAddr }
+
+// SetMITMRoots overrides the root CAs used to verify real upstream servers on
+// the MITM forward leg. By default the system trust store is used; supply a
+// custom pool for environments with a private upstream CA (e.g. a corporate
+// egress proxy) or for tests that forward to a self-signed server. No-op when
+// MITM is disabled (no CA configured).
+func (p *Proxy) SetMITMRoots(pool *x509.CertPool) {
+	if p.mitmTransport == nil {
+		return
+	}
+	p.mitmTransport.TLSClientConfig.RootCAs = pool
+}
 
 // Start begins listening. Returns the resolved listen address (with actual
 // port if :0 was used). The server runs in a background goroutine.
