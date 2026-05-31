@@ -181,6 +181,19 @@ fails open (a slow/unavailable judge degrades to the cosine gate) and is **off b
 default** — it only helps with a domain-competent grader (`docs/experiments.md`
 §B3/§B4).
 
+**When to enable it (and when not to):**
+
+| Situation | Recommendation |
+|---|---|
+| High-retrieval vault (clean QA, distinct facts) | **Leave off.** The cosine gate already injects accurately; a judge adds latency for no gain. |
+| Harm-prone vault — weak retrieval / many on-topic-but-wrong neighbours (multi-hop, dense scientific) | **Enable** with a capable, domain-competent judge. §B4: it recovered injection harm better than the threshold alone. |
+| Specialized domain + only a small/general judge available | **Leave off.** §B3: a weak grader over-accepts and *collapses* suppression (scifact 0.84 → 0.12) — worse than the gate. |
+| Offline vault audit / curation | Use `--ground-cmd` with a frontier judge; latency doesn't matter offline. |
+
+It is deliberately **not on by default**: defaulting it would help some vaults and
+hurt others (grader-dependent), so it stays an explicit opt-in rather than a
+silent global behavior change.
+
 A cross-validated method study (`internal/inject/eval_study.go`) compared this
 single-threshold rule against relative-cutoff, top-k, and combined gates on
 synthetic data calibrated to the observed cosine ranges; the single absolute
