@@ -95,12 +95,18 @@ var Registry = map[string]Agent{
 		DefaultURL:   openAIDefaultURL,
 		CapturePaths: openAICapturePaths,
 	},
+	// opencode is provider-agnostic: its default "zen" backend routes some models
+	// via the OpenAI Chat Completions API (/zen/v1/chat/completions) and others
+	// via the Anthropic Messages API (/zen/v1/messages), depending on the selected
+	// model. Capture both formats (verified live: chat/completions captured; the
+	// Anthropic path was otherwise missed). The proxy detects the format from the
+	// body, so the extra path is safe for OpenAI providers too.
 	"opencode": {
 		Command:      "opencode",
 		EnvKey:       "OPENAI_BASE_URL",
 		DetectEnv:    []string{"OPENAI_BASE_URL", "OPENAI_API_BASE"},
 		DefaultURL:   openAIDefaultURL,
-		CapturePaths: openAICapturePaths,
+		CapturePaths: append(append([]string(nil), openAICapturePaths...), "/v1/messages"),
 	},
 	"aider": {
 		Command:      "aider",

@@ -14,6 +14,11 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   through `--mitm` uncaptured (`capture=false`). Added `/responses` to the
   shared `/v1`-base capture paths; grok turns are now captured, stored, and
   recalled. Verified live end-to-end.
+- **opencode captures Anthropic-format turns.** opencode's provider-agnostic
+  "zen" backend routes some models via the OpenAI Chat Completions API and
+  others via the Anthropic Messages API (`/zen/v1/messages`); only the former
+  was in its capture paths. Added `/v1/messages` so both formats are captured
+  regardless of which model is selected.
 
 ## [0.4.0] — 2026-06-01
 

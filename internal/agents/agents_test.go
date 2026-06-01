@@ -208,6 +208,20 @@ func TestGrokCapturesResponsesEndpoint(t *testing.T) {
 	}
 }
 
+func TestOpencodeCapturesBothFormats(t *testing.T) {
+	// opencode's "zen" backend routes some models via the OpenAI Chat Completions
+	// API and others via the Anthropic Messages API; both must be captured.
+	oc := Registry["opencode"]
+	for _, p := range []string{"/zen/v1/chat/completions", "/zen/v1/messages", "/v1/responses"} {
+		if !captures(oc, p) {
+			t.Errorf("opencode must capture %s; CapturePaths=%v", p, oc.CapturePaths)
+		}
+	}
+	if captures(oc, "/api.json") {
+		t.Errorf("opencode must not capture /api.json; CapturePaths=%v", oc.CapturePaths)
+	}
+}
+
 func TestBuildArgsProxySubstitution(t *testing.T) {
 	// qwen takes its base URL from a flag, so ProxyArgs must be injected with the
 	// live proxy URL substituted for {proxy}, before the user's args.
