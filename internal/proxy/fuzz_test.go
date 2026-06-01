@@ -69,3 +69,36 @@ func FuzzStripInjectedContextDoc(f *testing.F) {
 		}
 	})
 }
+
+func FuzzInjectedBlockStart(f *testing.F) {
+	f.Add("Be helpful\n\n<retrieved-context source=\"muninn\">m</retrieved-context>")
+	f.Add("<session-context source=\"muninn\">x</session-context>")
+	f.Add("no markers here")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, s string) {
+		i := injectedBlockStart(s)
+		// Contract: -1 (absent) or a valid index into s.
+		if i < -1 || i >= len(s) {
+			t.Fatalf("injectedBlockStart(%q) = %d, out of range", s, i)
+		}
+		if i >= 0 {
+			// The returned index must actually begin a known marker.
+			ok := false
+			for _, m := range []string{"<retrieved-context", "<session-context", "<global-guide"} {
+				if len(s)-i >= 1 && len(m) > 0 && i+1 <= len(s) {
+					if hasPrefixAt(s, i, m) {
+						ok = true
+					}
+				}
+			}
+			if !ok {
+				t.Fatalf("injectedBlockStart(%q)=%d not at a marker", s, i)
+			}
+		}
+	})
+}
+
+// hasPrefixAt reports whether s has prefix p starting at index i.
+func hasPrefixAt(s string, i int, p string) bool {
+	return i >= 0 && i+len(p) <= len(s) && s[i:i+len(p)] == p
+}

@@ -532,6 +532,33 @@ func TestStripInjectedContextOpenAIResponses(t *testing.T) {
 	}
 }
 
+func TestStripInjectedContextOpenAIResponsesMultiLineBlock(t *testing.T) {
+	// A realistic injected block spans multiple memories and contains internal
+	// blank lines. Stripping must restore the full original instructions, not
+	// truncate at an internal "\n\n". Regression for the LastIndex("\n\n") bug.
+	orig := "You are a helpful assistant.\n\nFollow the user's coding style."
+	block := apiformat.ContextPrefix + "\n[a] (relevance: 0.90)\nfirst memory\n\n[b] (relevance: 0.80)\nsecond memory\n" + apiformat.ContextSuffix
+	body, err := json.Marshal(map[string]any{
+		"model":        "gpt-4o",
+		"input":        "hello",
+		"instructions": orig + "\n\n" + block,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(cleanRequest(body, nil), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["instructions"] != orig {
+		t.Errorf("instructions = %q, want full original %q", doc["instructions"], orig)
+	}
+	if s, _ := doc["instructions"].(string); strings.Contains(s, "source=\"muninn\"") {
+		t.Error("injected block leaked into stored instructions")
+	}
+}
+
 func TestStripInjectedContextOpenAIResponsesOnlyBlock(t *testing.T) {
 	// When there were no original instructions, the whole field should be removed.
 	body := json.RawMessage(`{

@@ -85,6 +85,8 @@ internal/
     eval_study.go         Synthetic scenario generator + candidate when+what methods
     eval_cv.go            Cross-validation engine + method study entry point
     eval_live.go          Live end-to-end evaluation against a real MuninnDB
+    eval_window.go        Session-window decay study (decayFactor/decayFloor)
+  grounding/grounding.go  Answer-grounding rerank (OpenAI-compatible model / CLI judge)
   mcpclient/client.go     Shared JSON-RPC 2.0 client for MuninnDB
   mitm/
     ca.go                 Local CA: generate/persist + mint cached per-host leaf certs

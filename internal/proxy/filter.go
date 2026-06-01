@@ -19,6 +19,21 @@ func hasInjectedMarker(text string) bool {
 		strings.Contains(t, "source=\"muninn\"")
 }
 
+// injectedBlockStart returns the index of the earliest injected-context block
+// opening marker in s, or -1 if none of the known openers are present. Used to
+// strip an appended context block from a single string field (OpenAI Responses
+// `instructions`) without relying on blank-line positions, since the block
+// itself contains blank lines.
+func injectedBlockStart(s string) int {
+	start := -1
+	for _, m := range []string{apiformat.ContextPrefix, apiformat.SessionContextOpen, apiformat.GlobalGuideOpen} {
+		if i := strings.Index(s, m); i >= 0 && (start < 0 || i < start) {
+			start = i
+		}
+	}
+	return start
+}
+
 // cleanRequest removes injected context and muninn tool calls from a request body.
 // Parses and serializes JSON at most once.
 func cleanRequest(body []byte, patterns []string) json.RawMessage {
@@ -152,16 +167,23 @@ func stripInjectedContextDoc(doc map[string]any) bool {
 	}
 
 	// OpenAI Responses API: instructions field (string).
-	// Strip only the injected suffix, restoring the original instructions.
+	// Strip only the injected suffix, restoring the original instructions. The
+	// injected block is appended as "<original>\n\n<block>", and the block itself
+	// contains blank lines, so locate where the block *starts* (its opening
+	// marker) rather than the last blank line — otherwise a multi-line block
+	// would truncate at an internal "\n\n" and discard the user's instructions.
 	if instructions, ok := doc["instructions"].(string); ok {
 		if hasInjectedMarker(instructions) {
-			if idx := strings.LastIndex(instructions, "\n\n"); idx >= 0 && hasInjectedMarker(instructions[idx+2:]) {
-				if idx == 0 {
+			if start := injectedBlockStart(instructions); start > 0 {
+				orig := strings.TrimRight(instructions[:start], "\n")
+				if strings.TrimSpace(orig) == "" {
 					delete(doc, "instructions")
 				} else {
-					doc["instructions"] = instructions[:idx]
+					doc["instructions"] = orig
 				}
 			} else {
+				// Block is at the start (no original instructions) or only the
+				// generic source="muninn" fallback matched — drop the field.
 				delete(doc, "instructions")
 			}
 			changed = true

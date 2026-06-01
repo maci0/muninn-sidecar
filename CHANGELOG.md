@@ -3,6 +3,19 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased]
+
+### Fixed
+
+- **OpenAI Responses capture no longer discards the user's `instructions`.** When
+  stripping the injected context block from a captured OpenAI Responses request,
+  the code located the block by the *last* blank line (`LastIndex("\n\n")`) — but
+  the block itself contains blank lines, so a multi-memory block truncated at an
+  internal one and the user's original system `instructions` were dropped from
+  the stored memory. The block is now located by its opening marker, restoring
+  the full original instructions. (Capture-side only; forwarded requests were
+  never affected.)
+
 ## [0.4.3] — 2026-06-01
 
 ### Changed

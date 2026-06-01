@@ -228,6 +228,7 @@ Command-line flags take precedence over environment variables.
     --no-inject       Disable memory injection (enabled by default)
     --inject-budget N Max tokens to inject per request (default: 2048)
     --inject-min-score F  Min cosine score to inject a memory, 0-1 (default: 0.6)
+    --no-auto-calibrate   Disable per-vault auto-calibration of the injection gate (calibrated by default)
     --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
     --ground-url URL      Opt-in answer-grounding rerank via an OpenAI-compatible model (fast local judge, ~1s); drops recalled passages the model says don't answer the query
     --ground-cmd CMD      Answer-grounding rerank via a CLI agent (e.g. "claude -p"); frontier-quality but slow (~3.5s) — best for offline use
