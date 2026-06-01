@@ -3,6 +3,24 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [0.4.2] — 2026-06-01
+
+### Fixed
+
+- **No false "unparseable response body" warnings.** `extractModelAndTokens`
+  logged a debug warning whenever a captured response wasn't a JSON object —
+  including `buildRespBody`'s legitimate string fallback for a stream with no
+  structured final event (seen live with qwen/DeepSeek). Valid non-object bodies
+  now return silently; only genuinely malformed JSON is flagged.
+
+### Changed
+
+- **agy capture status documented accurately.** Live probing confirmed `--mitm`
+  intercepts agy's HTTPS (auth/register/userinfo), but agy's inference runs over
+  gRPC/protobuf on cloudcode-pa, which the JSON extractors can't read — so turns
+  aren't captured in usable form (full support needs protobuf decoding). The agy
+  agent comment, README footnote, and `docs/websocket-agents.md` now say so.
+
 ## [0.4.1] — 2026-06-01
 
 ### Added
@@ -227,6 +245,7 @@ and injecting relevant recalled context — with zero agent configuration.
   race-clean; CI builds all binaries, runs `go vet`/staticcheck/race tests, and a
   short fuzz campaign on every push.
 
+[0.4.2]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.2
 [0.4.1]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.1
 [0.4.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.0
 [0.3.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.3.0
