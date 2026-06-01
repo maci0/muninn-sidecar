@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -1142,6 +1143,35 @@ func TestExtractStreamDelta(t *testing.T) {
 				t.Errorf("extractDeltaFromDoc() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCaptureResponseSkipsGRPC(t *testing.T) {
+	// gRPC/protobuf responses (e.g. agy's cloudcode-pa inference) must not be
+	// captured — the body can't be extracted — but must still forward untouched.
+	rec := &recordStore{}
+	p := &Proxy{store: rec}
+
+	grpcBody := []byte{0x00, 0x00, 0x00, 0x00, 0x05, 'h', 'e', 'l', 'l', 'o'} // length-prefixed frame
+	req := httptest.NewRequest("POST", "/google.internal.cloud.code.v1internal.CloudCode/GenerateContent", nil)
+	req = req.WithContext(withCapture(req.Context(), &captureCtx{start: time.Now(), path: req.URL.Path, agent: "agy"}))
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": {"application/grpc+proto"}},
+		Body:       io.NopCloser(bytes.NewReader(grpcBody)),
+		Request:    req,
+	}
+
+	if err := p.captureResponse(resp); err != nil {
+		t.Fatalf("captureResponse: %v", err)
+	}
+	// Body must still be readable and unchanged (forwarded untouched).
+	got, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(got, grpcBody) {
+		t.Errorf("gRPC body altered: got %v", got)
+	}
+	if n := len(rec.all()); n != 0 {
+		t.Errorf("gRPC response must not be stored, got %d exchanges", n)
 	}
 }
 

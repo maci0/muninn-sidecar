@@ -363,6 +363,15 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	}
 
 	contentType := resp.Header.Get("Content-Type")
+
+	// gRPC responses (e.g. agy's cloudcode-pa inference) are length-prefixed
+	// protobuf, not JSON — the extractors can't read them and storing the binary
+	// would only add noise. Skip capture; the response still forwards untouched.
+	if strings.Contains(contentType, "application/grpc") {
+		slog.Debug("skipping gRPC response capture (protobuf not decodable)", "path", ctx.path)
+		return nil
+	}
+
 	isStreaming := strings.Contains(contentType, "text/event-stream") ||
 		strings.Contains(contentType, "ndjson")
 

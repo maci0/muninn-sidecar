@@ -3,6 +3,16 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased]
+
+### Changed
+
+- **Skip gRPC responses during capture.** `application/grpc` responses (e.g.
+  agy's cloudcode-pa inference) are length-prefixed protobuf the extractors
+  can't read; msc now skips capturing them outright (the response still forwards
+  untouched) instead of buffering binary that would extract to nothing. Lays the
+  groundwork for proper protobuf support later.
+
 ## [0.4.2] — 2026-06-01
 
 ### Fixed
