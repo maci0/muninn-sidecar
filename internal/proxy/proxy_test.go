@@ -1776,6 +1776,22 @@ func TestExtractModelAndTokens(t *testing.T) {
 			wantIn:    50,
 			wantOut:   25,
 		},
+		{
+			// buildRespBody's string fallback for a stream with no structured
+			// final event: valid JSON, not an object — request model still
+			// extracted, no usage, no warning.
+			name:      "valid non-object response body (stream fallback)",
+			reqBody:   `{"model":"deepseek-v4-pro","messages":[]}`,
+			respBody:  `"pong [DONE]"`,
+			wantModel: "deepseek-v4-pro",
+		},
+		{
+			// Genuinely malformed JSON must not panic; model still from request.
+			name:      "malformed response body",
+			reqBody:   `{"model":"gpt-4","messages":[]}`,
+			respBody:  `{not valid`,
+			wantModel: "gpt-4",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

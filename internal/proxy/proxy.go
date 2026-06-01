@@ -479,7 +479,13 @@ func extractModelAndTokens(ex *store.CapturedExchange) {
 
 	var respData map[string]any
 	if err := json.Unmarshal(ex.RespBody, &respData); err != nil {
-		slog.Debug("unparseable response body for token extraction", "path", ex.Path, "err", err)
+		// A captured response body can legitimately be valid JSON that isn't an
+		// object — e.g. the synthetic string fallback buildRespBody emits for a
+		// stream with no structured final event. That simply carries no usage
+		// metadata; only flag genuinely malformed JSON.
+		if !json.Valid(ex.RespBody) {
+			slog.Debug("unparseable response body for token extraction", "path", ex.Path, "err", err)
+		}
 		return
 	}
 
