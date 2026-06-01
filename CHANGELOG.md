@@ -3,7 +3,7 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
-## [Unreleased]
+## [0.4.4] — 2026-06-02
 
 ### Fixed
 
@@ -268,6 +268,7 @@ and injecting relevant recalled context — with zero agent configuration.
   race-clean; CI builds all binaries, runs `go vet`/staticcheck/race tests, and a
   short fuzz campaign on every push.
 
+[0.4.4]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.4
 [0.4.3]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.3
 [0.4.2]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.2
 [0.4.1]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.1
