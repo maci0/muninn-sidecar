@@ -3,6 +3,18 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased]
+
+### Fixed
+
+- **grok conversations are now captured.** The grok CLI's default subscription
+  mode sends inference to `cli-chat-proxy.grok.com` via the OpenAI Responses API
+  (`POST /v1/responses`) over HTTPS — not `/chat/completions` and not a
+  WebSocket. That endpoint was missing from grok's capture paths, so turns ran
+  through `--mitm` uncaptured (`capture=false`). Added `/responses` to the
+  shared `/v1`-base capture paths; grok turns are now captured, stored, and
+  recalled. Verified live end-to-end.
+
 ## [0.4.0] — 2026-06-01
 
 ### Added

@@ -178,6 +178,36 @@ func TestAllAgentsHaveRequiredFields(t *testing.T) {
 	}
 }
 
+// captures reports whether the agent's CapturePaths match a request path the way
+// the proxy does — a case-insensitive substring of the request path.
+func captures(a Agent, reqPath string) bool {
+	lower := strings.ToLower(reqPath)
+	for _, sub := range a.CapturePaths {
+		if strings.Contains(lower, strings.ToLower(sub)) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestGrokCapturesResponsesEndpoint(t *testing.T) {
+	// grok's CLI talks to its chat proxy via the OpenAI Responses API
+	// (POST /v1/responses) under --mitm — that endpoint must be captured.
+	// Regression for the path that was previously missed (capture=false).
+	grok := Registry["grok"]
+	if !captures(grok, "/v1/responses") {
+		t.Errorf("grok must capture /v1/responses; CapturePaths=%v", grok.CapturePaths)
+	}
+	// Still captures the chat-completions path used in API-key mode.
+	if !captures(grok, "/v1/chat/completions") {
+		t.Errorf("grok must still capture /v1/chat/completions; CapturePaths=%v", grok.CapturePaths)
+	}
+	// A non-LLM control path is not captured.
+	if captures(grok, "/v1/models") {
+		t.Errorf("grok must not capture /v1/models; CapturePaths=%v", grok.CapturePaths)
+	}
+}
+
 func TestBuildArgsProxySubstitution(t *testing.T) {
 	// qwen takes its base URL from a flag, so ProxyArgs must be injected with the
 	// live proxy URL substituted for {proxy}, before the user's args.

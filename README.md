@@ -35,7 +35,7 @@ This allows agents to magically "remember" project context, conventions, and pas
 
 *† When `GEMINI_API_KEY` is set and `CODE_ASSIST_ENDPOINT` is not, the upstream is `generativelanguage.googleapis.com` instead.*
 
-*‡ Setting `GROK_MODELS_BASE_URL` switches grok to API-key (Bearer) auth, so an xAI API key must be configured; grok then routes inference (OpenAI-compatible) through the proxy.*
+*‡ Setting `GROK_MODELS_BASE_URL` switches grok to API-key (Bearer) auth, so an xAI API key must be configured; grok then routes inference (OpenAI-compatible) through the proxy. In its default subscription mode grok instead talks to `cli-chat-proxy.grok.com` via the OpenAI Responses API (`POST /v1/responses`) over HTTPS, ignoring the env override — use `--mitm` to capture it (verified end-to-end).*
 
 *◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`) over plain HTTP. In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend over a permessage-deflate **WebSocket** and ignores `OPENAI_BASE_URL` — so it needs `--mitm`. With `--mitm`, msc decodes that WebSocket (RFC 6455 framing + RFC 7692 context-takeover inflation) and captures codex's turns (the Responses-API request + the streamed answer); verified live.*
 
@@ -250,14 +250,15 @@ Command-line flags take precedence over environment variables.
 
 ## Limitations
 
-- **OAuth-direct / WebSocket agents.** Agents that ignore a base-URL env override
-  need `--mitm` (codex ChatGPT-mode, agy). codex ChatGPT-mode streams
-  over a permessage-deflate WebSocket; msc decodes and captures it (RFC 6455 +
-  RFC 7692). Other WebSocket protocols (e.g. grok's gateway mode) are spliced
-  through but not decoded — they run but aren't captured (the session summary
-  reports such streams). See [docs/websocket-agents.md](docs/websocket-agents.md)
-  for which agents stream over WebSocket and how to map a new protocol with
-  `MSC_WS_DEBUG`.
+- **OAuth-direct / non-override agents.** Agents that ignore a base-URL env
+  override need `--mitm` (codex ChatGPT-mode, grok default mode, agy). codex
+  ChatGPT-mode streams over a permessage-deflate WebSocket; msc decodes and
+  captures it (RFC 6455 + RFC 7692). grok's default mode is plain HTTPS
+  (`/v1/responses`) and is captured directly. Any *other* WebSocket protocol is
+  spliced through but not decoded — it runs but isn't captured (the session
+  summary reports such streams). See
+  [docs/websocket-agents.md](docs/websocket-agents.md) for which agents stream
+  over WebSocket and how to map a new protocol with `MSC_WS_DEBUG`.
 - **Single upstream without `--mitm`.** The default proxy forwards to one resolved
   upstream (the agent's API). An agent that talks to several API hosts needs
   `--mitm` (which intercepts per-CONNECT-host).

@@ -68,8 +68,10 @@ var openAICapturePaths = []string{"/v1/chat/completions", "/v1/completions", "/r
 // appends `/chat/completions` to it, so the path the proxy sees has no `/v1`
 // prefix. The upstream's own `/v1` is restored by the DefaultURL path
 // (singleJoiningSlash in the proxy). These substrings also match `/v1/...`, so
-// they are safe if a build ever sends the full path.
-var openAIV1BaseCapturePaths = []string{"/chat/completions", "/completions"}
+// they are safe if a build ever sends the full path. `/responses` is included
+// because grok's CLI talks to its chat proxy via the OpenAI Responses API
+// (`POST /v1/responses`), not chat-completions, under `--mitm`.
+var openAIV1BaseCapturePaths = []string{"/chat/completions", "/completions", "/responses"}
 
 // Registry maps short names to their agent definitions. Add new agents here.
 // The map key is the canonical name used in logs, tags, and CLI arguments.
@@ -112,6 +114,10 @@ var Registry = map[string]Agent{
 	// through it (verified: GET /v1/models, POST /v1/chat/completions). The user
 	// must have an xAI API key configured; grok ignores OAuth/session auth in this
 	// mode. The base is expected to include `/v1`, so DefaultURL carries it.
+	// In its default subscription mode grok talks to cli-chat-proxy.grok.com via
+	// the OpenAI Responses API (POST /v1/responses) over HTTPS (no env override),
+	// so `--mitm` captures it — see openAIV1BaseCapturePaths. Verified live: the
+	// turn is captured, stored, and recalled (no WebSocket involved).
 	"grok": {
 		Command:      "grok",
 		EnvKey:       "GROK_MODELS_BASE_URL",
