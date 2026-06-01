@@ -38,7 +38,7 @@ This allows agents to magically "remember" project context, conventions, and pas
 
 *◊ codex captures only in **API-key mode** (`OPENAI_API_KEY`) over plain HTTP. In ChatGPT-subscription mode (`auth_mode: chatgpt` in `~/.codex/auth.json`) it talks to the ChatGPT backend over a permessage-deflate **WebSocket** and ignores `OPENAI_BASE_URL` — so it needs `--mitm`. With `--mitm`, msc decodes that WebSocket (RFC 6455 framing + RFC 7692 context-takeover inflation) and captures codex's turns (the Responses-API request + the streamed answer); verified live.*
 
-*§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override. The env-override path can't capture or inject for it; use `--mitm` to intercept it.*
+*§ `agy` (Google Antigravity CLI) is registered so `msc agy` launches it, but in testing it authenticates via OAuth and talks to its upstream directly, ignoring the base-URL env override. `--mitm` does intercept agy's HTTPS (auth/register/userinfo verified live), but its inference runs over gRPC/protobuf on cloudcode-pa — not the JSON msc's extractors read — so turns are not yet captured in a usable form (full support would need protobuf decoding).*
 
 ### Installation
 

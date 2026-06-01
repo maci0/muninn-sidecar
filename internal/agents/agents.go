@@ -157,7 +157,12 @@ var Registry = map[string]Agent{
 	// agy (Google Antigravity CLI) — Code Assist / Gemini family. WARNING: agy
 	// authenticates via OAuth and talks to cloudcode-pa directly; in testing it
 	// ignored CODE_ASSIST_ENDPOINT / GOOGLE_*_BASE_URL, so the env-override path
-	// can't intercept it — use `--mitm` to capture. Registered so `msc agy`
+	// can't intercept it. `--mitm` DOES intercept agy's HTTPS (verified live:
+	// register/features/oauth/userinfo all decrypt cleanly), but its inference
+	// runs over gRPC/protobuf (`application/grpc` on cloudcode-pa) — not the JSON
+	// that msc's extractors read — so turns are not yet captured in usable form;
+	// full support needs protobuf decoding. These CapturePaths match the gRPC
+	// method names so the traffic is at least classified. Registered so `msc agy`
 	// launches it regardless.
 	"agy": {
 		Command:        "agy",
