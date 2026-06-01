@@ -76,7 +76,7 @@ cmd/msc-bench/           Real-MuninnDB retrieval + when-to-inject benchmark
   main.go                Seed labeled corpus, probe, sweep score vs vector_score
   facts.go               Distinct-subject corpus + unrelated absent probes
 internal/
-  agents/agents.go        Agent registry (claude, codex, grok, reasonix, agy, ...)
+  agents/agents.go        Agent registry (claude, codex, grok, qwen, agy, ...)
   apiformat/apiformat.go  Format detection & message extraction (Anthropic/OpenAI/Gemini)
   inject/
     inject.go             Memory recall, session window with decay, selection, enrichment
@@ -116,7 +116,7 @@ The `MSC_UPSTREAM` sentinel prevents infinite loops when msc is accidentally nes
 
 Some agents ignore the base-URL override and reach their provider directly (codex ChatGPT-subscription mode, grok session auth, agy OAuth). For these, `--mitm` makes msc a transparent HTTPS proxy instead. A local certificate authority (`internal/mitm`) generates and persists a CA under the user config dir (`~/.config/muninn-sidecar/mitm/`, `0600` key) and mints cached per-host leaf certs on demand. The child is launched with `HTTP(S)_PROXY`/`ALL_PROXY` (both cases) pointing at msc and `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE` pointing at the CA cert. When the agent opens an HTTPS `CONNECT` tunnel, `proxy.handleConnect` hijacks it, terminates TLS with a minted leaf, and serves the decrypted requests through the **same** recall/inject + capture pipeline (`instrument`) as the plain path, re-originating TLS to the real upstream via a per-tunnel `httputil.ReverseProxy`.
 
-The child env covers every runtime our agents use, verified with a per-runtime interception probe (the record-upstream's cert is trusted by msc but not the client, so a successful response *proves* the request went through msc rather than directly): Node/undici `fetch` (claude, qwen, reasonix), Rust/`reqwest` (codex, grok), Bun (opencode), Deno, Python (aider), Go (agy). The non-obvious one: Node's global `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` (Node 24+), so msc sets that too — otherwise the most common agent family (Anthropic/OpenAI SDKs on undici) would silently bypass the proxy.
+The child env covers every runtime our agents use, verified with a per-runtime interception probe (the record-upstream's cert is trusted by msc but not the client, so a successful response *proves* the request went through msc rather than directly): Node/undici `fetch` (claude, qwen), Rust/`reqwest` (codex, grok), Bun (opencode), Deno, Python (aider), Go (agy). The non-obvious one: Node's global `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` (Node 24+), so msc sets that too — otherwise the most common agent family (Anthropic/OpenAI SDKs on undici) would silently bypass the proxy.
 
 By default every CONNECT host is terminated (the agents that need MITM often talk to a backend that isn't their nominal API host). `--mitm-host` scopes interception to the upstream + listed hosts; all others are **blind-tunneled** (`blindTunnel` — a plain TCP splice with no TLS termination), so package registries and cert-pinned services are never decrypted.
 
@@ -261,7 +261,6 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach:
 | OpenCode | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
 | Aider | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
 | Grok | `grok` | `GROK_MODELS_BASE_URL` | `api.x.ai/v1` |
-| reasonix | `reasonix` | `DEEPSEEK_BASE_URL` | `api.deepseek.com/v1` |
 | Qwen Code | `qwen` | `--openai-base-url` flag (injected) | `dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | Antigravity† | `agy` | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com` |
 

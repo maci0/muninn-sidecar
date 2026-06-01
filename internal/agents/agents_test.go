@@ -222,6 +222,28 @@ func TestOpencodeCapturesBothFormats(t *testing.T) {
 	}
 }
 
+func TestQwenCapturesOpenAIAndGemini(t *testing.T) {
+	// qwen (Qwen Code, a Gemini-CLI fork) speaks OpenAI-compatible by default and
+	// the Gemini API in Google auth mode; both must be captured.
+	qwen := Registry["qwen"]
+	paths := []string{
+		"/v1/chat/completions",                             // DashScope OpenAI mode
+		"/v1beta/models/qwen3-coder:streamGenerateContent", // Gemini-CLI streaming
+		"/v1beta/models/qwen3:generateContent",             // Gemini-CLI non-streaming
+	}
+	for _, p := range paths {
+		if !captures(qwen, p) {
+			t.Errorf("qwen must capture %s; CapturePaths=%v", p, qwen.CapturePaths)
+		}
+	}
+}
+
+func TestReasonixRemoved(t *testing.T) {
+	if _, ok := Registry["reasonix"]; ok {
+		t.Error("reasonix must not be in the registry")
+	}
+}
+
 func TestBuildArgsProxySubstitution(t *testing.T) {
 	// qwen takes its base URL from a flag, so ProxyArgs must be injected with the
 	// live proxy URL substituted for {proxy}, before the user's args.
@@ -310,7 +332,7 @@ func TestBuildMITMEnv(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got[k], caPath)
 		}
 	}
-	// Node's undici fetch ignores proxy env without this; required for claude/qwen/reasonix.
+	// Node's undici fetch ignores proxy env without this; required for claude/qwen.
 	if got["NODE_USE_ENV_PROXY"] != "1" {
 		t.Errorf("NODE_USE_ENV_PROXY = %q, want 1", got["NODE_USE_ENV_PROXY"])
 	}

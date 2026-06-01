@@ -14,7 +14,7 @@ do that, based on a static scan of their binaries plus live verification.
 | **grok** (xAI CLI) | **HTTP** — OpenAI Responses API at `cli-chat-proxy.grok.com/v1/responses` | **Yes**, under `--mitm` | Live-verified: in its default subscription mode grok inference is plain HTTPS (`POST /v1/responses`), not WebSocket — captured, stored, and recalled via the normal path (see `openAIV1BaseCapturePaths`). The `wss://grok.com/ws/gw/` gateway and `wss://.../ws/code-agent` strings exist in the binary but were not exercised for inference here; grok's WebSockets observed in practice are ACP (editor integration), unrelated to LLM content. API-key mode uses `/v1/chat/completions`, also captured. |
 | **agy** (Antigravity) | **gRPC/HTTP2** to `cloudcode-pa.googleapis.com` | Not via WS capture | Not a WebSocket protocol; needs gRPC-aware interception, a separate effort. |
 | **opencode** | HTTP (OpenAI-compatible); its WebSocket is the local TUI↔server bridge | n/a | The `permessage-deflate`/`wss://` strings are its own client/server channel, not upstream LLM traffic. |
-| **reasonix**, **claude**, **aider**, **qwen** | HTTP / SSE | Yes (normal path) | No WebSocket LLM transport. |
+| **claude**, **aider**, **qwen** | HTTP / SSE | Yes (normal path) | No WebSocket LLM transport. qwen (Gemini-CLI fork) captures both OpenAI and Gemini formats. |
 
 ## Mapping a new WebSocket protocol
 

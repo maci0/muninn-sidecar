@@ -25,13 +25,12 @@ This allows agents to magically "remember" project context, conventions, and pas
 | `opencode` | `OPENAI_BASE_URL` | `api.openai.com` |
 | `aider` | `OPENAI_API_BASE` | `api.openai.com` |
 | `grok` | `GROK_MODELS_BASE_URL` | `api.x.ai/v1`‡ |
-| `reasonix` | `DEEPSEEK_BASE_URL` | `api.deepseek.com/v1` |
 | `qwen` | `--openai-base-url` flag¶ | `dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | `agy`§ | `CODE_ASSIST_ENDPOINT` | `cloudcode-pa.googleapis.com`† |
 
 *(The Gemini CLI was removed — deprecated upstream. The Gemini/Code-Assist API format is still supported for `agy`.)*
 
-*¶ `qwen` (Qwen Code, a Gemini-CLI fork) takes its base URL from the `--openai-base-url` flag, not an env var, so msc injects `--auth-type openai --openai-base-url <proxy>` automatically. Set `OPENAI_BASE_URL` to redirect to a custom/local upstream (e.g. `http://127.0.0.1:11434/v1` for ollama); you supply the API key as usual.*
+*¶ `qwen` (Qwen Code, a Gemini-CLI fork) takes its base URL from the `--openai-base-url` flag, not an env var, so msc injects `--auth-type openai --openai-base-url <proxy>` automatically. Set `OPENAI_BASE_URL` to redirect to a custom/local upstream (e.g. `http://127.0.0.1:11434/v1` for ollama); you supply the API key as usual. As a Gemini-CLI fork it also speaks the Gemini API (`:generateContent`) in Google auth mode — both formats are captured.*
 
 *† When `GEMINI_API_KEY` is set and `CODE_ASSIST_ENDPOINT` is not, the upstream is `generativelanguage.googleapis.com` instead.*
 
@@ -168,7 +167,7 @@ only if it routed through the proxy *and* trusted the CA):
 
 | Runtime | Agents | Notes |
 |---|---|---|
-| Node / undici `fetch` | claude, qwen, reasonix | needs `NODE_USE_ENV_PROXY=1` (set automatically) — undici otherwise ignores `HTTPS_PROXY` |
+| Node / undici `fetch` | claude, qwen | needs `NODE_USE_ENV_PROXY=1` (set automatically) — undici otherwise ignores `HTTPS_PROXY` |
 | Rust / `reqwest` | codex, grok | honors `HTTPS_PROXY` + system store (`SSL_CERT_FILE`) |
 | Bun `fetch` | opencode | node-compatible (`NODE_EXTRA_CA_CERTS`) |
 | Deno `fetch` | — | `DENO_CERT` set for trust |
@@ -177,7 +176,7 @@ only if it routed through the proxy *and* trusted the CA):
 
 The key gotcha: Node's global `fetch` (undici) — used by the Anthropic/OpenAI SDKs
 — silently ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` (Node 24+); msc sets
-it so claude/qwen/reasonix are actually intercepted.
+it so claude/qwen are actually intercepted.
 
 By default `--mitm` intercepts **every** host the agent connects to — deliberately,
 since the agents that need MITM (e.g. codex ChatGPT-mode) often talk to a backend

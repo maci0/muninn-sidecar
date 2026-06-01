@@ -3,7 +3,18 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
-## [Unreleased]
+## [0.4.1] — 2026-06-01
+
+### Added
+
+- **qwen captures the Gemini API format too.** Qwen Code is a Gemini-CLI fork; in
+  its Google auth mode it speaks the Gemini API (`:generateContent` /
+  `:streamGenerateContent`), not just the OpenAI-compatible DashScope endpoint.
+  Added the Gemini capture paths so qwen turns are captured in either mode.
+
+### Removed
+
+- **`reasonix` agent.** Dropped from the registry and docs.
 
 ### Fixed
 
@@ -216,6 +227,7 @@ and injecting relevant recalled context — with zero agent configuration.
   race-clean; CI builds all binaries, runs `go vet`/staticcheck/race tests, and a
   short fuzz campaign on every push.
 
+[0.4.1]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.1
 [0.4.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.0
 [0.3.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.3.0
 [0.2.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.2.0

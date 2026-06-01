@@ -63,8 +63,13 @@ const openAIDefaultURL = "https://api.openai.com"
 
 var openAICapturePaths = []string{"/v1/chat/completions", "/v1/completions", "/responses"}
 
+// geminiCapturePaths match the Gemini / Code Assist API surface (used by agy and
+// by qwen's Gemini-CLI heritage). Matching is case-insensitive substring, so
+// "generatecontent" also catches `:streamGenerateContent`.
+var geminiCapturePaths = []string{"generateContent", "countTokens"}
+
 // openAIV1BaseCapturePaths is for OpenAI-compatible agents whose base-URL env is
-// expected to already include the `/v1` segment (grok, reasonix): the client
+// expected to already include the `/v1` segment (grok, qwen): the client
 // appends `/chat/completions` to it, so the path the proxy sees has no `/v1`
 // prefix. The upstream's own `/v1` is restored by the DefaultURL path
 // (singleJoiningSlash in the proxy). These substrings also match `/v1/...`, so
@@ -131,17 +136,6 @@ var Registry = map[string]Agent{
 		DefaultURL:   "https://api.x.ai/v1",
 		CapturePaths: openAIV1BaseCapturePaths,
 	},
-	// reasonix (DeepSeek-native agent) — OpenAI-compatible, overridable via
-	// DEEPSEEK_BASE_URL (verified: POST /v1/chat/completions). OPENAI_BASE_URL is
-	// also pointed at the proxy for its OpenAI-provider code path.
-	"reasonix": {
-		Command:      "reasonix",
-		EnvKey:       "DEEPSEEK_BASE_URL",
-		ExtraEnvKeys: []string{"OPENAI_BASE_URL"},
-		DetectEnv:    []string{"DEEPSEEK_BASE_URL", "OPENAI_BASE_URL"},
-		DefaultURL:   "https://api.deepseek.com/v1",
-		CapturePaths: openAIV1BaseCapturePaths,
-	},
 	// qwen (Qwen Code — a Gemini-CLI fork for Qwen models). It is OpenAI-compatible
 	// but takes its base URL from the --openai-base-url FLAG (and reads its endpoint
 	// from ~/.qwen/settings.json), not from OPENAI_BASE_URL env, so msc injects the
@@ -150,13 +144,15 @@ var Registry = map[string]Agent{
 	// set OPENAI_BASE_URL to redirect to a local/custom upstream, e.g. ollama).
 	// Verified: --auth-type openai --openai-base-url <url> routes /chat/completions
 	// through the proxy. The user supplies the API key (OPENAI_API_KEY / settings).
+	// As a Gemini-CLI fork it also speaks the Gemini API (`:generateContent`) in
+	// its Google auth mode, so capture both formats.
 	"qwen": {
 		Command:      "qwen",
 		EnvKey:       "OPENAI_BASE_URL",
 		ProxyArgs:    []string{"--auth-type", "openai", "--openai-base-url", proxyURLPlaceholder},
 		DetectEnv:    []string{"OPENAI_BASE_URL"},
 		DefaultURL:   "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-		CapturePaths: openAIV1BaseCapturePaths,
+		CapturePaths: append(append([]string(nil), openAIV1BaseCapturePaths...), geminiCapturePaths...),
 	},
 	// agy (Google Antigravity CLI) — Code Assist / Gemini family. WARNING: agy
 	// authenticates via OAuth and talks to cloudcode-pa directly; in testing it
@@ -171,7 +167,7 @@ var Registry = map[string]Agent{
 		DefaultURL:     "https://cloudcode-pa.googleapis.com",
 		AltDefaultCond: "GEMINI_API_KEY",
 		AltDefaultURL:  "https://generativelanguage.googleapis.com",
-		CapturePaths:   []string{"GenerateContent", "CountTokens", "LanguageServerService"},
+		CapturePaths:   append(append([]string(nil), geminiCapturePaths...), "LanguageServerService"),
 	},
 }
 
@@ -247,7 +243,7 @@ func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath string) []string {
 	// SSL_CERT_FILE; requests reads REQUESTS_CA_BUNDLE; curl reads CURL_CA_BUNDLE.
 	//
 	// NODE_USE_ENV_PROXY=1 is critical: Node's global fetch (undici) — used by
-	// the Anthropic/OpenAI SDKs that claude, qwen, and reasonix run on — ignores
+	// the Anthropic/OpenAI SDKs that claude and qwen run on — ignores
 	// HTTP(S)_PROXY env unless this is set (Node 24+; harmlessly ignored on older
 	// Node). Verified empirically: without it those agents bypass the proxy.
 	//
