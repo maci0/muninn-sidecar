@@ -192,7 +192,7 @@ func TestDefaultToken(t *testing.T) {
 // FuzzParseFlags: parsing arbitrary arg lists must never panic.
 func FuzzParseFlags(f *testing.F) {
 	f.Add("--vault v --debug claude")
-	f.Add("--inject-min-score 0.5 --recall-mode deep gemini")
+	f.Add("--inject-min-score 0.5 --recall-mode deep qwen")
 	f.Add("--no-inject=bad")
 	f.Add("status --json")
 	f.Fuzz(func(t *testing.T, s string) {

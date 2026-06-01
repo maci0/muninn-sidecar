@@ -59,7 +59,7 @@ func TestLevenshtein(t *testing.T) {
 }
 
 func TestClosestMatch(t *testing.T) {
-	cands := []string{"claude", "gemini", "codex", "status"}
+	cands := []string{"claude", "qwen", "codex", "status"}
 	if got := closestMatch("clade", cands); got != "claude" {
 		t.Errorf("typo: got %q", got)
 	}
@@ -93,6 +93,6 @@ func FuzzLevenshtein(f *testing.F) {
 func FuzzClosestMatch(f *testing.F) {
 	f.Add("clade")
 	f.Fuzz(func(t *testing.T, s string) {
-		_ = closestMatch(s, []string{"claude", "gemini", "codex"})
+		_ = closestMatch(s, []string{"claude", "qwen", "codex"})
 	})
 }
