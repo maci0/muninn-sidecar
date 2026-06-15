@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -40,7 +39,7 @@ func parseSubqueries(original, out string, max int) []string {
 	seen := map[string]bool{strings.ToLower(strings.TrimSpace(original)): true}
 	for _, line := range strings.Split(out, "\n") {
 		s := strings.TrimSpace(line)
-		// Strip common list prefixes ("1.", "-", "*", "•").
+		// Strip leading list-marker characters (digits, ".", ")", "-", "*", "•").
 		s = strings.TrimLeft(s, "-*•0123456789.) \t")
 		if len(s) < 3 {
 			continue
@@ -74,6 +73,11 @@ func itoa(n int) string {
 
 // --- HTTP (OpenAI-compatible) rewriter ---
 
+// maxRewriteResponse caps the rewriter's response body. Replies are a few
+// subqueries, so a real response is tiny; the cap stops a misbehaving endpoint
+// from exhausting memory.
+const maxRewriteResponse = 4 << 20 // 4 MiB
+
 type httpRewriter struct {
 	baseURL, key, model string
 	timeout             time.Duration
@@ -101,7 +105,10 @@ func (r *httpRewriter) Rewrite(ctx context.Context, query string, max int) []str
 		return []string{query}
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	// Bound the read so a misbehaving model endpoint can't exhaust memory,
+	// matching the caps used by mcpclient and grounding. Rewrite replies are
+	// a handful of subqueries, so 4 MiB is far more than a real response needs.
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxRewriteResponse))
 	if resp.StatusCode >= 300 {
 		return []string{query}
 	}
@@ -136,12 +143,10 @@ func (r *cliRewriter) Rewrite(ctx context.Context, query string, max int) []stri
 	if err := cmd.Run(); err != nil && stdout.Len() == 0 {
 		return []string{query}
 	}
-	var lines []string
-	sc := bufio.NewScanner(&stdout)
-	for sc.Scan() {
-		lines = append(lines, sc.Text())
-	}
-	return parseSubqueries(query, strings.Join(lines, "\n"), max)
+	// Pass the whole output to parseSubqueries (it splits internally) rather than a
+	// line scanner: bufio.Scanner's 64 KiB line cap silently stops on a long line
+	// and drops every subquery after it.
+	return parseSubqueries(query, stdout.String(), max)
 }
 
 func buildRewriter(cmd, url, model, key string, timeout time.Duration) rewriter {

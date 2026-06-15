@@ -104,13 +104,22 @@ type wsInflater struct {
 func (w *wsInflater) inflate(payload []byte) ([]byte, error) {
 	src := io.MultiReader(bytes.NewReader(payload), bytes.NewReader(wsDeflateTail))
 	fr := flate.NewReaderDict(src, w.history)
-	out, err := io.ReadAll(fr)
+	// Bound decompressed output: permessage-deflate can amplify a frame ~1000x,
+	// so a small (already wsMaxMessage-capped) compressed payload could inflate to
+	// gigabytes and exhaust memory. Read one byte past the cap to detect overflow
+	// (mirrors the gzip-bomb guard on the plain HTTP path).
+	out, err := io.ReadAll(io.LimitReader(fr, wsMaxMessage+1))
 	fr.Close()
 	// The appended sync-flush flushes all of the message's output, then the
 	// source EOFs without a final deflate block — flate reports ErrUnexpectedEOF
 	// (or EOF) but `out` holds the complete message. Only other errors are real.
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, err
+	}
+	if len(out) > wsMaxMessage {
+		// Inflated message is implausibly large for a real LLM stream; stop
+		// capturing this connection rather than buffer an unbounded message.
+		return nil, errors.New("ws: inflated message exceeds max size")
 	}
 	// Advance the sliding window (context takeover).
 	w.history = append(w.history, out...)
@@ -122,8 +131,8 @@ func (w *wsInflater) inflate(payload []byte) ([]byte, error) {
 
 // wsMessageAssembler reassembles fragmented frames into complete text messages
 // for one direction, inflating permessage-deflate when negotiated. It ignores
-// binary, control, and oversized messages. emit is called with each complete
-// text message's UTF-8 payload.
+// binary, control, and oversized messages. Completed messages are returned by
+// add.
 type wsMessageAssembler struct {
 	deflate bool // permessage-deflate negotiated for this connection
 	infl    wsInflater
@@ -137,6 +146,7 @@ type wsMessageAssembler struct {
 
 // add feeds one frame; returns the complete text message (decompressed) when a
 // FIN frame finishes one, else nil. Control frames (ping/pong/close) are skipped.
+// A non-nil error means deflate desync; the caller should stop capturing the stream.
 func (a *wsMessageAssembler) add(f wsFrame) ([]byte, error) {
 	switch f.opcode {
 	case wsOpPing, wsOpPong, wsOpClose:

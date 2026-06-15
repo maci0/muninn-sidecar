@@ -110,7 +110,7 @@ func TestSpliceCopyTap(t *testing.T) {
 	t.Run("forwards and taps", func(t *testing.T) {
 		var dst bytes.Buffer
 		tap := make(chan []byte, 8)
-		spliceCopyTap(&dst, strings.NewReader("hello world"), tap)
+		spliceCopyTap(&dst, strings.NewReader("hello world"), tap, "test")
 		if dst.String() != "hello world" {
 			t.Errorf("forwarded %q, want %q", dst.String(), "hello world")
 		}
@@ -125,7 +125,7 @@ func TestSpliceCopyTap(t *testing.T) {
 
 	t.Run("nil tap forwards only", func(t *testing.T) {
 		var dst bytes.Buffer
-		spliceCopyTap(&dst, strings.NewReader("data"), nil)
+		spliceCopyTap(&dst, strings.NewReader("data"), nil, "test")
 		if dst.String() != "data" {
 			t.Errorf("forwarded %q, want %q", dst.String(), "data")
 		}
@@ -134,7 +134,7 @@ func TestSpliceCopyTap(t *testing.T) {
 	t.Run("backpressure abandons tap, keeps forwarding", func(t *testing.T) {
 		var dst bytes.Buffer
 		tap := make(chan []byte) // unbuffered, never drained → first send hits default
-		spliceCopyTap(&dst, strings.NewReader("keep forwarding"), tap)
+		spliceCopyTap(&dst, strings.NewReader("keep forwarding"), tap, "test")
 		if dst.String() != "keep forwarding" {
 			t.Errorf("forwarding must continue after tap abandon, got %q", dst.String())
 		}
@@ -145,7 +145,7 @@ func TestSpliceCopyTap(t *testing.T) {
 
 	t.Run("write error closes tap and returns", func(t *testing.T) {
 		tap := make(chan []byte, 1)
-		spliceCopyTap(errWriter{}, strings.NewReader("x"), tap)
+		spliceCopyTap(errWriter{}, strings.NewReader("x"), tap, "test")
 		if _, ok := <-tap; ok {
 			t.Error("tap should be closed after write error")
 		}

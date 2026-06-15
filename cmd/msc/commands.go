@@ -272,7 +272,7 @@ Flags:
   -d, --debug            Enable debug logging (verbose structured output)
   -q, --quiet            Suppress msc's own output
   -n, --dry-run          Show resolved config without launching
-  -j, --json             Machine-readable output (for list, status, version, --dry-run)
+  -j, --json             Machine-readable output (for list, status, ca, version, --dry-run)
   -f, --force            Launch even if MuninnDB is unreachable (captures may be lost)
       --no-inject        Disable memory injection (enabled by default)
       --inject-budget N  Max tokens to inject per request (default: 2048)
@@ -291,7 +291,8 @@ Flags:
                          child is told to trust msc's CA (NODE_EXTRA_CA_CERTS/SSL_CERT_FILE)
       --mitm-host HOST   Scope MITM to HOST (repeatable / comma-separated; implies --mitm).
                          Only the upstream + listed hosts are TLS-terminated; all other
-                         hosts are blind-tunneled untouched. Default (no flag): intercept all
+                         hosts are blind-tunneled untouched. Use "*" to force intercept-all.
+                         Default (no flag): intercept all
       --log-json         Emit logs as JSON (for log aggregation pipelines)
       --vault NAME       MuninnDB vault name (default: current directory name, fallback: sidecar)
       --mcp-url URL      MuninnDB MCP endpoint (default: http://127.0.0.1:8750/mcp)
@@ -313,5 +314,7 @@ Environment (flags take precedence):
   MUNINN_MCP_URL   MuninnDB MCP endpoint
   MUNINN_TOKEN     MuninnDB bearer token
   MSC_VAULT        MuninnDB vault name
+  OPENAI_API_KEY   Bearer token for --ground-url (required if that endpoint needs auth)
+  MSC_WS_DEBUG     Set to log WebSocket frame types/sizes (debug aid; any non-empty value)
 `)
 }

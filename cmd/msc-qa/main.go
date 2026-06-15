@@ -49,6 +49,10 @@ func newReq(ctx context.Context, url, key string, body []byte) (*http.Request, e
 	return req, nil
 }
 
+// maxModelResponse caps a model response body so a misbehaving endpoint can't
+// exhaust memory, matching the caps used by mcpclient and grounding.
+const maxModelResponse = 4 << 20 // 4 MiB
+
 func doJSON(req *http.Request, timeout time.Duration, out any) error {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
@@ -56,7 +60,7 @@ func doJSON(req *http.Request, timeout time.Duration, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxModelResponse))
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("model HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
@@ -78,7 +82,7 @@ func run() error {
 		mcpURL      = flag.String("mcp-url", envOr("MUNINN_MCP_URL", "http://127.0.0.1:8750/mcp"), "MuninnDB MCP endpoint")
 		token       = flag.String("token", "", "MuninnDB bearer token (default ~/.muninn/mcp.token)")
 		modelURL    = flag.String("model-url", "", "OpenAI-compatible base URL (e.g. http://localhost:1234/v1); empty = build-only, no scoring")
-		modelKey    = flag.String("model-key", os.Getenv("OPENAI_API_KEY"), "model API key")
+		modelKey    = flag.String("model-key", "", "model API key (default $OPENAI_API_KEY)")
 		model       = flag.String("model", "gpt-4o-mini", "model name(s); comma-separated to compare several")
 		modelCmd    = flag.String("model-cmd", "", "comma-separated reader CLIs (e.g. \"claude -p,codex exec --skip-git-repo-check,grok -p\"); each gets the prompt as a final arg, the last non-empty stdout line is the answer")
 		minScore    = flag.Float64("min-score", 0.6, "injection cosine threshold (the gate)")
@@ -96,13 +100,21 @@ func run() error {
 		answerHintF = flag.String("answer-hint", "", "constrain answers to a fixed label set (e.g. \"SUPPORTS, REFUTES\") for classification regimes like FEVER; empty = extractive span")
 	)
 	flag.Parse()
+	switch *dataset {
+	case "squad", "hotpot", "generic":
+	default:
+		return fmt.Errorf("invalid -dataset %q: must be one of squad, hotpot, generic", *dataset)
+	}
+	if *modelKey == "" {
+		*modelKey = os.Getenv("OPENAI_API_KEY")
+	}
 	answerHint = *answerHintF
 
 	questions, err := loadDataset(*dataset, *squadFile, *n)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "loaded %d SQuAD questions\n", len(questions))
+	fmt.Fprintf(os.Stderr, "loaded %d %s questions\n", len(questions), *dataset)
 
 	mcp := mcpclient.New(*mcpURL, resolveToken(*token), *timeout)
 	ctx := context.Background()

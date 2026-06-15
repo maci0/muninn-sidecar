@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -71,7 +72,7 @@ const maxNonStreamBodySize = 50 << 20 // 50 MiB
 type Proxy struct {
 	listenAddr     string                 // resolved after Start() when port is :0
 	upstream       *url.URL               // real LLM API (e.g. https://api.anthropic.com)
-	agentName      string                 // "claude", "gemini", etc. — used for tagging
+	agentName      string                 // "claude", "codex", etc. — used for tagging
 	store          Storer                 // async MuninnDB writer
 	capturePaths   []string               // path substrings to capture; empty = capture all
 	excludePaths   []string               // path substrings to exclude from capture (checked first)
@@ -364,11 +365,39 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 
 	contentType := resp.Header.Get("Content-Type")
 
+	// Surface upstream API failures. Without this a 401/429/5xx from the LLM
+	// provider is forwarded to the agent and stored, but leaves no trace in
+	// msc's own logs — the most common incident question ("why is the agent
+	// erroring?") would be unanswerable. Logged at warn (operationally
+	// actionable) and counted for the session summary.
+	if resp.StatusCode >= 400 {
+		slog.Warn("upstream error response",
+			"status", resp.StatusCode,
+			"method", ctx.method,
+			"path", ctx.path,
+			"agent", ctx.agent,
+			"duration_ms", time.Since(ctx.start).Milliseconds())
+		if p.stats != nil {
+			p.stats.UpstreamErrors.Add(1)
+		}
+	}
+
 	// gRPC responses (e.g. agy's cloudcode-pa inference) are length-prefixed
 	// protobuf, not JSON — the extractors can't read them and storing the binary
 	// would only add noise. Skip capture; the response still forwards untouched.
 	if strings.Contains(contentType, "application/grpc") {
 		slog.Debug("skipping gRPC response capture (protobuf not decodable)", "path", ctx.path)
+		return nil
+	}
+
+	// Non-gzip content encodings (br, deflate, zstd, …) are opaque to the JSON
+	// extractors: the proxy forwards the agent's Accept-Encoding verbatim, so an
+	// upstream may return one of these. Only gzip is transparently decoded below;
+	// for the rest, storing the compressed bytes would wrap binary as a JSON string
+	// and only add noise to the memory store. Skip capture (same reasoning as the
+	// gRPC skip); the body still forwards to the agent untouched.
+	if enc := resp.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "gzip") {
+		slog.Debug("skipping capture of non-gzip encoded response", "encoding", enc, "path", ctx.path)
 		return nil
 	}
 
@@ -399,7 +428,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// uncompressed to the agent (simpler and avoids double-compression issues).
 	// LimitReader caps decompression to maxDecompressSize to prevent gzip-bomb
 	// OOM: if the limit is hit the compressed body is served unchanged.
-	if resp.Header.Get("Content-Encoding") == "gzip" {
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 		gr, err := gzip.NewReader(bytes.NewReader(body))
 		if err != nil {
 			slog.Warn("failed to decompress gzip response, storing raw", "path", ctx.path, "err", err)
@@ -430,6 +459,14 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 }
 
 func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	// A client (agent) that cancels mid-flight — common when a user interrupts
+	// the agent — surfaces here as context.Canceled. That's normal operation,
+	// not a proxy fault: log at debug and skip the 502 so it doesn't generate
+	// error-level noise that masks real upstream failures.
+	if errors.Is(err, context.Canceled) {
+		slog.Debug("proxy request canceled by client", "method", r.Method, "path", r.URL.Path)
+		return
+	}
 	slog.Error("proxy error", "err", err, "method", r.Method, "path", r.URL.Path, "agent", p.agentName)
 	writeJSONError(w, http.StatusBadGateway, "upstream request failed")
 }
@@ -477,16 +514,38 @@ func buildExchange(ctx *captureCtx, statusCode int, respBody json.RawMessage) *s
 //   - Gemini: usageMetadata.{promptTokenCount, candidatesTokenCount}
 //   - Model from request body, response body, or response modelVersion field
 func extractModelAndTokens(ex *store.CapturedExchange) {
-	var reqData map[string]any
+	// Unmarshal into typed structs rather than map[string]any: a captured request
+	// body carries the full conversation (and tool schemas) and can reach tens of
+	// MiB, but only a handful of scalar fields are needed here. A struct lets
+	// encoding/json skip the rest without materializing the entire generic tree,
+	// which is the dominant cost on this background worker. Float pointers preserve
+	// the original "set only when the field is present" semantics (a missing usage
+	// number must not zero an already-extracted one).
+	var reqData struct {
+		Model string `json:"model"`
+	}
 	if err := json.Unmarshal(ex.ReqBody, &reqData); err != nil {
 		slog.Debug("unparseable request body for token extraction", "path", ex.Path, "err", err)
 	} else {
-		if m, ok := reqData["model"].(string); ok {
-			ex.Model = m
-		}
+		ex.Model = reqData.Model
 	}
 
-	var respData map[string]any
+	var respData struct {
+		Model        string `json:"model"`
+		ModelVersion string `json:"modelVersion"`
+		Usage        *struct {
+			InputTokens         *float64 `json:"input_tokens"`
+			PromptTokens        *float64 `json:"prompt_tokens"`
+			OutputTokens        *float64 `json:"output_tokens"`
+			CompletionTokens    *float64 `json:"completion_tokens"`
+			CacheCreationTokens *float64 `json:"cache_creation_input_tokens"`
+			CacheReadTokens     *float64 `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+		UsageMetadata *struct {
+			PromptTokenCount     *float64 `json:"promptTokenCount"`
+			CandidatesTokenCount *float64 `json:"candidatesTokenCount"`
+		} `json:"usageMetadata"`
+	}
 	if err := json.Unmarshal(ex.RespBody, &respData); err != nil {
 		// A captured response body can legitimately be valid JSON that isn't an
 		// object — e.g. the synthetic string fallback buildRespBody emits for a
@@ -500,46 +559,42 @@ func extractModelAndTokens(ex *store.CapturedExchange) {
 
 	// Model: prefer request model, fall back to response model or modelVersion.
 	if ex.Model == "" {
-		if m, ok := respData["model"].(string); ok {
-			ex.Model = m
-		}
+		ex.Model = respData.Model
 	}
 	if ex.Model == "" {
-		if m, ok := respData["modelVersion"].(string); ok {
-			ex.Model = m
-		}
+		ex.Model = respData.ModelVersion
 	}
 
 	// Anthropic / OpenAI: "usage" object.
-	if usage, ok := respData["usage"].(map[string]any); ok {
+	if u := respData.Usage; u != nil {
 		// Input tokens: Anthropic input_tokens or OpenAI prompt_tokens.
-		if v, ok := usage["input_tokens"].(float64); ok {
-			ex.TokensIn = int(v)
-		} else if v, ok := usage["prompt_tokens"].(float64); ok {
-			ex.TokensIn = int(v)
+		if u.InputTokens != nil {
+			ex.TokensIn = int(*u.InputTokens)
+		} else if u.PromptTokens != nil {
+			ex.TokensIn = int(*u.PromptTokens)
 		}
 		// Output tokens: Anthropic output_tokens or OpenAI completion_tokens.
-		if v, ok := usage["output_tokens"].(float64); ok {
-			ex.TokensOut = int(v)
-		} else if v, ok := usage["completion_tokens"].(float64); ok {
-			ex.TokensOut = int(v)
+		if u.OutputTokens != nil {
+			ex.TokensOut = int(*u.OutputTokens)
+		} else if u.CompletionTokens != nil {
+			ex.TokensOut = int(*u.CompletionTokens)
 		}
 		// Anthropic prompt caching tokens.
-		if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
-			ex.CacheWrite = int(v)
+		if u.CacheCreationTokens != nil {
+			ex.CacheWrite = int(*u.CacheCreationTokens)
 		}
-		if v, ok := usage["cache_read_input_tokens"].(float64); ok {
-			ex.CacheRead = int(v)
+		if u.CacheReadTokens != nil {
+			ex.CacheRead = int(*u.CacheReadTokens)
 		}
 	}
 
 	// Gemini: "usageMetadata" object.
-	if usage, ok := respData["usageMetadata"].(map[string]any); ok {
-		if v, ok := usage["promptTokenCount"].(float64); ok {
-			ex.TokensIn = int(v)
+	if u := respData.UsageMetadata; u != nil {
+		if u.PromptTokenCount != nil {
+			ex.TokensIn = int(*u.PromptTokenCount)
 		}
-		if v, ok := usage["candidatesTokenCount"].(float64); ok {
-			ex.TokensOut = int(v)
+		if u.CandidatesTokenCount != nil {
+			ex.TokensOut = int(*u.CandidatesTokenCount)
 		}
 	}
 }

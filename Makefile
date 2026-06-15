@@ -5,8 +5,13 @@ LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DA
 
 .PHONY: build install test cover lint vuln fmt tidy clean eval eval-models fuzz bench
 
+# Build all binaries. Version ldflags only resolve in cmd/msc (the others have
+# no main.version symbol, so -X is a harmless no-op there).
 build:
-	go build -ldflags '$(LDFLAGS)' -o msc ./cmd/msc/
+	go build -ldflags '$(LDFLAGS)' -o msc       ./cmd/msc/
+	go build -ldflags '$(LDFLAGS)' -o msc-bench ./cmd/msc-bench/
+	go build -ldflags '$(LDFLAGS)' -o msc-eval  ./cmd/msc-eval/
+	go build -ldflags '$(LDFLAGS)' -o msc-qa    ./cmd/msc-qa/
 
 eval:
 	go run ./cmd/msc-eval -sweep
@@ -28,11 +33,12 @@ cover:
 	go test -race -count=1 -coverprofile=cover.out ./...
 	go tool cover -func=cover.out
 
-# Run every fuzz target in the tree for a few seconds each (smoke regression of
-# all parsing/transform surfaces). FUZZTIME overrides the per-target budget.
+# Run all benchmarks with allocation stats (no tests, no fuzzing).
 bench:
 	go test -run='^$$' -bench=. -benchmem ./...
 
+# Run every fuzz target in the tree for a few seconds each (smoke regression of
+# all parsing/transform surfaces). FUZZTIME overrides the per-target budget.
 FUZZTIME ?= 5s
 fuzz:
 	@set -e; for pkg in $$(go list ./...); do \
@@ -59,4 +65,4 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -f msc testmsc cover.out coverage.html
+	rm -f msc msc-bench msc-eval msc-qa testmsc cover.out coverage.html

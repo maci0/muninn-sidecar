@@ -1023,7 +1023,13 @@ func TestProxyInjectionTimeout(t *testing.T) {
 
 		switch rpc.Params.Name {
 		case "muninn_recall", "muninn_where_left_off":
-			time.Sleep(500 * time.Millisecond) // exceed timeout
+			// Exceed the short timeout, but unblock as soon as the proxy cancels
+			// so srv.Close() doesn't stall the test for the full delay.
+			select {
+			case <-time.After(500 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
 			w.Write(fakeWhereLeftOffEmpty())
 		case "muninn_guide":
 			w.Write(fakeEmptyGuideResponse())

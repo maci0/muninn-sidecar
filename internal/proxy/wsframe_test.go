@@ -127,6 +127,21 @@ func TestWSInflateContextTakeover(t *testing.T) {
 	}
 }
 
+func TestWSInflateBombRejected(t *testing.T) {
+	// A tiny compressed payload that inflates past wsMaxMessage must be rejected,
+	// not buffered — guards against a permessage-deflate decompression bomb that
+	// would otherwise exhaust memory while capturing a connection.
+	big := strings.Repeat("a", wsMaxMessage+1024)
+	payload := wsDeflateMessages(t, []string{big})[0]
+	if len(payload) >= wsMaxMessage {
+		t.Fatalf("compressed payload not small enough to be a bomb: %d bytes", len(payload))
+	}
+	var infl wsInflater
+	if _, err := infl.inflate(payload); err == nil {
+		t.Fatal("expected error for inflated message exceeding max size, got nil")
+	}
+}
+
 func TestWSAssembler(t *testing.T) {
 	// Build a frame stream: a compressed single text message, a ping (skipped),
 	// a fragmented uncompressed text message, and a binary message (ignored).

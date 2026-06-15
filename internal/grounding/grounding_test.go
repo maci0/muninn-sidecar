@@ -192,6 +192,19 @@ func TestCLIGrounder(t *testing.T) {
 	}
 }
 
+func TestCLIGrounderLongLine(t *testing.T) {
+	// Regression: a verdict preceded by a single line longer than bufio.Scanner's
+	// 64 KiB cap must still be parsed. A line scanner chokes on the long line and
+	// silently drops every verdict after it, turning grounding into a no-op (all
+	// passages fail open to true).
+	chatter := strings.Repeat("x", 70000) // > 64 KiB scanner cap
+	g := &cliGrounder{name: "printf", argv: []string{"printf", chatter + "\n1: no\n2: yes\n"}, timeout: 5 * time.Second}
+	mask := g.Relevant(context.Background(), "q", []string{"a", "b"})
+	if len(mask) != 2 || mask[0] || !mask[1] {
+		t.Fatalf("expected [false true] despite long preceding line, got %v", mask)
+	}
+}
+
 // jsonString quotes s as a JSON string literal for embedding in a test payload.
 func jsonString(s string) string {
 	s = strings.ReplaceAll(s, "\n", `\n`)

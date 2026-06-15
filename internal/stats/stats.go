@@ -23,6 +23,8 @@ type Stats struct {
 	CacheWrite  atomic.Int64 // Anthropic cache_creation_input_tokens
 	CacheRead   atomic.Int64 // Anthropic cache_read_input_tokens
 
+	UpstreamErrors atomic.Int64 // captured responses with a 4xx/5xx status from the upstream LLM API
+
 	Injections      atomic.Int64 // requests enriched with recalled memories
 	InjectedTokens  atomic.Int64 // approximate tokens injected across all enrichments
 	InjectionErrors atomic.Int64 // enrichment failures (inject fell back to original body)
@@ -82,8 +84,9 @@ func (s *Stats) Summary() string {
 	injTokens := s.InjectedTokens.Load()
 
 	upgraded := s.Upgraded.Load()
+	upstreamErrors := s.UpstreamErrors.Load()
 
-	if captured == 0 && dropped == 0 && injections == 0 && upgraded == 0 {
+	if captured == 0 && dropped == 0 && injections == 0 && upgraded == 0 && upstreamErrors == 0 {
 		return ""
 	}
 
@@ -102,6 +105,9 @@ func (s *Stats) Summary() string {
 	}
 	if errors > 0 {
 		sb.WriteString(fmt.Sprintf(", %d save errors", errors))
+	}
+	if upstreamErrors > 0 {
+		sb.WriteString(fmt.Sprintf(", %d upstream errors", upstreamErrors))
 	}
 	// Individual atomic loads are non-atomic as a group, so a concurrent flush
 	// can make the arithmetic transiently negative; clamp before display.

@@ -61,6 +61,40 @@ func TestSummaryWithDropsAndErrors(t *testing.T) {
 	}
 }
 
+func TestSummaryWithUpstreamErrors(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(10)
+	s.Flushed.Store(10)
+	s.UpstreamErrors.Store(4)
+
+	got := s.Summary()
+	if !strings.Contains(got, "4 upstream errors") {
+		t.Fatalf("expected '4 upstream errors' in summary: %q", got)
+	}
+}
+
+func TestSummaryUpstreamErrorsOnly(t *testing.T) {
+	// A session whose only signal is upstream errors must still report them
+	// rather than returning an empty summary (the count is otherwise swallowed).
+	s := &Stats{}
+	s.UpstreamErrors.Store(3)
+
+	got := s.Summary()
+	if !strings.Contains(got, "3 upstream errors") {
+		t.Fatalf("expected '3 upstream errors' in summary: %q", got)
+	}
+}
+
+func TestSummaryNoUpstreamErrorLineWhenZero(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(5)
+	s.Flushed.Store(5)
+
+	if strings.Contains(s.Summary(), "upstream errors") {
+		t.Fatalf("upstream errors line should be absent when none occurred: %q", s.Summary())
+	}
+}
+
 func TestSummaryWithCacheTokens(t *testing.T) {
 	s := &Stats{}
 	s.Captured.Store(1)

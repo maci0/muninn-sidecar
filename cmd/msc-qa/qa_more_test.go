@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,8 +123,12 @@ func TestNewReqAndDoJSON(t *testing.T) {
 func TestAnswerAndRecallContext(t *testing.T) {
 	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := readAll(r)
-		// echo: ensure a retrieved-context system msg is included when context given.
-		_ = body
+		// Verify the retrieved-context block is actually forwarded to the model
+		// when a context is supplied (the whole point of recall context). Without
+		// this the test passes even if the context were silently dropped.
+		if !strings.Contains(string(body), "France info") {
+			t.Errorf("context block not forwarded to model: %s", body)
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{"message": map[string]string{"content": "Paris"}}},
 		})

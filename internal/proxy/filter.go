@@ -114,10 +114,7 @@ func stripInjectedContextDoc(doc map[string]any) bool {
 				changed = true
 			}
 		case []any:
-			kept, removed := filterArray(v, func(b map[string]any) bool {
-				text, _ := b["text"].(string)
-				return !hasInjectedMarker(text)
-			})
+			kept, removed := filterArray(v, textPartClean)
 			if removed {
 				changed = true
 				if len(kept) == 0 {
@@ -150,10 +147,7 @@ func stripInjectedContextDoc(doc map[string]any) bool {
 	if req, ok := doc["request"].(map[string]any); ok {
 		if si, ok := req["systemInstruction"].(map[string]any); ok {
 			if parts, ok := si["parts"].([]any); ok {
-				kept, removed := filterArray(parts, func(p map[string]any) bool {
-					text, _ := p["text"].(string)
-					return !hasInjectedMarker(text)
-				})
+				kept, removed := filterArray(parts, textPartClean)
 				if removed {
 					changed = true
 					if len(kept) == 0 {
@@ -193,10 +187,7 @@ func stripInjectedContextDoc(doc map[string]any) bool {
 	// Gemini: systemInstruction.parts — remove parts with marker.
 	if si, ok := doc["systemInstruction"].(map[string]any); ok {
 		if parts, ok := si["parts"].([]any); ok {
-			kept, removed := filterArray(parts, func(p map[string]any) bool {
-				text, _ := p["text"].(string)
-				return !hasInjectedMarker(text)
-			})
+			kept, removed := filterArray(parts, textPartClean)
 			if removed {
 				changed = true
 				if len(kept) == 0 {
@@ -536,6 +527,14 @@ func filterOpenAIToolCalls(msg map[string]any, patterns []string) bool {
 		msg["tool_calls"] = kept
 	}
 	return true
+}
+
+// textPartClean reports whether a {"text": ...} part is free of the injected
+// marker. Shared filterArray predicate for Anthropic system[] entries and Gemini
+// systemInstruction.parts, which both carry their text under the "text" key.
+func textPartClean(part map[string]any) bool {
+	text, _ := part["text"].(string)
+	return !hasInjectedMarker(text)
 }
 
 // filterArray creates a new array containing only items that pass the keep predicate.

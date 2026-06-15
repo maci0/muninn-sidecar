@@ -24,7 +24,7 @@ func cmdCompletion(shell string) int {
     fi
 
     # Flags that take a value: don't offer commands/agents after them.
-    if [[ "$prev" == "--vault" || "$prev" == "--mcp-url" || "$prev" == "--token" || "$prev" == "--inject-budget" || "$prev" == "--inject-min-score" || "$prev" == "--recall-mode" || "$prev" == "--ground-url" || "$prev" == "--ground-cmd" || "$prev" == "--ground-model" || "$prev" == "--ground-topk" || "$prev" == "--ground-timeout" ]]; then
+    if [[ "$prev" == "--vault" || "$prev" == "--mcp-url" || "$prev" == "--token" || "$prev" == "--mitm-host" || "$prev" == "--inject-budget" || "$prev" == "--inject-min-score" || "$prev" == "--recall-mode" || "$prev" == "--ground-url" || "$prev" == "--ground-cmd" || "$prev" == "--ground-model" || "$prev" == "--ground-topk" || "$prev" == "--ground-timeout" ]]; then
         return
     fi
 
@@ -46,7 +46,7 @@ func cmdCompletion(shell string) int {
             skip_next=0
             continue
         fi
-        if [[ "$word" == "--vault" || "$word" == "--mcp-url" || "$word" == "--token" || "$word" == "--inject-budget" || "$word" == "--inject-min-score" || "$word" == "--recall-mode" || "$word" == "--ground-url" || "$word" == "--ground-cmd" || "$word" == "--ground-model" || "$word" == "--ground-topk" || "$word" == "--ground-timeout" ]]; then
+        if [[ "$word" == "--vault" || "$word" == "--mcp-url" || "$word" == "--token" || "$word" == "--mitm-host" || "$word" == "--inject-budget" || "$word" == "--inject-min-score" || "$word" == "--recall-mode" || "$word" == "--ground-url" || "$word" == "--ground-cmd" || "$word" == "--ground-model" || "$word" == "--ground-topk" || "$word" == "--ground-timeout" ]]; then
             skip_next=1
             continue
         fi

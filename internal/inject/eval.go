@@ -1,5 +1,5 @@
 // This file contains the offline evaluation harness for memory injection. It
-// measures how well the selection pipeline (selectMemories + withinBudget)
+// measures how well the selection pipeline (selectForInjection + withinBudget)
 // distinguishes memories worth injecting from noise, given labeled scenarios
 // where each candidate carries a gold-standard relevance label.
 //
@@ -32,7 +32,7 @@ type EvalMemory struct {
 
 // EvalScenario is one labeled situation: a set of scored candidates plus the
 // selection parameters to evaluate. Budget and MinScore default to the
-// production defaults (2048 tokens, 0.5) when left zero.
+// production defaults (2048 tokens, 0.6) when left zero.
 //
 // ShouldInject is the gold answer to "*should this turn inject anything at
 // all?*" — false for turns where recall surfaced only noise. It is a pointer so
@@ -98,7 +98,7 @@ func ParseScenarios(data []byte) ([]EvalScenario, error) {
 
 // RunScenario runs the production selection pipeline over a scenario's
 // candidates and scores the outcome against the gold labels. The pipeline
-// mirrors Enrich: sort by score, apply selectMemories (adaptive relevance gate
+// mirrors Enrich: sort by score, apply selectForInjection (adaptive relevance gate
 // + near-duplicate removal), then withinBudget greedy packing.
 func RunScenario(s EvalScenario) EvalResult {
 	return runScenario(s, resolveMinScore(s), resolveBudget(s))
@@ -251,7 +251,7 @@ func resolveMinScore(s EvalScenario) float64 {
 
 func resolveBudget(s EvalScenario) int {
 	if s.Budget <= 0 {
-		return 2048
+		return DefaultBudget
 	}
 	return s.Budget
 }

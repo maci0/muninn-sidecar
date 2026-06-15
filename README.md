@@ -113,7 +113,7 @@ msc -- claude --weird-flag
 4. The agent launches and sends API requests through the proxy
 5. All traffic is forwarded transparently (no extra headers, no modified User-Agent)
 6. Requests matching the agent's `CapturePaths` (e.g. `/v1/messages`, `GenerateContent`) are captured
-7. Captured exchanges are scrubbed of well-known secrets (API keys, tokens, private keys → `[REDACTED]`) and sent to MuninnDB asynchronously via MCP JSON-RPC
+7. Captured exchanges are scrubbed of well-known secrets and personal data (API keys, tokens, private keys, emails, payment-card numbers, SSNs → `[REDACTED]`) and sent to MuninnDB asynchronously via MCP JSON-RPC
 
 ### Memory injection
 
@@ -211,6 +211,7 @@ SSE streaming responses are handled incrementally — chunks flow through to the
 | `MUNINN_MCP_URL` | MuninnDB MCP endpoint (default: `http://127.0.0.1:8750/mcp`) |
 | `MUNINN_TOKEN` | MuninnDB bearer token (default: reads `~/.muninn/mcp.token`) |
 | `MSC_VAULT` | MuninnDB vault name (default: current directory name, fallback: `sidecar`) |
+| `OPENAI_API_KEY` | Bearer token for the answer-grounding judge when `--ground-url` targets an OpenAI-compatible endpoint that requires auth (optional; unneeded for unauthenticated local endpoints like ollama) |
 | `MSC_WS_DEBUG` | When set, log the envelope `type` and size of every decoded WebSocket message under `--mitm` (not the content) — to map a new agent's WebSocket protocol for capture |
 
 Command-line flags take precedence over environment variables.
@@ -267,7 +268,8 @@ Command-line flags take precedence over environment variables.
   blocking the agent; shutdown flushing is time-bounded (~8s). Recall/injection
   fail open — a MuninnDB hiccup never blocks or corrupts a request.
 - **Secret redaction is best-effort.** Captured content is scrubbed of well-known
-  credential formats before storage, but the patterns are conservative and not
+  credential formats and personal data (emails, payment-card numbers, SSNs)
+  before storage, but the patterns are conservative and not
   exhaustive — it reduces, not eliminates, the risk of a secret reaching the
   store. Don't rely on it as a reason to paste secrets into an agent. It runs both
   before storage (disable with `--no-redact` for full-fidelity local capture) and,

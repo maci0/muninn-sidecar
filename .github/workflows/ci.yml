@@ -6,6 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: every job here only reads the checkout (build/test/scan),
+# so drop the default GITHUB_TOKEN from read-write down to read-only.
+permissions:
+  contents: read
+
+# Cancel superseded runs for the same branch/PR — a new push makes the
+# in-flight run obsolete, so don't burn a runner finishing it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test
@@ -37,7 +48,13 @@ jobs:
           fi
 
       - name: Format
-        run: test -z "$(gofmt -l .)"
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt found unformatted files — run 'make fmt'"
+            echo "$unformatted"
+            exit 1
+          fi
 
       - name: Vet
         run: go vet ./...

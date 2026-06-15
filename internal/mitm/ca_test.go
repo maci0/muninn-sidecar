@@ -83,7 +83,10 @@ func TestLeafCachedPerHost(t *testing.T) {
 }
 
 func TestLeafIPSAN(t *testing.T) {
-	ca, _ := LoadOrCreateCA(t.TempDir())
+	ca, err := LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	leaf, err := ca.LeafFor("127.0.0.1")
 	if err != nil {
 		t.Fatal(err)

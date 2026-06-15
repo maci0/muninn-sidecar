@@ -55,7 +55,7 @@ func run() error {
 		chunk      = flag.String("chunk", "paragraph", "SQuAD chunk granularity: paragraph | sentence")
 		dumpQA     = flag.String("dump-qa", "", "write present probes as a QA JSON ([{question,answer}]) for msc-qa -dataset generic")
 		mode       = flag.String("mode", "", "MuninnDB recall mode: semantic | recent | balanced | deep (empty = server default)")
-		qTransform = flag.String("query-transform", "none", "query construction: none | distractors (prepend prior unrelated turns) | repeat-last")
+		qTransform = flag.String("query-transform", "none", "query construction: none | distractors (prepend prior unrelated turns) | emphasis (latest turn first) | repeat-last")
 		distractN  = flag.Int("distractors", 2, "number of prior unrelated turns to prepend (query-transform=distractors)")
 		rerank     = flag.String("rerank", "none", "candidate rerank: none | lexical (vector + lambda*token-overlap)")
 		rerankL    = flag.Float64("rerank-lambda", 0.3, "lexical rerank weight")
@@ -82,6 +82,16 @@ func run() error {
 		asJSON     = flag.Bool("json", false, "emit machine-readable JSON")
 	)
 	flag.Parse()
+	switch *corpus {
+	case "homogeneous", "diverse", "facts", "squad", "hotpot", "agentmem":
+	default:
+		return fmt.Errorf("invalid -corpus %q: must be one of homogeneous, diverse, facts, squad, hotpot, agentmem", *corpus)
+	}
+	switch *mode {
+	case "", "semantic", "recent", "balanced", "deep":
+	default:
+		return fmt.Errorf("invalid -mode %q: must be one of semantic, recent, balanced, deep (or empty for server default)", *mode)
+	}
 	if !*seed && !*doProbe {
 		*doProbe = true
 	}
@@ -305,7 +315,6 @@ func coinName(i int) string {
 // than the near-identical homogeneous corpus. Each memory has a unique coined
 // subject; probes paraphrase a fact about that subject.
 func genDiverse(rngSeed int64, n, nPresent, nAbsent int) ([]item, []probe, []probe) {
-	rng := rand.New(rand.NewSource(rngSeed))
 	mem := func(i int) item {
 		x := coinName(i)
 		switch i % 8 {
@@ -356,7 +365,6 @@ func genDiverse(rngSeed int64, n, nPresent, nAbsent int) ([]item, []probe, []pro
 	for i := 0; i < n; i++ {
 		items = append(items, mem(i))
 	}
-	_ = rng
 	present := make([]probe, 0, nPresent)
 	for i := 0; i < nPresent && i < n; i++ {
 		present = append(present, probeFor((i*7)%n))
@@ -413,7 +421,7 @@ type recalledMemory struct {
 // probeOpts configures query construction and reranking for an experiment run.
 type probeOpts struct {
 	mode         string
-	transform    string   // none | distractors | repeat-last
+	transform    string   // none | distractors | emphasis | repeat-last
 	distractN    int      // prior unrelated turns to prepend
 	rerank       string   // none | lexical
 	rerankLambda float64  // lexical rerank weight

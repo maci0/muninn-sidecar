@@ -165,8 +165,10 @@ func (c *chanReader) Read(p []byte) (int, error) {
 // spliceCopyTap copies src→dst (forwarding, unconditional and first) while
 // feeding a best-effort copy of each chunk to tap. On backpressure (tap full) it
 // abandons the tap (closing it once) and keeps forwarding — so capture can never
-// stall or break the agent's connection. tap may be nil (forward only).
-func spliceCopyTap(dst io.Writer, src io.Reader, tap chan []byte) {
+// stall or break the agent's connection. tap may be nil (forward only). target
+// labels the connection for the abandonment log so an operator can tell which
+// upstream stopped being captured.
+func spliceCopyTap(dst io.Writer, src io.Reader, tap chan []byte, target string) {
 	buf := make([]byte, 32*1024)
 	tapping := tap != nil
 	for {
@@ -182,6 +184,10 @@ func spliceCopyTap(dst io.Writer, src io.Reader, tap chan []byte) {
 				select {
 				case tap <- append([]byte(nil), buf[:n]...):
 				default: // parser fell behind — abandon capture, keep forwarding
+					// Surface the silent capture loss: without this an operator
+					// seeing empty WebSocket captures (e.g. codex ChatGPT mode)
+					// has no signal that the tap was dropped under load.
+					slog.Warn("ws capture: parser fell behind, abandoning capture for connection", "target", target)
 					close(tap)
 					tapping = false
 				}
@@ -248,7 +254,7 @@ func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, back
 	}
 
 	done := make(chan struct{}, 2)
-	go func() { spliceCopyTap(backend, clientBuf, c2s); done <- struct{}{} }() // client → server (masked frames)
-	go func() { spliceCopyTap(client, backendBuf, s2c); done <- struct{}{} }() // server → client (post-101 frames)
+	go func() { spliceCopyTap(backend, clientBuf, c2s, target); done <- struct{}{} }() // client → server (masked frames)
+	go func() { spliceCopyTap(client, backendBuf, s2c, target); done <- struct{}{} }() // server → client (post-101 frames)
 	<-done
 }

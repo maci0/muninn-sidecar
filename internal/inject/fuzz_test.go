@@ -32,7 +32,13 @@ func FuzzParseWhereLeftOff(f *testing.F) {
 	f.Add([]byte(`{"result":{"content":[{"type":"text","text":"raw summary text"}]}}`))
 	f.Add([]byte(`{"result":{"content":[{"type":"text","text":"null"}]}}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_ = parseWhereLeftOff(data)
+		out := parseWhereLeftOff(data)
+		// Invariant: a non-empty summary is always wrapped in the session-context
+		// markers the proxy filter relies on to strip it before storage. A bare
+		// (unwrapped) string would leak injected context into captured memories.
+		if out != "" && !strings.Contains(out, apiformat.SessionContextOpen) {
+			t.Fatalf("non-empty result missing session-context wrapper: %q", out)
+		}
 	})
 }
 
@@ -40,7 +46,12 @@ func FuzzParseGuide(f *testing.F) {
 	f.Add([]byte(`{"result":{"content":[{"type":"text","text":"a guide"}]}}`))
 	f.Add([]byte(`{"result":{"content":[]}}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_ = parseGuide(data)
+		out := parseGuide(data)
+		// Invariant: a non-empty guide is always wrapped in the global-guide
+		// markers so the proxy filter can strip it before storage.
+		if out != "" && !strings.Contains(out, apiformat.GlobalGuideOpen) {
+			t.Fatalf("non-empty guide missing global-guide wrapper: %q", out)
+		}
 		_ = parseMCPTextContent(data)
 	})
 }
@@ -159,5 +170,42 @@ func FuzzNDCGFuzz(f *testing.F) {
 		if v := ndcg(rels); v < 0 || v > 1.0001 {
 			t.Fatalf("ndcg out of range: %v", v)
 		}
+	})
+}
+
+// FuzzParseScenarios drives the offline eval pipeline over untrusted scenario
+// JSON: parse, then run the production selection pipeline (RunScenario ->
+// selectMemories/withinBudget) and the aggregation/sweep stages. A scenario file
+// is operator-supplied config, but nothing constrains its fields — negative
+// budgets, out-of-range scores, empty candidate sets, duplicate IDs. Invariant:
+// no stage panics, and every metric stays within its mathematical range.
+func FuzzParseScenarios(f *testing.F) {
+	f.Add([]byte(`[{"name":"a","candidates":[{"id":"1","content":"x","score":0.9,"relevant":true}]}]`))
+	f.Add([]byte(`[{"name":"b","budget":-1,"min_score":2,"candidates":[]}]`))
+	f.Add([]byte(`[{"name":"c","candidates":[{"score":1e308,"relevant":false},{"score":-5}]}]`))
+	f.Add([]byte(`[]`))
+	f.Add([]byte(`garbage`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		scenarios, err := ParseScenarios(data)
+		if err != nil {
+			return
+		}
+		results := make([]EvalResult, 0, len(scenarios))
+		for _, s := range scenarios {
+			r := RunScenario(s)
+			results = append(results, r)
+			m := r.Metrics
+			for name, v := range map[string]float64{
+				"precision": m.Precision, "recall": m.Recall, "f1": m.F1,
+				"ndcg": m.NDCG, "gate_accuracy": m.GateAccuracy, "wasted_ratio": m.WastedRatio,
+			} {
+				if v < 0 || v > 1.0001 || math.IsNaN(v) {
+					t.Fatalf("metric %s out of [0,1]: %v (scenario %q)", name, v, s.Name)
+				}
+			}
+		}
+		// Aggregation and the threshold sweep must also tolerate whatever parsed.
+		_ = AggregateMetrics(results)
+		_ = SweepMinScore(scenarios, []float64{0, 0.5, 1})
 	})
 }

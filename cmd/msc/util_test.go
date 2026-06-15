@@ -75,6 +75,41 @@ func TestClosestMatch(t *testing.T) {
 	}
 }
 
+func TestContainsStr(t *testing.T) {
+	list := []string{"a", "*", "host.example"}
+	if !containsStr(list, "*") {
+		t.Error("expected to find wildcard")
+	}
+	if !containsStr(list, "host.example") {
+		t.Error("expected to find host")
+	}
+	if containsStr(list, "missing") {
+		t.Error("did not expect to find missing")
+	}
+	if containsStr(nil, "x") {
+		t.Error("nil list should contain nothing")
+	}
+}
+
+func FuzzContainsStr(f *testing.F) {
+	f.Add("a,b,*", "*")
+	f.Fuzz(func(t *testing.T, csv, target string) {
+		list := strings.Split(csv, ",")
+		got := containsStr(list, target)
+		// Cross-check against a slices.Contains-equivalent linear scan.
+		want := false
+		for _, v := range list {
+			if v == target {
+				want = true
+				break
+			}
+		}
+		if got != want {
+			t.Fatalf("containsStr(%q,%q)=%v want %v", list, target, got, want)
+		}
+	})
+}
+
 func FuzzLevenshtein(f *testing.F) {
 	f.Add("kitten", "sitting")
 	f.Add("", "x")

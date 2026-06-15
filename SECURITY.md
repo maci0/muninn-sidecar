@@ -27,7 +27,8 @@ warrant care:
   Only the upstream host is terminated by default; other hosts are blind-tunneled
   (`--mitm-host` to scope explicitly).
 - **Captured content & secrets.** Exchanges are stored in MuninnDB. msc redacts
-  well-known credential formats before storage and before injecting recalled
+  well-known credential formats and personal data (emails, payment-card numbers,
+  SSNs) before storage and before injecting recalled
   content, but redaction is **best-effort** (conservative patterns) — not a
   guarantee. Treat the vault as sensitive. `--no-redact` disables write-side
   redaction for trusted local environments.

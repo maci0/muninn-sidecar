@@ -22,6 +22,8 @@ func TestRedactSecrets(t *testing.T) {
 		{"github token", "gh" + "p_" + strings.Repeat("d", 36), strings.Repeat("d", 36)},
 		{"google api key", "AI" + "za" + strings.Repeat("e", 35), strings.Repeat("e", 35)},
 		{"slack token", "xo" + "xb-" + strings.Repeat("1", 12), strings.Repeat("1", 12)},
+		{"xai key", "xai" + "-" + strings.Repeat("z", 24), strings.Repeat("z", 24)},
+		{"google oauth token", "ya29" + "." + strings.Repeat("Q", 30), strings.Repeat("Q", 30)},
 		{"bearer token", "Bearer " + strings.Repeat("f", 36), strings.Repeat("f", 36)},
 		{"jwt", "ey" + "J" + strings.Repeat("a", 12) + ".ey" + "J" + strings.Repeat("b", 12) + "." + strings.Repeat("c", 12), strings.Repeat("b", 12)},
 		{"private key block", "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Repeat("M", 24) + "\n-----END RSA PRIVATE KEY-----", strings.Repeat("M", 24)},
@@ -30,6 +32,14 @@ func TestRedactSecrets(t *testing.T) {
 		{"github fine-grained pat", "github" + "_pat_" + strings.Repeat("i", 62), strings.Repeat("i", 62)},
 		{"npm token", "npm" + "_" + strings.Repeat("j", 36), strings.Repeat("j", 36)},
 		{"basic auth header", "Authorization: Basic " + strings.Repeat("k", 24), strings.Repeat("k", 24)},
+		{"email address", "alice.dev" + "@" + "example.com", "alice.dev" + "@" + "example.com"},
+		{"email plus tag", "u.ser+tag" + "@" + "sub.corp.co.uk", "u.ser+tag" + "@" + "sub.corp.co.uk"},
+		{"visa card", "4111" + "1111" + "1111" + "1111", "4111111111111111"},
+		{"mastercard card", "5500" + "0000" + "0000" + "0004", "5500000000000004"},
+		{"amex card", "3782" + "822463" + "10005", "378282246310005"},
+		{"visa card spaced", "4111 1111 1111 1111", "4111 1111 1111 1111"},
+		{"visa card dashed", "4111-1111-1111-1111", "4111-1111-1111-1111"},
+		{"ssn dashed", "123-45-6789", "123-45-6789"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,6 +63,11 @@ func TestRedactSecrets(t *testing.T) {
 		"The function returns sk- prefixed ids? no.", // "sk-" without 20+ chars
 		"bearer of bad news",                         // "bearer" without a token
 		"pk" + "_live_" + strings.Repeat("x", 24),    // Stripe publishable key is public — keep
+		"email me at the office",                      // "email" word without an address
+		"version 1.2.3 of the package",               // dotted numbers are not an email
+		"order id 1234567890123456 shipped",           // 16 digits but not a card prefix (starts with 1)
+		"build 8888-0000-0000-0000 tagged",            // dashed groups but not a card prefix
+		"ticket 12-34-5678 resolved",                  // not the SSN 3-2-4 grouping
 		"",
 	}
 	for _, c := range clean {
@@ -125,6 +140,9 @@ func FuzzRedactSecrets(f *testing.F) {
 	f.Add("plain text with no secrets")
 	f.Add("")
 	f.Add("Bearer xyz")
+	f.Add("contact alice" + "@" + "example.com please")
+	f.Add("card 4111" + "1111" + "1111" + "1111 on file")
+	f.Add("ssn 123-45-6789 on record")
 	f.Fuzz(func(t *testing.T, s string) {
 		got := Secrets(s)
 		// Idempotence: the marker contains no secret pattern, so a second pass

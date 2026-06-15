@@ -8,7 +8,8 @@ import (
 
 // mitmCADir returns the directory holding msc's TLS-MITM certificate authority,
 // creating it (0700) if needed. The CA persists across runs so a child only has
-// to trust it once. Prefers the user config dir, falling back to ~/.muninn-sidecar.
+// to trust it once. Uses the user config dir (<config>/muninn-sidecar/mitm),
+// falling back to ~/.config/muninn-sidecar/mitm when it can't be resolved.
 func mitmCADir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil || base == "" {
@@ -33,6 +34,16 @@ func logf(format string, args ...any) {
 // logerr prints a human-friendly error to stderr with the msc: error: prefix.
 func logerr(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "msc: error: "+format+"\n", args...)
+}
+
+// containsStr reports whether s appears in list.
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // closestMatch returns the best match from candidates if it's within a

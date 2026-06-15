@@ -23,6 +23,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -80,6 +81,12 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 		// Reuse only a parseable CA that isn't expired or about to expire;
 		// otherwise fall through to regenerate (corrupt, or stale on disk).
 		if err == nil && time.Now().Before(ca.cert.NotAfter.Add(-caRenewBefore)) {
+			// The CA key can decrypt every intercepted TLS session, so flag it if
+			// permissions were loosened on disk after we wrote it 0600.
+			if info, statErr := os.Stat(keyPath); statErr == nil && info.Mode().Perm()&0o077 != 0 {
+				slog.Warn("mitm CA key has overly permissive permissions",
+					"path", keyPath, "fix", "chmod 600 "+keyPath, "mode", info.Mode().Perm())
+			}
 			return ca, nil
 		}
 	}
@@ -102,6 +109,13 @@ func persistCA(ca *CA, certPath, keyPath string) error {
 	}
 	if err := os.WriteFile(keyPath, keyOut, 0o600); err != nil {
 		return fmt.Errorf("mitm: write ca key: %w", err)
+	}
+	// os.WriteFile only applies the mode when it creates the file; overwriting an
+	// existing key (a pre-0600 build, or perms loosened on disk) keeps the old
+	// permissions. The CA key decrypts every intercepted TLS session, so force
+	// 0600 explicitly rather than trusting the prior state.
+	if err := os.Chmod(keyPath, 0o600); err != nil {
+		return fmt.Errorf("mitm: secure ca key perms: %w", err)
 	}
 	if err := os.WriteFile(certPath, ca.certPEM, 0o644); err != nil {
 		return fmt.Errorf("mitm: write ca cert: %w", err)

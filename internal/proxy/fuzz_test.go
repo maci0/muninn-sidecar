@@ -3,6 +3,8 @@ package proxy
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/maci0/muninn-sidecar/internal/store"
 )
 
 // Fuzz targets for the proxy's body/stream filtering surface — anti-recursion
@@ -50,7 +52,14 @@ func FuzzParseSSEDoc(f *testing.F) {
 	f.Add([]byte(`{"raw":"json"}`))
 	f.Add([]byte("data: [DONE]"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_ = parseSSEDoc(data)
+		doc := parseSSEDoc(data)
+		// Invariant: a parsed SSE doc is consumed downstream by the JSON-based
+		// delta/tool extractors, so any non-nil result must be re-marshalable.
+		if doc != nil {
+			if _, err := json.Marshal(doc); err != nil {
+				t.Fatalf("parseSSEDoc result not marshalable: %v", err)
+			}
+		}
 	})
 }
 
@@ -101,4 +110,77 @@ func FuzzInjectedBlockStart(f *testing.F) {
 // hasPrefixAt reports whether s has prefix p starting at index i.
 func hasPrefixAt(s string, i int, p string) bool {
 	return i >= 0 && i+len(p) <= len(s) && s[i:i+len(p)] == p
+}
+
+// FuzzExtractModelAndTokens drives the model/token-usage extractor over
+// untrusted request and response bodies. The risky paths are the float64->int
+// conversions for token counts (huge, negative, fractional, or non-finite
+// numbers must not panic or corrupt the exchange) and JSON that is valid but
+// not an object. Invariant: never panic.
+func FuzzExtractModelAndTokens(f *testing.F) {
+	f.Add(
+		[]byte(`{"model":"claude-3-opus"}`),
+		[]byte(`{"usage":{"input_tokens":500,"output_tokens":200,"cache_read_input_tokens":10}}`))
+	f.Add(
+		[]byte(`{"model":"gpt-4"}`),
+		[]byte(`{"usage":{"prompt_tokens":1e308,"completion_tokens":-5}}`))
+	f.Add(
+		[]byte(`{}`),
+		[]byte(`{"modelVersion":"gemini-pro","usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2}}`))
+	f.Add([]byte(`"just a string"`), []byte(`12345`))
+	f.Add([]byte(`not json`), []byte(`not json either`))
+	f.Fuzz(func(t *testing.T, req, resp []byte) {
+		ex := &store.CapturedExchange{
+			ReqBody:  json.RawMessage(req),
+			RespBody: json.RawMessage(resp),
+		}
+		extractModelAndTokens(ex)
+	})
+}
+
+// FuzzSanitizeJSON checks the storage-sanitization contract: arbitrary bytes
+// (plain-text error pages, partial JSON, binary) must always emerge as
+// syntactically-valid JSON suitable for MuninnDB, never a panic or invalid doc.
+func FuzzSanitizeJSON(f *testing.F) {
+	f.Add([]byte(`{"ok":true}`))
+	f.Add([]byte(`plain text error page`))
+	f.Add([]byte(``))
+	f.Add([]byte("\x00\xff partial {"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		out := sanitizeJSON(data)
+		if !json.Valid(out) {
+			t.Fatalf("sanitizeJSON produced invalid JSON from %q: %q", data, out)
+		}
+	})
+}
+
+// FuzzProcessChunk exercises the incremental SSE chunk parser on untrusted
+// upstream bytes. The two-chunk split fuzzes the partial-line carry-over path
+// (sc.lineBuf), where line boundaries fall mid-chunk and the slicing of
+// "data:" prefixes / trailing \r must never read out of range. Invariants:
+// never panic; buffered state stays within its caps; the synthetic response
+// built from whatever was accumulated is always valid JSON.
+func FuzzProcessChunk(f *testing.F) {
+	f.Add([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n"), []byte("data:[DONE]\n"))
+	f.Add([]byte("data:{\"type\":\"content_block_delta\",\"delta\":{\"text\":\"x\"}}"), []byte("\nevent: ping\n"))
+	f.Add([]byte("data: "), []byte("partial-then\r\n"))
+	f.Add([]byte{}, []byte{})
+	f.Fuzz(func(t *testing.T, a, b []byte) {
+		sc := &streamCapture{ctx: &captureCtx{}, statusCode: 200}
+		sc.processChunk(a)
+		sc.processChunk(b)
+
+		if sc.textAccum.Len() > maxTextAccum {
+			t.Fatalf("textAccum %d exceeds cap %d", sc.textAccum.Len(), maxTextAccum)
+		}
+		if len(sc.lineBuf) > maxStreamBuf {
+			t.Fatalf("lineBuf %d exceeds cap %d", len(sc.lineBuf), maxStreamBuf)
+		}
+		if len(sc.toolNames) > maxToolNames {
+			t.Fatalf("toolNames %d exceeds cap %d", len(sc.toolNames), maxToolNames)
+		}
+		if out := sc.buildRespBody(); !json.Valid(out) {
+			t.Fatalf("buildRespBody produced invalid JSON after processChunk: %q", out)
+		}
+	})
 }

@@ -127,7 +127,11 @@ func TestVaultStats(t *testing.T) {
 func TestUsageAndVersionWriters(t *testing.T) {
 	silence(t, func() {
 		usage(os.Stdout)
-		_ = printVersion(&opts{})
-		_ = printVersion(&opts{asJSON: true})
+		if rc := printVersion(&opts{}); rc != 0 {
+			t.Errorf("printVersion plain rc = %d, want 0", rc)
+		}
+		if rc := printVersion(&opts{asJSON: true}); rc != 0 {
+			t.Errorf("printVersion json rc = %d, want 0", rc)
+		}
 	})
 }

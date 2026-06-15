@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+// tunnelDialTimeout bounds the upstream dial for both the splice-upgrade and
+// blind-tunnel paths, so a black-hole target can't hang a hijacked connection's
+// goroutine indefinitely.
+const tunnelDialTimeout = 30 * time.Second
+
 // handleConnect terminates a CONNECT tunnel and intercepts its TLS traffic. The
 // agent (configured with HTTPS_PROXY pointing at msc, and trusting msc's CA)
 // sends `CONNECT host:443`; msc replies 200, completes a TLS handshake using a
@@ -146,7 +151,7 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	cfg.ServerName = stripPort(target)
 	// Bound the dial so a black-hole upgrade target can't hang this goroutine and
 	// its hijacked connection indefinitely (mirrors blindTunnel's DialTimeout).
-	backend, err := tls.DialWithDialer(&net.Dialer{Timeout: 30 * time.Second}, "tcp", target, cfg)
+	backend, err := tls.DialWithDialer(&net.Dialer{Timeout: tunnelDialTimeout}, "tcp", target, cfg)
 	if err != nil {
 		slog.Debug("mitm: upgrade backend dial failed", "target", target, "err", err)
 		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
@@ -186,7 +191,7 @@ func (p *Proxy) shouldInterceptHost(host string) bool {
 // intercept. The 200 is sent only after the upstream dial succeeds so the client
 // sees a real failure if the host is unreachable.
 func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
-	upstream, err := net.DialTimeout("tcp", target, 30*time.Second)
+	upstream, err := net.DialTimeout("tcp", target, tunnelDialTimeout)
 	if err != nil {
 		slog.Debug("mitm: blind-tunnel dial failed", "target", target, "err", err)
 		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
@@ -214,8 +219,8 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
 	<-done
 }
 
-// stripPort returns host without a trailing :port, leaving bracketed IPv6 and
-// bare hosts intact.
+// stripPort returns host without a trailing :port, unwrapping the brackets
+// from an IPv6 literal and leaving bare hosts intact.
 func stripPort(hostport string) string {
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
 		return h

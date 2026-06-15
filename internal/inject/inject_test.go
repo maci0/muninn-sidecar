@@ -301,7 +301,13 @@ func TestEnrichGemini(t *testing.T) {
 
 func TestEnrichTimeout(t *testing.T) {
 	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(500 * time.Millisecond)
+		// Outlast the 50ms client timeout, but return promptly once the client
+		// cancels so srv.Close() doesn't block the test for the full delay.
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
 		w.Write(fakeRecallResponse([]memory{{ID: "m1", Concept: "late", Content: "too late", Score: 0.9}}))
 	})
 	defer srv.Close()
@@ -507,7 +513,10 @@ func TestSessionContextEntryCapWellFormed(t *testing.T) {
 				Name string `json:"name"`
 			} `json:"params"`
 		}
-		json.Unmarshal(body, &rpc)
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 		switch rpc.Params.Name {
 		case "muninn_where_left_off":
 			// parseWhereLeftOff uses the concept as the label (≤200 runes each), so

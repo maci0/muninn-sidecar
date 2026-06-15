@@ -1,3 +1,15 @@
+// Command msc is the muninn sidecar: a transparent reverse proxy that gives any
+// stateless AI coding agent long-term memory backed by MuninnDB. It overrides the
+// agent's API base URL to route traffic through a local proxy that forwards all
+// requests unchanged while providing two zero-config features:
+//
+//   - Auto-memorization: LLM completion responses are captured and stored as
+//     semantic memories in MuninnDB.
+//   - Auto-injection: before forwarding a request, relevant past memories are
+//     recalled from the conversation and injected into the system prompt.
+//
+// Invoked as "msc <agent> [args...]" it launches a wrapped agent; it also exposes
+// list, status, ca, version, and completion subcommands defined in commands.go.
 package main
 
 import (
@@ -154,7 +166,7 @@ func run() int {
 	}
 
 	if o.asJSON && !o.quiet {
-		logf("-j/--json has no effect when running an agent (use with list, status, version, or --dry-run)")
+		logf("-j/--json has no effect when running an agent (use with list, status, ca, version, or --dry-run)")
 	}
 
 	// Resolve MuninnDB connection (flags > env > defaults).
@@ -176,6 +188,7 @@ func run() int {
 	sessionStats := &stats.Stats{}
 	muninn := store.New(mcpURL, token, vault, sessionStats)
 	if o.noRedact {
+		slog.Warn("redaction disabled (--no-redact): API keys, tokens, and personal data in captured conversations will be stored in MuninnDB unscrubbed; use only in trusted environments")
 		muninn.SetRedaction(false) // trusted env: keep full-fidelity capture
 	}
 	// Ensure the background worker is always stopped on exit, even for
@@ -242,7 +255,20 @@ func run() int {
 		if gto <= 0 {
 			gto = 10 * time.Second
 		}
-		grounder = grounding.New(o.groundCmd, o.groundURL, gm, os.Getenv("OPENAI_API_KEY"), gto)
+		groundKey := os.Getenv("OPENAI_API_KEY")
+		// Warn when the grounding API key would be sent as a bearer token over an
+		// unencrypted, non-loopback HTTP endpoint (mirrors the MuninnDB-token check
+		// above). The CLI backend (--ground-cmd) takes precedence and sends no key.
+		if groundKey != "" && o.groundCmd == "" && o.groundURL != "" {
+			if u, err := url.Parse(o.groundURL); err == nil && u.Scheme == "http" {
+				h := u.Hostname()
+				if h != "127.0.0.1" && h != "localhost" && h != "::1" {
+					slog.Warn("OPENAI_API_KEY will be sent over unencrypted HTTP to the grounding endpoint; use HTTPS",
+						"ground_url", o.groundURL)
+				}
+			}
+		}
+		grounder = grounding.New(o.groundCmd, o.groundURL, gm, groundKey, gto)
 	}
 
 	// Create injector unless --no-inject is set.
@@ -390,6 +416,7 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 			Inject       bool              `json:"inject"`
 			InjectBudget int               `json:"inject_budget,omitempty"`
 			MITM         bool              `json:"mitm"`
+			MITMHosts    []string          `json:"mitm_hosts,omitempty"` // scope (+ upstream); empty when intercepting all
 			MITMCACert   string            `json:"mitm_ca_cert,omitempty"`
 		}
 		var envMap map[string]string
@@ -414,6 +441,7 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 			MuninnURL:  mcpURL,
 			Inject:     !o.noInject,
 			MITM:       o.mitm,
+			MITMHosts:  o.mitmHosts,
 			MITMCACert: caCertPath,
 		}
 		if o.force {
@@ -427,7 +455,7 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 		if !o.noInject {
 			budget := o.injectBudget
 			if budget <= 0 {
-				budget = 2048
+				budget = inject.DefaultBudget
 			}
 			info.InjectBudget = budget
 		}
@@ -445,7 +473,8 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	fmt.Fprintf(os.Stdout, "Upstream: %s\n", upstream)
 	if o.mitm {
 		scope := "all hosts"
-		if len(o.mitmHosts) > 0 {
+		// "*" forces intercept-all in the proxy, so scoped wording would be wrong.
+		if len(o.mitmHosts) > 0 && !containsStr(o.mitmHosts, "*") {
 			scope = "upstream + " + strings.Join(o.mitmHosts, ", ") + " (others blind-tunneled)"
 		}
 		fmt.Fprintf(os.Stdout, "Mode:     TLS-MITM (transparent HTTPS proxy)\n")
@@ -472,15 +501,15 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	if !o.noInject {
 		budget := o.injectBudget
 		if budget <= 0 {
-			budget = 2048
+			budget = inject.DefaultBudget
 		}
 		minScore := o.minScore
 		if minScore <= 0 {
-			minScore = 0.6
+			minScore = inject.DefaultMinScore
 		}
 		mode := o.recallMode
 		if mode == "" {
-			mode = "semantic"
+			mode = inject.DefaultRecallMode
 		}
 		calib := "auto-calibrated"
 		if o.noAutoCalibrate {

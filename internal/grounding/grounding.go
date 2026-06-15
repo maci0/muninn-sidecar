@@ -14,11 +14,12 @@
 package grounding
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"os/exec"
 	"regexp"
@@ -26,6 +27,11 @@ import (
 	"strings"
 	"time"
 )
+
+// maxGroundResponse caps the grading model's response body. Verdicts are a few
+// tokens per passage, so a real reply is tiny; the cap stops a misbehaving or
+// hostile grounding endpoint from exhausting memory.
+const maxGroundResponse = 4 << 20 // 4 MiB
 
 // Grounder grades, in a single call, which of the passages answer the query.
 type Grounder interface {
@@ -58,10 +64,7 @@ var verdictRE = regexp.MustCompile(`(?i)(\d+)\s*[:.)\-]?\s*(yes|no|true|false|re
 // n. Entries with no verdict default to true (fail-open). A bare single "yes"/
 // "no" with no numbers applies to a lone passage (n==1).
 func ParseMask(s string, n int) []bool {
-	mask := make([]bool, n)
-	for i := range mask {
-		mask[i] = true // fail-open default
-	}
+	mask := allTrue(n) // fail-open default
 	if n == 0 {
 		return mask
 	}
@@ -158,19 +161,30 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
+		slog.Debug("grounding: build request failed, failing open", "judge", g.Label(), "err", err)
 		return allTrue(len(passages))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if g.key != "" {
 		req.Header.Set("Authorization", "Bearer "+g.key)
 	}
-	resp, err := (&http.Client{Timeout: g.timeout}).Do(req)
+	// Enforce a TLS 1.2 floor (matches the proxy/mcpclient policy): the API key
+	// is sent as a bearer token, so the transport to the grounding endpoint must
+	// not negotiate down to a legacy protocol version.
+	resp, err := (&http.Client{
+		Timeout:   g.timeout,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
+	}).Do(req)
 	if err != nil {
+		// Fail-open is by design (a flaky judge must never drop real hits), but a
+		// silent one is undebuggable — surface why grounding degraded to the gate.
+		slog.Debug("grounding: request failed, failing open", "judge", g.Label(), "err", err)
 		return allTrue(len(passages))
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxGroundResponse))
 	if resp.StatusCode >= 300 {
+		slog.Debug("grounding: non-2xx response, failing open", "judge", g.Label(), "status", resp.StatusCode)
 		return allTrue(len(passages))
 	}
 	var out struct {
@@ -179,6 +193,7 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 		} `json:"choices"`
 	}
 	if json.Unmarshal(data, &out) != nil || len(out.Choices) == 0 {
+		slog.Debug("grounding: unparseable or empty response, failing open", "judge", g.Label())
 		return allTrue(len(passages))
 	}
 	return ParseMask(out.Choices[0].Message.Content, len(passages))
@@ -205,15 +220,16 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil && stdout.Len() == 0 {
+		// Fail-open with a trace: a misconfigured argv or a judge that timed out
+		// (cctx deadline) otherwise degrades to the gate with no signal why.
+		slog.Debug("grounding: CLI judge failed with no output, failing open", "judge", g.Label(), "err", err)
 		return allTrue(len(passages))
 	}
-	// Collect all output (agents may print chatter then the verdict lines).
-	var lines []string
-	sc := bufio.NewScanner(&stdout)
-	for sc.Scan() {
-		lines = append(lines, sc.Text())
-	}
-	return ParseMask(strings.Join(lines, "\n"), len(passages))
+	// Agents may print chatter then the verdict lines. Pass the whole output to
+	// ParseMask (it scans globally) rather than a line scanner: bufio.Scanner has a
+	// 64 KiB line cap that, on a long reasoning line, silently stops and drops every
+	// verdict after it — turning the grounding step into a silent no-op.
+	return ParseMask(stdout.String(), len(passages))
 }
 
 // New builds the grounder selected by its arguments, or nil if none is set. A

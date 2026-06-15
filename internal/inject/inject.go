@@ -10,6 +10,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
+	"github.com/maci0/muninn-sidecar/internal/redact"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -152,6 +154,16 @@ const defaultMinScore = 0.6
 // for semantic recall and gates on the cosine it returns.
 const defaultRecallMode = "semantic"
 
+// Exported defaults New applies for optional config. Callers that preview what
+// New *would* do (e.g. the CLI --dry-run output) should reference these instead
+// of re-hardcoding the literals, so the preview cannot drift from the behavior.
+const (
+	DefaultBudget     = 2048              // max approximate tokens injected per request
+	DefaultMinScore   = defaultMinScore   // injection cosine gate
+	DefaultRecallMode = defaultRecallMode // MuninnDB recall preset
+	DefaultGroundTopK = 3                 // candidates grounded per recall when a Grounder is set
+)
+
 // maxWhereLeftOffEntries caps how many previous-session items the one-shot
 // session-context block lists. Each entry is already ≤200 runes; bounding the
 // count keeps this server-controlled, budget-exempt block from growing without
@@ -246,7 +258,7 @@ func New(cfg Config) *Injector {
 		cfg.Vault = "sidecar"
 	}
 	if cfg.Budget <= 0 {
-		cfg.Budget = 2048
+		cfg.Budget = DefaultBudget
 	}
 	if cfg.Threshold <= 0 {
 		// The recall floor filters MuninnDB's *composite* score (recency/graph-
@@ -277,7 +289,7 @@ func New(cfg Config) *Injector {
 		cfg.Timeout = 200 * time.Millisecond
 	}
 	if cfg.Grounder != nil && cfg.GroundTopK <= 0 {
-		cfg.GroundTopK = 3
+		cfg.GroundTopK = DefaultGroundTopK
 	}
 
 	return &Injector{
@@ -344,8 +356,13 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		// maxWhereLeftOffEntries) and the guide is naturally bounded, so the
 		// assembled session context is well-formed and bounded without truncating
 		// the string (which would cut the closing marker).
+		//
+		// Defense in depth: scrub secrets/PII before injecting, the same as the
+		// per-memory recall block (formatContextBlock). where_left_off and guide are
+		// recalled memory content too — a secret stored by another client (or before
+		// write-side redaction existed) must not be re-transmitted to the provider.
 		inj.mu.Lock()
-		inj.sessionCtx = sb.String()
+		inj.sessionCtx = redact.Secrets(sb.String())
 		inj.mu.Unlock()
 	})
 
@@ -798,11 +815,11 @@ func selectForInjection(merged []memory, minScore float64) []memory {
 				// stale annotation is authoritative (a non-stale memory supersedes a
 				// stale duplicate); created_at breaks ties when staleness matches.
 				if supersedes(m, kept[i]) {
-					slog.Debug("inject: replaced stale same-concept memory with current", "concept", m.Concept, "old_stale", kept[i].Annotations.Stale, "new_stale", m.Annotations.Stale, "old_created", kept[i].CreatedAt, "new_created", m.CreatedAt)
+					slog.Debug("inject: replaced stale same-concept memory with current", "id", m.ID, "old_id", kept[i].ID, "old_stale", kept[i].Annotations.Stale, "new_stale", m.Annotations.Stale, "old_created", kept[i].CreatedAt, "new_created", m.CreatedAt)
 					kept[i] = m
 					keptTokens[i] = wordSet(m.Content)
 				} else {
-					slog.Debug("inject: skipped duplicate-concept memory (not current)", "id", m.ID, "concept", m.Concept)
+					slog.Debug("inject: skipped duplicate-concept memory (not current)", "id", m.ID)
 				}
 				continue
 			}
@@ -810,7 +827,7 @@ func selectForInjection(merged []memory, minScore float64) []memory {
 
 		tokens := wordSet(m.Content)
 		if isNearDuplicate(tokens, keptTokens) {
-			slog.Debug("inject: skipped near-duplicate memory", "id", m.ID, "concept", m.Concept)
+			slog.Debug("inject: skipped near-duplicate memory", "id", m.ID)
 			continue
 		}
 
@@ -861,17 +878,8 @@ func resolveConflicts(kept []memory) []memory {
 // conflicts reports whether a and b are flagged as contradicting each other
 // (the conflicts_with edge may be annotated on either side).
 func conflicts(a, b memory) bool {
-	for _, id := range a.Annotations.ConflictsWith {
-		if id == b.ID {
-			return true
-		}
-	}
-	for _, id := range b.Annotations.ConflictsWith {
-		if id == a.ID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.Annotations.ConflictsWith, b.ID) ||
+		slices.Contains(b.Annotations.ConflictsWith, a.ID)
 }
 
 // groundMemories applies the answer-grounding rerank to the gated set: the top

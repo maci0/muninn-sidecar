@@ -65,7 +65,7 @@ const drainTimeout = 8 * time.Second
 // CapturedExchange holds one request->response pair captured by the proxy.
 type CapturedExchange struct {
 	Timestamp  time.Time       `json:"timestamp"`
-	Agent      string          `json:"agent"`  // which coding agent (claude, gemini, etc.)
+	Agent      string          `json:"agent"`  // which coding agent (claude, codex, etc.)
 	Method     string          `json:"method"` // HTTP method
 	Path       string          `json:"path"`   // request path (e.g. /v1/messages)
 	ReqBody    json.RawMessage `json:"req_body,omitempty"`
@@ -305,7 +305,10 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	for i := range ring {
 		if ring[i] != nil {
 			if _, exists := ring[i][hash]; exists {
-				slog.Debug("dedup: skipping duplicate concept", "concept", apiformat.TruncateText(concept, 60))
+				// Log the dedup hash, not the concept text: the concept is derived
+				// from captured conversation content and would leak into logs
+				// (bypassing the redaction applied above) if emitted verbatim.
+				slog.Debug("dedup: skipping duplicate concept", "hash", hash)
 				if s.stats != nil {
 					s.stats.Deduped.Add(1)
 				}
@@ -357,7 +360,11 @@ func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 	}
 
 	if err != nil {
-		slog.Error("failed to flush exchanges to MuninnDB", "vault", s.vault, "batch_size", n, "concept", apiformat.TruncateText(batch[0].concept, 60), "err", err)
+		// Deliberately omit concept/content here: this is a default-visible
+		// Error log and the concept is captured conversation text. Redaction
+		// scrubs secrets/emails but not every form of personal data, so keep
+		// it out of logs entirely. vault + batch_size are enough to triage.
+		slog.Error("failed to flush exchanges to MuninnDB", "vault", s.vault, "batch_size", n, "err", err)
 		if s.stats != nil {
 			s.stats.FlushErrors.Add(n)
 		}

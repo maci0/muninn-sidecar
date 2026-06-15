@@ -25,7 +25,12 @@ func FuzzExtractUserMessage(f *testing.F) {
 	f.Add([]byte(`{"input":"hello"}`))
 	f.Add([]byte(`not json`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_ = ExtractUserMessage(data)
+		out := ExtractUserMessage(data)
+		// Invariant: extracted text feeds MuninnDB storage/recall, which assume
+		// valid UTF-8. A byte-slicing regression would corrupt every memory.
+		if !utf8.ValidString(out) {
+			t.Fatalf("ExtractUserMessage produced invalid UTF-8: %q", out)
+		}
 	})
 }
 
@@ -35,7 +40,10 @@ func FuzzExtractAssistantMessage(f *testing.F) {
 	f.Add([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"},{"functionCall":{"name":"g"}}]}}]}`))
 	f.Add([]byte(`{"output":[{"type":"message","content":[{"text":"hi"}]}]}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_ = ExtractAssistantMessage(data)
+		out := ExtractAssistantMessage(data)
+		if !utf8.ValidString(out) {
+			t.Fatalf("ExtractAssistantMessage produced invalid UTF-8: %q", out)
+		}
 	})
 }
 
@@ -49,9 +57,12 @@ func FuzzDetectAndExtract(f *testing.F) {
 			return
 		}
 		format := DetectFormat(doc)
-		_ = ExtractUserQuery(doc, format)
+		query := ExtractUserQuery(doc, format)
 		// turns kept small but variable; ExtractRecentContext must tolerate any.
-		_ = ExtractRecentContext(doc, format, len(data)%7)
+		ctx := ExtractRecentContext(doc, format, len(data)%7)
+		if !utf8.ValidString(query) || !utf8.ValidString(ctx) {
+			t.Fatalf("invalid UTF-8: query=%q ctx=%q", query, ctx)
+		}
 	})
 }
 
@@ -117,7 +128,10 @@ func FuzzExtractSSE(f *testing.F) {
 		if !ok {
 			return
 		}
-		_ = ExtractSSEDelta(doc)
-		_ = ExtractSSEToolName(doc)
+		delta := ExtractSSEDelta(doc)
+		tool := ExtractSSEToolName(doc)
+		if !utf8.ValidString(delta) || !utf8.ValidString(tool) {
+			t.Fatalf("invalid UTF-8: delta=%q tool=%q", delta, tool)
+		}
 	})
 }

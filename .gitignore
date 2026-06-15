@@ -45,3 +45,4 @@ dist/
 
 # Local agent/session state
 .claude/
+.review-loop.lock
