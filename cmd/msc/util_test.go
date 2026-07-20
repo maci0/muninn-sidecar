@@ -2,9 +2,12 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestMITMCADir(t *testing.T) {
@@ -36,6 +39,94 @@ func TestMITMCADir(t *testing.T) {
 	dir2, err := mitmCADir()
 	if err != nil || dir2 != dir {
 		t.Errorf("second call: dir=%q err=%v, want %q", dir2, err, dir)
+	}
+}
+
+// requireProc skips the test on platforms without a /proc filesystem, where
+// childProcs (and thus signal forwarding) is documented to be a no-op.
+func requireProc(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skipf("no /proc on this platform: %v", err)
+	}
+}
+
+func TestChildProcs(t *testing.T) {
+	requireProc(t)
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start child: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	found := false
+	for _, c := range childProcs() {
+		if c.pid == cmd.Process.Pid {
+			found = true
+			// Spawned without Setpgid, the child shares our process group.
+			if want := syscall.Getpgrp(); c.pgrp != want {
+				t.Errorf("child pgrp = %d, want %d", c.pgrp, want)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("childProcs() missing spawned child %d", cmd.Process.Pid)
+	}
+}
+
+func TestTermForegroundPgrp(t *testing.T) {
+	requireProc(t)
+	// With a controlling terminal tpgid is a positive pgrp; without one the
+	// kernel reports -1. Zero would mean a parse bug.
+	if got := termForegroundPgrp(); got == 0 {
+		t.Errorf("termForegroundPgrp() = 0, want positive pgrp or -1")
+	}
+}
+
+func TestShouldForward(t *testing.T) {
+	cases := []struct {
+		name         string
+		sig          syscall.Signal
+		pgrp, fgPgrp int
+		want         bool
+	}{
+		{"Ctrl+C already hit foreground child", syscall.SIGINT, 100, 100, false},
+		{"SIGINT to child outside foreground group", syscall.SIGINT, 100, 200, true},
+		{"SIGINT with no controlling terminal", syscall.SIGINT, 100, -1, true},
+		{"SIGTERM always forwarded", syscall.SIGTERM, 100, 100, true},
+		{"SIGKILL always forwarded", syscall.SIGKILL, 100, 100, true},
+	}
+	for _, c := range cases {
+		if got := shouldForward(c.sig, c.pgrp, c.fgPgrp); got != c.want {
+			t.Errorf("%s: shouldForward(%v, %d, %d) = %v, want %v",
+				c.name, c.sig, c.pgrp, c.fgPgrp, got, c.want)
+		}
+	}
+}
+
+// TestSignalChildren verifies the shutdown fix: a signal delivered only to
+// msc's PID (kill, docker stop) is forwarded to the launched agent instead of
+// leaving it orphaned against a dead proxy.
+func TestSignalChildren(t *testing.T) {
+	requireProc(t)
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start child: %v", err)
+	}
+	signalChildren(syscall.SIGTERM)
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+	select {
+	case err := <-waitCh:
+		if err == nil {
+			t.Error("expected non-nil error from a SIGTERM-terminated child")
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		<-waitCh
+		t.Fatal("child did not exit after forwarded SIGTERM")
 	}
 }
 

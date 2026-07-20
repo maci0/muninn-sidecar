@@ -1,7 +1,9 @@
 package agents
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -12,8 +14,8 @@ func TestResolveDefaultURL(t *testing.T) {
 		for _, k := range a.DetectEnv {
 			t.Setenv(k, "")
 		}
+		t.Setenv(a.sentinelKey(), "")
 	}
-	t.Setenv(mscSentinel, "")
 
 	agent := Registry["claude"]
 	got := agent.Resolve()
@@ -23,10 +25,10 @@ func TestResolveDefaultURL(t *testing.T) {
 }
 
 func TestResolveDetectEnv(t *testing.T) {
-	t.Setenv(mscSentinel, "")
+	agent := Registry["claude"]
+	t.Setenv(agent.sentinelKey(), "")
 	t.Setenv("ANTHROPIC_BASE_URL", "https://custom.example.com/")
 
-	agent := Registry["claude"]
 	got := agent.Resolve()
 	// Trailing slash should be stripped.
 	if got != "https://custom.example.com" {
@@ -35,18 +37,105 @@ func TestResolveDetectEnv(t *testing.T) {
 }
 
 func TestResolveMSCSentinelTakesPriority(t *testing.T) {
-	t.Setenv(mscSentinel, "https://sentinel.example.com")
+	agent := Registry["claude"]
+	t.Setenv(agent.sentinelKey(), "https://sentinel.example.com")
 	t.Setenv("ANTHROPIC_BASE_URL", "https://custom.example.com")
 
-	agent := Registry["claude"]
 	got := agent.Resolve()
 	if got != "https://sentinel.example.com" {
 		t.Fatalf("expected sentinel URL to take priority, got %q", got)
 	}
 }
 
+func TestResolveSentinelScopedPerAgent(t *testing.T) {
+	// A sentinel set by a parent msc running claude must NOT redirect a nested
+	// msc for a different agent: codex would forward OpenAI traffic to Anthropic.
+	t.Setenv(Registry["claude"].sentinelKey(), "https://api.anthropic.com")
+	for _, k := range Registry["codex"].DetectEnv {
+		t.Setenv(k, "")
+	}
+	t.Setenv(Registry["codex"].sentinelKey(), "")
+
+	if got := Registry["codex"].Resolve(); got != openAIDefaultURL {
+		t.Fatalf("codex must ignore claude's sentinel, got %q", got)
+	}
+	// Same-agent nesting still honors its own sentinel.
+	if got := Registry["claude"].Resolve(); got != "https://api.anthropic.com" {
+		t.Fatalf("claude must honor its own sentinel, got %q", got)
+	}
+}
+
+// clearOpenAIFamilyEnv unsets every DetectEnv var and sentinel of the agents
+// that share the OpenAI base-URL env vars, so cross-agent sentinel tests are
+// hermetic.
+func clearOpenAIFamilyEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"codex", "opencode", "aider", "qwen"} {
+		a := Registry[name]
+		for _, k := range a.DetectEnv {
+			t.Setenv(k, "")
+		}
+		t.Setenv(a.sentinelKey(), "")
+	}
+}
+
+func TestResolveSharedEnvVarUsesSiblingSentinel(t *testing.T) {
+	// aider nested under `msc codex`: the parent set OPENAI_BASE_URL to its own
+	// proxy address and MSC_UPSTREAM_CODEX to the real upstream. Agents sharing
+	// that env var must adopt codex's sentinel instead of chaining onto the
+	// parent proxy (which would inject and capture every exchange twice).
+	clearOpenAIFamilyEnv(t)
+	t.Setenv("OPENAI_BASE_URL", "http://127.0.0.1:41000") // parent msc proxy
+	t.Setenv(Registry["codex"].sentinelKey(), "https://api.openai.com")
+
+	for _, name := range []string{"aider", "opencode"} {
+		if got := Registry[name].Resolve(); got != "https://api.openai.com" {
+			t.Errorf("%s under msc codex must use codex's sentinel, got %q", name, got)
+		}
+	}
+}
+
+func TestResolveUnpoisonedEnvVarBeatsSiblingSentinel(t *testing.T) {
+	// OPENAI_API_BASE is not overridden by `msc codex` (it only sets its EnvKey,
+	// OPENAI_BASE_URL), so a user-configured value there must still win for
+	// aider, whose DetectEnv checks it first.
+	clearOpenAIFamilyEnv(t)
+	t.Setenv("OPENAI_BASE_URL", "http://127.0.0.1:41000") // parent msc proxy
+	t.Setenv(Registry["codex"].sentinelKey(), "https://api.openai.com")
+	t.Setenv("OPENAI_API_BASE", "https://user.example.com")
+
+	if got := Registry["aider"].Resolve(); got != "https://user.example.com" {
+		t.Fatalf("aider must honor untouched OPENAI_API_BASE, got %q", got)
+	}
+}
+
+func TestResolveUnrelatedSentinelDoesNotHijackEnvVar(t *testing.T) {
+	// claude's sentinel does not override OPENAI_BASE_URL, so codex must keep
+	// the user-configured value even when MSC_UPSTREAM_CLAUDE is present.
+	clearOpenAIFamilyEnv(t)
+	t.Setenv(Registry["claude"].sentinelKey(), "https://api.anthropic.com")
+	t.Setenv("OPENAI_BASE_URL", "https://user.example.com")
+
+	if got := Registry["codex"].Resolve(); got != "https://user.example.com" {
+		t.Fatalf("codex must ignore claude's sentinel for OPENAI_BASE_URL, got %q", got)
+	}
+}
+
+func TestResolveOwnSentinelBeatsSiblingSentinel(t *testing.T) {
+	// Same-agent nesting: the agent's own sentinel stays authoritative even when
+	// a sibling sharing the env var also left one behind.
+	clearOpenAIFamilyEnv(t)
+	t.Setenv("OPENAI_BASE_URL", "http://127.0.0.1:41000")
+	t.Setenv(Registry["codex"].sentinelKey(), "https://codex.example.com")
+	t.Setenv(Registry["aider"].sentinelKey(), "https://aider.example.com")
+
+	if got := Registry["aider"].Resolve(); got != "https://aider.example.com" {
+		t.Fatalf("aider must prefer its own sentinel, got %q", got)
+	}
+}
+
 func TestResolveAltDefault(t *testing.T) {
-	t.Setenv(mscSentinel, "")
+	t.Setenv(Registry["agy"].sentinelKey(), "")
 	for _, k := range Registry["agy"].DetectEnv {
 		t.Setenv(k, "")
 	}
@@ -71,9 +160,9 @@ func TestBuildEnvSetsProxyAndSentinel(t *testing.T) {
 			}
 			foundEnvKey = true
 		}
-		if strings.HasPrefix(e, mscSentinel+"=") {
-			if e != mscSentinel+"=https://api.anthropic.com" {
-				t.Fatalf("expected upstream in MSC_UPSTREAM, got %q", e)
+		if strings.HasPrefix(e, agent.sentinelKey()+"=") {
+			if e != agent.sentinelKey()+"=https://api.anthropic.com" {
+				t.Fatalf("expected upstream in %s, got %q", agent.sentinelKey(), e)
 			}
 			foundSentinel = true
 		}
@@ -83,7 +172,10 @@ func TestBuildEnvSetsProxyAndSentinel(t *testing.T) {
 		t.Fatal("ANTHROPIC_BASE_URL not found in env")
 	}
 	if !foundSentinel {
-		t.Fatal("MSC_UPSTREAM not found in env")
+		t.Fatalf("%s not found in env", agent.sentinelKey())
+	}
+	if agent.sentinelKey() != "MSC_UPSTREAM_CLAUDE" {
+		t.Fatalf("sentinel key = %q, want MSC_UPSTREAM_CLAUDE", agent.sentinelKey())
 	}
 }
 
@@ -95,7 +187,7 @@ func TestBuildEnvExtraKeys(t *testing.T) {
 	values := map[string]string{}
 	for _, e := range env {
 		k, v, _ := strings.Cut(e, "=")
-		if k == agent.EnvKey || k == mscSentinel {
+		if k == agent.EnvKey || k == agent.sentinelKey() {
 			values[k] = v
 		}
 		for _, extra := range agent.ExtraEnvKeys {
@@ -238,6 +330,23 @@ func TestQwenCapturesOpenAIAndGemini(t *testing.T) {
 	}
 }
 
+func TestGeminiCountTokensNotCaptured(t *testing.T) {
+	// Gemini-CLI-family clients send the full "contents" array to :countTokens
+	// before each :generateContent; capturing it would store a user-only
+	// duplicate memory per turn that escapes dedup (its concept hashes
+	// differently from the paired generateContent capture). Mirrors claude's
+	// /count_tokens exclusion.
+	for _, name := range []string{"qwen", "agy"} {
+		a := Registry[name]
+		if captures(a, "/v1beta/models/qwen3:countTokens") {
+			t.Errorf("%s must not capture :countTokens; CapturePaths=%v", name, a.CapturePaths)
+		}
+		if !captures(a, "/v1beta/models/qwen3:generateContent") {
+			t.Errorf("%s must still capture :generateContent; CapturePaths=%v", name, a.CapturePaths)
+		}
+	}
+}
+
 func TestReasonixRemoved(t *testing.T) {
 	if _, ok := Registry["reasonix"]; ok {
 		t.Error("reasonix must not be in the registry")
@@ -306,12 +415,13 @@ func TestExecRunsTrue(t *testing.T) {
 
 func TestBuildMITMEnv(t *testing.T) {
 	const (
-		proxyURL = "http://127.0.0.1:9999"
-		upstream = "https://api.anthropic.com"
-		caPath   = "/tmp/msc/ca-cert.pem"
+		proxyURL   = "http://127.0.0.1:9999"
+		upstream   = "https://api.anthropic.com"
+		caPath     = "/tmp/msc/ca-cert.pem"
+		bundlePath = "/tmp/msc/ca-bundle.pem"
 	)
 	agent := Registry["claude"]
-	env := agent.BuildMITMEnv(proxyURL, upstream, caPath)
+	env := agent.BuildMITMEnv(proxyURL, upstream, caPath, bundlePath)
 
 	got := map[string]string{}
 	for _, e := range env {
@@ -325,19 +435,25 @@ func TestBuildMITMEnv(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got[k], proxyURL)
 		}
 	}
-	// CA-trust vars across runtimes (Node/Bun, OpenSSL/curl, Python, Deno) must
-	// point at the CA cert.
-	for _, k := range []string{"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "DENO_CERT"} {
+	// Additive CA-trust vars (Node/Bun, Deno) get the CA cert alone.
+	for _, k := range []string{"NODE_EXTRA_CA_CERTS", "DENO_CERT"} {
 		if got[k] != caPath {
 			t.Errorf("%s = %q, want %q", k, got[k], caPath)
+		}
+	}
+	// Replacing CA-trust vars (OpenSSL/curl, Python-requests) get the combined
+	// bundle so blind-tunneled hosts still verify under --mitm-host scoping.
+	for _, k := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"} {
+		if got[k] != bundlePath {
+			t.Errorf("%s = %q, want %q", k, got[k], bundlePath)
 		}
 	}
 	// Node's undici fetch ignores proxy env without this; required for claude/qwen.
 	if got["NODE_USE_ENV_PROXY"] != "1" {
 		t.Errorf("NODE_USE_ENV_PROXY = %q, want 1", got["NODE_USE_ENV_PROXY"])
 	}
-	if got[mscSentinel] != upstream {
-		t.Errorf("%s = %q, want %q", mscSentinel, got[mscSentinel], upstream)
+	if got[agent.sentinelKey()] != upstream {
+		t.Errorf("%s = %q, want %q", agent.sentinelKey(), got[agent.sentinelKey()], upstream)
 	}
 	// MITM mode must NOT override the agent's base-URL env var (that's the point:
 	// interception is transparent for agents that ignore it).
@@ -351,7 +467,7 @@ func TestBuildMITMEnvReplacesExisting(t *testing.T) {
 	t.Setenv("NODE_EXTRA_CA_CERTS", "/old/ca.pem")
 
 	agent := Registry["claude"]
-	env := agent.BuildMITMEnv("http://127.0.0.1:9999", "https://api.anthropic.com", "/new/ca.pem")
+	env := agent.BuildMITMEnv("http://127.0.0.1:9999", "https://api.anthropic.com", "/new/ca.pem", "/new/ca-bundle.pem")
 
 	var httpsCount, caCount int
 	for _, e := range env {
@@ -371,17 +487,54 @@ func TestBuildMITMEnvReplacesExisting(t *testing.T) {
 }
 
 func TestExecMITMMissingBinary(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca-cert.pem")
+	if err := os.WriteFile(caPath, []byte("FAKE MSC CA\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	a := Agent{Command: "msc-nonexistent-binary-xyz-123", EnvKey: "FOO_URL", DefaultURL: "https://x"}
-	if err := a.ExecMITM("http://127.0.0.1:1", "https://x", "/tmp/ca.pem", nil); err == nil {
+	if err := a.ExecMITM("http://127.0.0.1:1", "https://x", caPath, nil); err == nil {
 		t.Error("expected error for missing binary")
 	}
 }
 
+func TestWriteCombinedCABundle(t *testing.T) {
+	dir := t.TempDir()
+	rootsPath := filepath.Join(dir, "roots.pem")
+	caPath := filepath.Join(dir, "ca-cert.pem")
+	const roots = "FAKE SYSTEM ROOTS" // no trailing newline: separator must be inserted
+	const ca = "FAKE MSC CA\n"
+	if err := os.WriteFile(rootsPath, []byte(roots), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(caPath, []byte(ca), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// systemRootsPEM honors an SSL_CERT_FILE set by the user before probing the
+	// well-known locations; use it to make the test hermetic.
+	t.Setenv("SSL_CERT_FILE", rootsPath)
+
+	bundlePath, err := writeCombinedCABundle(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "ca-bundle.pem"); bundlePath != want {
+		t.Fatalf("bundle path = %q, want %q", bundlePath, want)
+	}
+	got, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != roots+"\n"+ca {
+		t.Fatalf("bundle content = %q, want system roots followed by CA", got)
+	}
+}
+
 func FuzzBuildMITMEnv(f *testing.F) {
-	f.Add("http://127.0.0.1:9", "https://up", "/ca.pem")
-	f.Fuzz(func(t *testing.T, proxyURL, upstream, caPath string) {
+	f.Add("http://127.0.0.1:9", "https://up", "/ca.pem", "/ca-bundle.pem")
+	f.Fuzz(func(t *testing.T, proxyURL, upstream, caPath, bundlePath string) {
 		a := Agent{Command: "claude", EnvKey: "ANTHROPIC_BASE_URL"}
-		env := a.BuildMITMEnv(proxyURL, upstream, caPath)
+		env := a.BuildMITMEnv(proxyURL, upstream, caPath, bundlePath)
 		// Must never panic; every entry is a well-formed key=value pair, and no
 		// proxy/CA key is duplicated.
 		seen := map[string]int{}
@@ -392,7 +545,7 @@ func FuzzBuildMITMEnv(f *testing.F) {
 			k, _, _ := strings.Cut(e, "=")
 			seen[k]++
 		}
-		for _, k := range []string{"HTTPS_PROXY", "https_proxy", "NODE_EXTRA_CA_CERTS", mscSentinel} {
+		for _, k := range []string{"HTTPS_PROXY", "https_proxy", "NODE_EXTRA_CA_CERTS", a.sentinelKey()} {
 			if seen[k] != 1 {
 				t.Fatalf("key %q appears %d times, want 1", k, seen[k])
 			}

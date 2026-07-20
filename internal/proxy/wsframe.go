@@ -185,15 +185,30 @@ func (a *wsMessageAssembler) add(f wsFrame) ([]byte, error) {
 	over := a.overflowed
 	data := a.buf
 	a.inMsg = false
-	if !done || !textOnly || over {
-		return nil, nil // only capture complete, non-oversized text messages
+	if !done {
+		return nil, nil
 	}
 	if a.deflate && compressed {
+		// Every compressed message must pass through the inflater, captured or
+		// not: with context takeover the peer's compressor references skipped
+		// messages' plaintext, so skipping one desyncs the sliding window and
+		// corrupts every later message.
+		if over {
+			// The dropped payload can't be inflated, so the window is
+			// unrecoverably stale: stop capturing this stream.
+			return nil, errors.New("ws: oversized compressed message desyncs deflate context")
+		}
 		out, err := a.infl.inflate(data)
 		if err != nil {
 			return nil, err // deflate desync: caller stops capturing this stream
 		}
+		if !textOnly {
+			return nil, nil // inflated only to advance the shared dictionary
+		}
 		return out, nil
+	}
+	if !textOnly || over {
+		return nil, nil // only capture complete, non-oversized text messages
 	}
 	// Uncompressed text (or a non-compressed message on a deflate connection).
 	return append([]byte(nil), data...), nil

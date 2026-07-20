@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -17,10 +19,23 @@ var ReservedCommands = map[string]bool{
 	"status": true, "completion": true, "ca": true,
 }
 
-// mscSentinel is set in the child's environment by BuildEnv() so Resolve()
-// can detect nested msc invocations and read the real upstream instead of
-// the inner proxy's address.
-const mscSentinel = "MSC_UPSTREAM"
+// mscSentinelPrefix prefixes the per-agent env var set in the child's
+// environment by BuildEnv() so Resolve() can detect nested msc invocations of
+// the same agent and read the real upstream instead of the inner proxy's
+// address. The sentinel is scoped per agent because the upstream it carries is
+// only valid for that agent: a nested msc for a different agent (e.g. running
+// `msc codex` inside an `msc claude` session) must resolve its own upstream.
+// Agents that share a base-URL env var (codex/opencode/aider all read
+// OPENAI_BASE_URL / OPENAI_API_BASE) are handled by sentinelForEnv: the parent
+// poisoned that var with its proxy address, so its sentinel carries the real
+// upstream for the whole family.
+const mscSentinelPrefix = "MSC_UPSTREAM_"
+
+// sentinelKey returns the agent-scoped upstream sentinel env var name, e.g.
+// MSC_UPSTREAM_CLAUDE.
+func (a Agent) sentinelKey() string {
+	return mscSentinelPrefix + strings.ToUpper(strings.ReplaceAll(a.Command, "-", "_"))
+}
 
 func init() {
 	for name := range Registry {
@@ -65,8 +80,11 @@ var openAICapturePaths = []string{"/v1/chat/completions", "/v1/completions", "/r
 
 // geminiCapturePaths match the Gemini / Code Assist API surface (used by agy and
 // by qwen's Gemini-CLI heritage). Matching is case-insensitive substring, so
-// "generatecontent" also catches `:streamGenerateContent`.
-var geminiCapturePaths = []string{"generateContent", "countTokens"}
+// "generatecontent" also catches `:streamGenerateContent`. `:countTokens` is
+// deliberately absent: Gemini-CLI-family clients send the full "contents" array
+// to it before each `:generateContent`, so capturing it would store a
+// user-only duplicate of every turn (mirrors claude's /count_tokens exclusion).
+var geminiCapturePaths = []string{"generateContent"}
 
 // openAIV1BaseCapturePaths is for OpenAI-compatible agents whose base-URL env is
 // expected to already include the `/v1` segment (grok, qwen): the client
@@ -182,15 +200,23 @@ var Registry = map[string]Agent{
 // nothing is set. The trailing slash is stripped to prevent double-slash
 // issues in the reverse proxy.
 //
-// If MSC_UPSTREAM is set (by a parent msc process), it takes priority over
-// DetectEnv to prevent an infinite proxy loop where a nested msc reads back
-// the inner proxy's address as the upstream.
+// If the agent's MSC_UPSTREAM_<AGENT> sentinel is set (by a parent msc process
+// running the same agent), it takes priority over DetectEnv to prevent an
+// infinite proxy loop where a nested msc reads back the inner proxy's address
+// as the upstream. When a DetectEnv var was overridden by a parent msc running
+// a DIFFERENT agent (detected via that agent's sentinel, see sentinelForEnv),
+// the var holds the parent proxy's address; the sentinel value is used instead
+// so the two proxies do not chain (which would inject and capture every
+// exchange twice). Sentinels of agents unrelated to the var are ignored.
 func (a Agent) Resolve() string {
-	if v := os.Getenv(mscSentinel); v != "" {
+	if v := os.Getenv(a.sentinelKey()); v != "" {
 		return strings.TrimRight(v, "/")
 	}
 	for _, k := range a.DetectEnv {
 		if v := os.Getenv(k); v != "" {
+			if s := sentinelForEnv(k); s != "" {
+				v = s
+			}
 			return strings.TrimRight(v, "/")
 		}
 	}
@@ -200,11 +226,33 @@ func (a Agent) Resolve() string {
 	return strings.TrimRight(a.DefaultURL, "/")
 }
 
+// sentinelForEnv returns the real upstream behind env var k when a parent msc
+// has poisoned it with a proxy address. BuildEnv sets an agent's EnvKey (and
+// ExtraEnvKeys) to the proxy URL together with that agent's sentinel, so a
+// present sentinel for an agent that overrides k proves k no longer holds a
+// user-configured upstream. Registry order is randomized, so agents are
+// scanned in sorted-name order for determinism; nested parents that override
+// the same key resolve to the same upstream, so any match is equivalent.
+// Returns "" when k is trustworthy.
+func sentinelForEnv(k string) string {
+	for _, name := range ListSorted() {
+		agent := Registry[name]
+		if agent.EnvKey != k && !slices.Contains(agent.ExtraEnvKeys, k) {
+			continue
+		}
+		if v := os.Getenv(agent.sentinelKey()); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // BuildEnv constructs the child process environment. It copies the current env,
-// replaces EnvKey with the proxy URL, and sets MSC_UPSTREAM to the resolved
-// upstream so nested msc invocations can detect the real origin and avoid
-// infinite forwarding loops. The proxy listens on plain HTTP so TLS is not
-// involved in the agent→proxy hop.
+// replaces EnvKey with the proxy URL, and sets the agent-scoped
+// MSC_UPSTREAM_<AGENT> sentinel to the resolved upstream so nested msc
+// invocations of the same agent can detect the real origin and avoid infinite
+// forwarding loops. The proxy listens on plain HTTP so TLS is not involved in
+// the agent→proxy hop.
 func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 	env := os.Environ()
 
@@ -212,8 +260,8 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 	// set to the proxy URL so the agent routes through us regardless of
 	// which internal code path it takes (e.g. Gemini OAuth vs API key).
 	replace := map[string]string{
-		a.EnvKey:    proxyURL,
-		mscSentinel: upstream,
+		a.EnvKey:        proxyURL,
+		a.sentinelKey(): upstream,
 	}
 	for _, k := range a.ExtraEnvKeys {
 		replace[k] = proxyURL
@@ -239,8 +287,10 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 // variables (HTTPS_PROXY/HTTP_PROXY/ALL_PROXY) at msc and makes the child trust
 // msc's CA so the minted leaf certs verify. This catches agents that ignore a
 // base-URL override (codex ChatGPT-mode, grok session auth, agy) and turns msc
-// into a transparent HTTPS proxy. caCertPath is the PEM file the local CA wrote.
-func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath string) []string {
+// into a transparent HTTPS proxy. caCertPath is the PEM file the local CA
+// wrote; caBundlePath is the combined system-roots+CA bundle (see
+// writeCombinedCABundle).
+func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath, caBundlePath string) []string {
 	env := os.Environ()
 
 	// Lowercase variants are honored by curl/libcurl; uppercase by Go, Node, and
@@ -256,6 +306,12 @@ func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath string) []string {
 	// Node/Bun read NODE_EXTRA_CA_CERTS; OpenSSL/curl/Python/Go read SSL_CERT_FILE;
 	// curl also CURL_CA_BUNDLE; Python-requests REQUESTS_CA_BUNDLE; Deno DENO_CERT.
 	// Rust/reqwest (codex, grok) honors HTTPS_PROXY + the system store (SSL_CERT_FILE).
+	//
+	// NODE_EXTRA_CA_CERTS and DENO_CERT are additive, so the CA alone suffices.
+	// SSL_CERT_FILE, REQUESTS_CA_BUNDLE, and CURL_CA_BUNDLE REPLACE the default
+	// root store, so they get the combined bundle: with --mitm-host scoping,
+	// out-of-scope hosts are blind-tunneled and present real Web-PKI certs the
+	// child must still be able to verify.
 	replace := map[string]string{
 		"HTTPS_PROXY":         proxyURL,
 		"https_proxy":         proxyURL,
@@ -265,11 +321,11 @@ func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath string) []string {
 		"all_proxy":           proxyURL,
 		"NODE_USE_ENV_PROXY":  "1",
 		"NODE_EXTRA_CA_CERTS": caCertPath,
-		"SSL_CERT_FILE":       caCertPath,
-		"REQUESTS_CA_BUNDLE":  caCertPath,
-		"CURL_CA_BUNDLE":      caCertPath,
+		"SSL_CERT_FILE":       caBundlePath,
+		"REQUESTS_CA_BUNDLE":  caBundlePath,
+		"CURL_CA_BUNDLE":      caBundlePath,
 		"DENO_CERT":           caCertPath,
-		mscSentinel:           upstream,
+		a.sentinelKey():       upstream,
 	}
 
 	filtered := make([]string, 0, len(env)+len(replace))
@@ -306,14 +362,71 @@ func (a Agent) Exec(proxyURL, upstream string, args []string) error {
 	return a.runArgv(a.BuildEnv(proxyURL, upstream), a.buildArgs(proxyURL, args))
 }
 
+// systemRootPaths are well-known CA bundle locations, probed in order.
+// crypto/x509 keeps its equivalent list unexported, so it is mirrored here.
+var systemRootPaths = []string{
+	"/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu/Arch
+	"/etc/pki/tls/certs/ca-bundle.crt",   // Fedora/RHEL
+	"/etc/ssl/ca-bundle.pem",             // OpenSUSE
+	"/etc/ssl/cert.pem",                  // Alpine/OpenBSD
+}
+
+// systemRootsPEM returns the system root CA bundle, honoring an SSL_CERT_FILE
+// already set by the user before probing the well-known locations. Returns nil
+// if no bundle is found.
+func systemRootsPEM() []byte {
+	candidates := systemRootPaths
+	if v := os.Getenv("SSL_CERT_FILE"); v != "" {
+		candidates = append([]string{v}, candidates...)
+	}
+	for _, p := range candidates {
+		if b, err := os.ReadFile(p); err == nil {
+			return b
+		}
+	}
+	return nil
+}
+
+// writeCombinedCABundle writes the system root CAs followed by msc's CA into
+// ca-bundle.pem beside caCertPath and returns the bundle's path. The bundle is
+// for env vars that REPLACE the default trust store (SSL_CERT_FILE,
+// REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE): pointing them at msc's CA alone would
+// break TLS to every host msc blind-tunnels under --mitm-host scoping. If no
+// system bundle is found, the CA path is returned unchanged.
+func writeCombinedCABundle(caCertPath string) (string, error) {
+	roots := systemRootsPEM()
+	if roots == nil {
+		return caCertPath, nil
+	}
+	ca, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return "", fmt.Errorf("read CA cert: %w", err)
+	}
+	bundle := make([]byte, 0, len(roots)+1+len(ca))
+	bundle = append(bundle, roots...)
+	if len(bundle) > 0 && bundle[len(bundle)-1] != '\n' {
+		bundle = append(bundle, '\n')
+	}
+	bundle = append(bundle, ca...)
+	bundlePath := filepath.Join(filepath.Dir(caCertPath), "ca-bundle.pem")
+	if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
+		return "", fmt.Errorf("write CA bundle: %w", err)
+	}
+	return bundlePath, nil
+}
+
 // ExecMITM runs the agent in TLS-MITM mode: the child trusts msc's CA (via
 // caCertPath) and routes HTTPS through msc as a CONNECT proxy, rather than
 // having its API base-URL env var overridden. ProxyArgs are intentionally NOT
 // applied — in MITM mode the agent keeps its real upstream URL and msc
 // intercepts transparently; only WaitArgs are prepended.
 func (a Agent) ExecMITM(proxyURL, upstream, caCertPath string, args []string) error {
+	caBundlePath, err := writeCombinedCABundle(caCertPath)
+	if err != nil {
+		return err
+	}
 	argv := append(append([]string{}, a.WaitArgs...), args...)
-	return a.runArgv(a.BuildMITMEnv(proxyURL, upstream, caCertPath), argv)
+	return a.runArgv(a.BuildMITMEnv(proxyURL, upstream, caCertPath, caBundlePath), argv)
 }
 
 // runArgv looks up the agent binary and executes it with the given environment

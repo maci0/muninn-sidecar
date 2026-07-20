@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/tls"
 	"io"
 	"log/slog"
@@ -36,12 +37,24 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "proxy: CONNECT not supported")
 		return
 	}
-	clientConn, _, err := hj.Hijack()
+	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
 		slog.Debug("mitm: hijack failed", "target", target, "err", err)
 		return
 	}
 	defer clientConn.Close()
+
+	// A client may pipeline bytes (e.g. the TLS ClientHello) right after the
+	// CONNECT header without waiting for the 200; the server's bufio reader has
+	// already consumed them, so drain them ahead of the raw conn or the
+	// handshake/tunnel would stall waiting for data that never re-arrives.
+	if n := clientBuf.Reader.Buffered(); n > 0 {
+		pending, _ := clientBuf.Reader.Peek(n) // never fails for already-buffered bytes
+		clientConn = &prefixConn{
+			Conn: clientConn,
+			r:    io.MultiReader(bytes.NewReader(append([]byte(nil), pending...)), clientConn),
+		}
+	}
 
 	// Scope interception: only TLS-terminate hosts we care about (the agent's LLM
 	// API). Everything else is blind-tunneled untouched, so package registries,
@@ -204,7 +217,9 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
 	}
 	slog.Debug("mitm: blind-tunnel", "target", target)
 
-	// Pipe both directions; return when either side closes.
+	// Pipe both directions; return once both sides finish. The CloseWrite
+	// half-close unblocks the peer copy, so waiting for both cannot deadlock,
+	// and a half-closing client still receives the server's full response.
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
 		io.Copy(dst, src)
@@ -217,6 +232,26 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
 	go cp(upstream, clientConn)
 	go cp(clientConn, upstream)
 	<-done
+	<-done
+}
+
+// prefixConn is a net.Conn whose reads drain r (buffered bytes the HTTP server
+// consumed past the CONNECT header, chained ahead of the conn) instead of the
+// conn directly. Writes and everything else pass through.
+type prefixConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (c *prefixConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// CloseWrite forwards a half-close to the wrapped conn so tunnel splices can
+// drain the opposite direction. No-op if unsupported.
+func (c *prefixConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 // stripPort returns host without a trailing :port, unwrapping the brackets
@@ -269,6 +304,15 @@ type notifyConn struct {
 func (c *notifyConn) Close() error {
 	c.once.Do(c.onClose)
 	return c.Conn.Close()
+}
+
+// CloseWrite forwards a half-close to the wrapped conn (e.g. tls.Conn) so
+// tunnel splices can drain the opposite direction. No-op if unsupported.
+func (c *notifyConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 var _ net.Listener = (*singleConnListener)(nil)

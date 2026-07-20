@@ -344,15 +344,7 @@ func run() int {
 		} else {
 			err = agent.Exec(proxyURL, upstream, agentArgs)
 		}
-		code := 0
-		if err != nil {
-			code = 1
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
-				code = exitErr.ExitCode()
-			}
-		}
-		doneCh <- exitResult{err: err, code: code}
+		doneCh <- exitResult{err: err, code: exitCodeFromErr(err)}
 	}()
 
 	var result exitResult
@@ -361,11 +353,23 @@ func run() int {
 		// Agent exited on its own.
 	case sig := <-sigCh:
 		slog.Warn("received signal, shutting down", "signal", sig)
-		// Wait briefly for the agent to also receive the signal and exit.
+		// Forward the signal to the agent: a signal sent to msc's PID alone
+		// (kill, docker stop) never reaches the child. signalChildren skips
+		// children the kernel already signalled via the terminal's foreground
+		// process group (Ctrl+C), so the agent sees the signal exactly once.
+		signalChildren(sig)
+		// Wait briefly for the agent to exit.
 		select {
 		case result = <-doneCh:
 		case <-time.After(3 * time.Second):
-			result = exitResult{code: 130} // conventional SIGINT exit code
+			// The agent ignored the signal; kill it so it is not left
+			// running against a proxy that is about to shut down.
+			signalChildren(syscall.SIGKILL)
+			code := 130 // fallback: conventional SIGINT exit code
+			if s, ok := sig.(syscall.Signal); ok {
+				code = 128 + int(s) // shell convention, e.g. 143 for SIGTERM
+			}
+			result = exitResult{code: code}
 		}
 	}
 
@@ -393,6 +397,24 @@ func run() int {
 		}
 	}
 	return result.code
+}
+
+// exitCodeFromErr maps the error from running the agent to msc's exit code:
+// 0 on success, the child's own code when it exited, 128+N when signal N
+// killed it (the shell convention; ExitCode() reports -1 there, which
+// os.Exit would surface as an opaque 255), and 1 for any other failure.
+func exitCodeFromErr(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return 1
+	}
+	if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return exitErr.ExitCode()
 }
 
 // printDryRun outputs a preview of what msc would do without launching anything.

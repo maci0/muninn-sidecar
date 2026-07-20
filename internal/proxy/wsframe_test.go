@@ -178,6 +178,47 @@ func TestWSAssembler(t *testing.T) {
 	}
 }
 
+// TestWSAssemblerCompressedBinaryAdvancesDict proves a skipped compressed
+// binary message still feeds the inflater so context takeover stays in sync:
+// a later compressed text message that back-references the binary message's
+// plaintext must decode correctly instead of desyncing.
+func TestWSAssemblerCompressedBinaryAdvancesDict(t *testing.T) {
+	// Two messages share a long substring; the second (text) back-references the
+	// first (binary) through the carried-over LZ77 window.
+	shared := "deploy the service to us-east-1 immediately and confirm"
+	payloads := wsDeflateMessages(t, []string{shared, shared + " done"})
+
+	a := &wsMessageAssembler{deflate: true}
+	// Binary compressed message: not captured, but must advance the dictionary.
+	got, err := a.add(wsFrame{fin: true, rsv1: true, opcode: wsOpBinary, payload: payloads[0]})
+	if err != nil {
+		t.Fatalf("compressed binary add: %v", err)
+	}
+	if got != nil {
+		t.Errorf("compressed binary should not be captured, got %q", got)
+	}
+	// Text compressed message referencing the binary message's plaintext.
+	got, err = a.add(wsFrame{fin: true, rsv1: true, opcode: wsOpText, payload: payloads[1]})
+	if err != nil {
+		t.Fatalf("compressed text add after binary: %v", err)
+	}
+	if string(got) != shared+" done" {
+		t.Errorf("context takeover desynced after skipped binary: got %q, want %q", got, shared+" done")
+	}
+}
+
+// TestWSAssemblerOversizedCompressedFatal proves an oversized compressed
+// message is treated as an unrecoverable desync (its plaintext can't be
+// recovered for the window), so add returns an error to stop capture.
+func TestWSAssemblerOversizedCompressedFatal(t *testing.T) {
+	a := &wsMessageAssembler{deflate: true}
+	// A single compressed frame whose declared payload pushes buf past the cap.
+	big := make([]byte, wsMaxMessage+1)
+	if _, err := a.add(wsFrame{fin: true, rsv1: true, opcode: wsOpText, payload: big}); err == nil {
+		t.Fatal("oversized compressed message should return a fatal desync error, got nil")
+	}
+}
+
 func FuzzWSInflate(f *testing.F) {
 	f.Add([]byte{0x00})
 	f.Add([]byte("not a deflate stream"))

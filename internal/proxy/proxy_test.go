@@ -1181,6 +1181,52 @@ func TestCaptureResponseSkipsGRPC(t *testing.T) {
 	}
 }
 
+// blockingBody is a ReadCloser whose Read blocks forever, standing in for the
+// live upgraded connection a 101 response carries. If captureResponse reads it,
+// the test hangs, proving the read would block the handler goroutine.
+type blockingBody struct{ closed chan struct{} }
+
+func (b *blockingBody) Read([]byte) (int, error) { <-b.closed; return 0, io.EOF }
+func (b *blockingBody) Close() error             { return nil }
+
+func TestCaptureResponseSkips101Upgrade(t *testing.T) {
+	// httputil.ReverseProxy calls ModifyResponse on a 101 before its native
+	// upgrade handling, and the body is already the live upgraded connection.
+	// captureResponse must skip it: reading the body would block (and then
+	// destroy) the upgrade. A blocking body proves it is never read.
+	rec := &recordStore{}
+	p := &Proxy{store: rec}
+
+	body := &blockingBody{closed: make(chan struct{})}
+	req := httptest.NewRequest("GET", "/backend-api/codex/responses", nil)
+	req = req.WithContext(withCapture(req.Context(), &captureCtx{start: time.Now(), path: req.URL.Path, agent: "codex"}))
+	resp := &http.Response{
+		StatusCode: http.StatusSwitchingProtocols,
+		Header:     http.Header{"Upgrade": {"websocket"}, "Connection": {"Upgrade"}},
+		Body:       body,
+		Request:    req,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- p.captureResponse(resp) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("captureResponse: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("captureResponse blocked on the 101 upgrade body")
+	}
+
+	// Body must be left intact (untouched) for the reverse proxy's upgrade splice.
+	if resp.Body != body {
+		t.Error("101 response body was replaced; upgrade handling would break")
+	}
+	if n := len(rec.all()); n != 0 {
+		t.Errorf("101 upgrade must not be stored, got %d exchanges", n)
+	}
+}
+
 func TestStreamCaptureAccumulatesText(t *testing.T) {
 	// Test that SSE streaming correctly accumulates assistant text across
 	// multiple delta events and produces a synthetic response body.

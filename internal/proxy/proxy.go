@@ -363,6 +363,15 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 		return nil
 	}
 
+	// Protocol upgrades: ReverseProxy calls ModifyResponse on a 101 before its
+	// upgrade handling, and the body is already the live upgraded connection.
+	// Reading it here would block on (and then destroy) the upgraded stream, so
+	// skip capture and let the reverse proxy splice the connection natively.
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		slog.Debug("skipping capture of protocol upgrade response", "path", ctx.path)
+		return nil
+	}
+
 	contentType := resp.Header.Get("Content-Type")
 
 	// Surface upstream API failures. Without this a 401/429/5xx from the LLM

@@ -128,8 +128,17 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 func readHeaderBlock(r *bufio.Reader) ([]byte, error) {
 	var out []byte
 	for {
-		line, err := r.ReadBytes('\n')
+		// ReadSlice (not ReadBytes) so a backend streaming endless bytes with no
+		// newline can't grow an unbounded fragment list: it returns ErrBufferFull
+		// per buffer-load, letting the cap below fire mid-line.
+		line, err := r.ReadSlice('\n')
 		out = append(out, line...)
+		if err == bufio.ErrBufferFull {
+			if len(out) > 64<<10 {
+				return out, io.ErrShortBuffer
+			}
+			continue
+		}
 		if err != nil {
 			return out, err
 		}
@@ -253,8 +262,19 @@ func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, back
 		slog.Debug("ws capture: tapping upgraded tunnel", "target", target, "deflate", deflate)
 	}
 
+	// Wait for both directions: returning on the first would close both conns
+	// and truncate the peer copy mid-stream (e.g. the WS close handshake). The
+	// half-close lets the peer direction drain, so this cannot deadlock.
 	done := make(chan struct{}, 2)
-	go func() { spliceCopyTap(backend, clientBuf, c2s, target); done <- struct{}{} }() // client → server (masked frames)
-	go func() { spliceCopyTap(client, backendBuf, s2c, target); done <- struct{}{} }() // server → client (post-101 frames)
+	splice := func(dst net.Conn, src io.Reader, tap chan []byte) {
+		spliceCopyTap(dst, src, tap, target)
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+			cw.CloseWrite()
+		}
+		done <- struct{}{}
+	}
+	go splice(backend, clientBuf, c2s) // client → server (masked frames)
+	go splice(client, backendBuf, s2c) // server → client (post-101 frames)
+	<-done
 	<-done
 }

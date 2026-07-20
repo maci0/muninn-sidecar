@@ -456,6 +456,79 @@ func TestMITMSpliceUpgradeBackendUnreachable(t *testing.T) {
 	}
 }
 
+// TestBlindTunnelDrainsBothDirections proves a client that half-closes after
+// sending its request still receives the server's full response: blindTunnel
+// must wait for both copy directions, not return on the first.
+func TestBlindTunnelDrainsBothDirections(t *testing.T) {
+	// Upstream server: read the request until the client's half-close (EOF),
+	// then reply and close. Models a server that answers only after the request.
+	upLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upLn.Close()
+	go func() {
+		c, err := upLn.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		io.ReadAll(c) // drains until the client's CloseWrite -> EOF
+		io.WriteString(c, "SERVER-RESPONSE")
+	}()
+
+	// Client side: a real TCP pair so CloseWrite propagates a FIN.
+	clLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clLn.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := clLn.Accept()
+		if err != nil {
+			accepted <- nil
+			return
+		}
+		accepted <- c
+	}()
+	testEnd, err := net.Dial("tcp", clLn.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer testEnd.Close()
+	clientConn := <-accepted
+	if clientConn == nil {
+		t.Fatal("client accept failed")
+	}
+	defer clientConn.Close()
+
+	go (&Proxy{}).blindTunnel(clientConn, upLn.Addr().String())
+
+	testEnd.SetDeadline(time.Now().Add(5 * time.Second))
+	br := bufio.NewReader(testEnd)
+	// Consume the "200 Connection established" header block.
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading CONNECT 200: %v", err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	io.WriteString(testEnd, "REQUEST")
+	testEnd.(*net.TCPConn).CloseWrite() // half-close: request done, response pending
+
+	rest, err := io.ReadAll(br)
+	if err != nil {
+		t.Fatalf("reading server response through tunnel: %v", err)
+	}
+	if !strings.Contains(string(rest), "SERVER-RESPONSE") {
+		t.Errorf("tunnel truncated the response after client half-close: got %q", rest)
+	}
+}
+
 func TestShouldInterceptHost(t *testing.T) {
 	p, err := New(Config{
 		ListenAddr: "127.0.0.1:0",

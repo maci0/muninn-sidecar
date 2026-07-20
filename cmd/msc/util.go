@@ -1,9 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 )
 
 // mitmCADir returns the directory holding msc's TLS-MITM certificate authority,
@@ -24,6 +30,108 @@ func mitmCADir() (string, error) {
 		return "", fmt.Errorf("creating MITM CA dir: %w", err)
 	}
 	return dir, nil
+}
+
+// statFields reads /proc/<pid>/stat and returns the fields after the comm
+// field, or nil on error. The stat format is "pid (comm) state ppid pgrp
+// session tty_nr tpgid ..."; comm may contain spaces or parens, so parsing
+// starts from the last ')'. In the returned slice, index 0 is the state,
+// 1 the ppid, 2 the pgrp, and 5 the tpgid.
+func statFields(pid int) []string {
+	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return nil
+	}
+	i := bytes.LastIndexByte(stat, ')')
+	if i < 0 {
+		return nil
+	}
+	return strings.Fields(string(stat[i+1:]))
+}
+
+// childProc identifies a direct child process and its process group.
+type childProc struct {
+	pid  int
+	pgrp int
+}
+
+// childProcs returns this process's direct children by walking /proc. The
+// agents package owns child process construction and does not expose the
+// handle, so signal forwarding discovers the agent via the kernel. Returns
+// nil on platforms without /proc (forwarding is then a no-op and only
+// terminal-generated signals reach the child).
+func childProcs() []childProc {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	self := os.Getpid()
+	var children []childProc
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue // not a process directory
+		}
+		fields := statFields(pid)
+		if len(fields) < 3 {
+			continue // process exited mid-walk or malformed stat
+		}
+		ppid, perr := strconv.Atoi(fields[1])
+		pgrp, gerr := strconv.Atoi(fields[2])
+		if perr == nil && gerr == nil && ppid == self {
+			children = append(children, childProc{pid: pid, pgrp: pgrp})
+		}
+	}
+	return children
+}
+
+// termForegroundPgrp returns the foreground process group of this process's
+// controlling terminal (tpgid), or -1 when there is no controlling terminal
+// (the kernel's own sentinel) or no /proc.
+func termForegroundPgrp() int {
+	fields := statFields(os.Getpid())
+	if len(fields) < 6 {
+		return -1
+	}
+	tpgid, err := strconv.Atoi(fields[5])
+	if err != nil {
+		return -1
+	}
+	return tpgid
+}
+
+// shouldForward reports whether sig must be forwarded to a child in process
+// group pgrp, given fgPgrp, the foreground process group of the controlling
+// terminal. A terminal-generated SIGINT (Ctrl+C) is already delivered by the
+// kernel to every process in the foreground group; forwarding it again would
+// double-signal the agent, which "press Ctrl+C again to force-quit" CLIs
+// treat as a hard exit. All other cases forward: SIGTERM has no terminal
+// keybinding (kill and docker stop signal msc's PID alone), and a child
+// outside the foreground group cannot have seen a terminal SIGINT. The rare
+// kill -INT aimed at a foreground msc is indistinguishable from Ctrl+C and
+// is left to the SIGKILL fallback in run().
+func shouldForward(sig syscall.Signal, pgrp, fgPgrp int) bool {
+	return sig != syscall.SIGINT || pgrp != fgPgrp
+}
+
+// signalChildren forwards sig to every direct child process (the launched
+// agent) that has not already received it from the kernel via the terminal's
+// foreground process group. Errors other than "process already gone" are
+// logged, not fatal: shutdown must proceed regardless.
+func signalChildren(sig os.Signal) {
+	s, ok := sig.(syscall.Signal)
+	if !ok {
+		return
+	}
+	fgPgrp := termForegroundPgrp()
+	for _, c := range childProcs() {
+		if !shouldForward(s, c.pgrp, fgPgrp) {
+			continue
+		}
+		if err := syscall.Kill(c.pid, s); err != nil && !errors.Is(err, syscall.ESRCH) {
+			slog.Warn("failed to signal child", "pid", c.pid, "err", err)
+		}
+	}
 }
 
 // logf prints a human-friendly message to stderr with the msc: prefix.

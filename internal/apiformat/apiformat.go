@@ -150,6 +150,10 @@ func extractRecentGemini(doc map[string]any, turns int) string {
 			continue
 		}
 		role, _ := GetString(c, "role")
+		// The Gemini API allows role to be omitted; it defaults to "user".
+		if role == "" {
+			role = "user"
+		}
 		if role != "user" && role != "model" && role != "assistant" {
 			continue
 		}
@@ -196,6 +200,18 @@ func ExtractUserQuery(doc map[string]any, format string) string {
 	return ""
 }
 
+// unwrapCloudCodeResponse descends into the "response" envelope that Gemini
+// Cloud Code (cloudcode-pa, used by gemini-cli) wraps around standard Gemini
+// responses, so the candidate walkers see the same shape as a plain response.
+func unwrapCloudCodeResponse(doc map[string]any) map[string]any {
+	if resp, ok := GetMap(doc, "response"); ok {
+		if _, ok := resp["candidates"]; ok {
+			return resp
+		}
+	}
+	return doc
+}
+
 // ExtractAssistantMessage pulls the assistant's response text and tool action
 // summary from a response body, handling Anthropic, OpenAI, and Gemini formats.
 // When the response contains tool_use blocks (common in coding agent sessions),
@@ -209,6 +225,7 @@ func ExtractAssistantMessage(body []byte) string {
 	if !ok {
 		return ""
 	}
+	doc = unwrapCloudCodeResponse(doc)
 
 	// Anthropic response: top-level content[] array with text and tool_use blocks.
 	if content, ok := GetArray(doc, "content"); ok {
@@ -507,7 +524,8 @@ func extractGeminiUserQuery(doc map[string]any) string {
 		if !ok {
 			continue
 		}
-		if c["role"] != "user" {
+		// The Gemini API allows role to be omitted; it defaults to "user".
+		if role, _ := GetString(c, "role"); role != "user" && role != "" {
 			continue
 		}
 		parts, ok := GetArray(c, "parts")
@@ -524,7 +542,11 @@ func extractGeminiUserQuery(doc map[string]any) string {
 				texts = append(texts, t)
 			}
 		}
-		return strings.Join(texts, " ")
+		// A user content with no text parts (e.g. a functionResponse in a
+		// tool loop) is not a query; keep scanning for the real user message.
+		if len(texts) > 0 {
+			return strings.Join(texts, " ")
+		}
 	}
 	return ""
 }
@@ -553,7 +575,11 @@ func extractOpenAIResponsesUserQuery(doc map[string]any) string {
 		if item["role"] != "user" {
 			continue
 		}
-		return openaiResponsesItemText(item)
+		// A user item with no text (e.g. image-only content) is not a query;
+		// keep scanning for the previous user message.
+		if text := openaiResponsesItemText(item); text != "" {
+			return text
+		}
 	}
 	return ""
 }
@@ -618,6 +644,8 @@ func extractRecentOpenAIResponses(doc map[string]any, turns int) string {
 // ExtractSSEDelta extracts a text delta from a pre-parsed SSE event map.
 // Supports Anthropic, OpenAI (chat + responses), and Gemini delta formats.
 func ExtractSSEDelta(doc map[string]any) string {
+	doc = unwrapCloudCodeResponse(doc)
+
 	// Anthropic: {"type":"content_block_delta","delta":{"type":"text_delta","text":"chunk"}}
 	if doc["type"] == "content_block_delta" {
 		if delta, ok := GetMap(doc, "delta"); ok {
@@ -676,6 +704,8 @@ func ExtractSSEDelta(doc map[string]any) string {
 //   - OpenAI responses: response.output_item.added with function_call item
 //   - Gemini: candidates[].content.parts[].functionCall.name
 func ExtractSSEToolName(doc map[string]any) string {
+	doc = unwrapCloudCodeResponse(doc)
+
 	// Anthropic: content_block_start with tool_use.
 	if doc["type"] == "content_block_start" {
 		if cb, ok := GetMap(doc, "content_block"); ok {

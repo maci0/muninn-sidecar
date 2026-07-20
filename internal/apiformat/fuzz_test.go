@@ -123,6 +123,7 @@ func FuzzExtractSSE(f *testing.F) {
 	f.Add([]byte(`{"choices":[{"delta":{"content":"x","tool_calls":[{"function":{"name":"f"}}]}}]}`))
 	f.Add([]byte(`{"candidates":[{"content":{"parts":[{"text":"x"}]}}]}`))
 	f.Add([]byte(`{"type":"response.output_text.delta","delta":"x"}`))
+	f.Add([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"x"}]}}]}}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		doc, ok := docFrom(data)
 		if !ok {

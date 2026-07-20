@@ -145,6 +145,37 @@ func TestParseCACorruptRegenerates(t *testing.T) {
 	}
 }
 
+func TestParseCAMismatchedKeyRegenerates(t *testing.T) {
+	dir := t.TempDir()
+	// Simulate an interrupted persistCA: a valid cert alongside a key from a
+	// different generation. LoadOrCreateCA must regenerate, not reuse the pair.
+	ca := mustGenCA(t)
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyOut, err := marshalKeyPEM(otherKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "ca-cert.pem"), ca.CertPEM(), 0o644)
+	os.WriteFile(filepath.Join(dir, "ca-key.pem"), keyOut, 0o600)
+
+	if _, err := parseCA(ca.CertPEM(), keyOut); err == nil {
+		t.Error("parseCA accepted a key that does not match the cert")
+	}
+	loaded, err := LoadOrCreateCA(dir)
+	if err != nil {
+		t.Fatalf("should regenerate on mismatched pair, got %v", err)
+	}
+	if string(loaded.CertPEM()) == string(ca.CertPEM()) {
+		t.Error("mismatched CA pair was reused instead of regenerated")
+	}
+	if !loaded.key.PublicKey.Equal(loaded.cert.PublicKey) {
+		t.Error("regenerated CA key does not match its cert")
+	}
+}
+
 func TestCARegeneratesNearExpiry(t *testing.T) {
 	dir := t.TempDir()
 	// Seed a CA cert/key that expires within the renew window.

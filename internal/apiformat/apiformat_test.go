@@ -274,6 +274,24 @@ func TestExtractUserQuery(t *testing.T) {
 			want:   "hello cc",
 		},
 		{
+			name:   "gemini scans past functionResponse turn",
+			json:   `{"contents":[{"role":"user","parts":[{"text":"real question"}]},{"role":"model","parts":[{"functionCall":{"name":"f"}}]},{"role":"user","parts":[{"functionResponse":{"name":"f","response":{}}}]}]}`,
+			format: Gemini,
+			want:   "real question",
+		},
+		{
+			name:   "gemini omitted role treated as user",
+			json:   `{"contents":[{"parts":[{"text":"roleless"}]}]}`,
+			format: Gemini,
+			want:   "roleless",
+		},
+		{
+			name:   "openai responses scans past image-only user item",
+			json:   `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"earlier"},{"type":"message","role":"assistant","content":"reply"},{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:..."}]}]}`,
+			format: OpenAIResponses,
+			want:   "earlier",
+		},
+		{
 			name:   "openai responses string input",
 			json:   `{"model":"gpt-4o","input":"hello responses"}`,
 			format: OpenAIResponses,
@@ -361,6 +379,16 @@ func TestExtractAssistantMessage(t *testing.T) {
 			name: "gemini functionCall",
 			body: `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"readFile"}}]}}]}`,
 			want: "[readFile]",
+		},
+		{
+			name: "gemini cloudcode response envelope",
+			body: `{"response":{"candidates":[{"content":{"parts":[{"text":"Wrapped."},{"functionCall":{"name":"readFile"}}]}}]}}`,
+			want: "Wrapped.\n[readFile]",
+		},
+		{
+			name: "response envelope without candidates ignored",
+			body: `{"response":{"usageMetadata":{"totalTokenCount":5}}}`,
+			want: "",
 		},
 		{
 			name: "openai responses text only",
@@ -476,6 +504,13 @@ func TestExtractRecentContext(t *testing.T) {
 			want:   "user: question",
 		},
 		{
+			name:   "gemini omitted role treated as user",
+			json:   `{"contents":[{"parts":[{"text":"roleless"}]}]}`,
+			format: Gemini,
+			turns:  3,
+			want:   "user: roleless",
+		},
+		{
 			name:   "openai responses string input",
 			json:   `{"input":"hello world"}`,
 			format: OpenAIResponses,
@@ -588,6 +623,8 @@ func TestExtractSSEToolNameBranches(t *testing.T) {
 		{"openai chat arg-only chunk", `{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{}"}}]}}]}`, ""},
 		{"openai chat no tool_calls", `{"choices":[{"delta":{"content":"hi"}}]}`, ""},
 		{"gemini functionCall", `{"candidates":[{"content":{"parts":[{"text":"x"},{"functionCall":{"name":"grep"}}]}}]}`, "grep"},
+		{"gemini cloudcode envelope functionCall", `{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"grep"}}]}}]}}`, "grep"},
+		{"response envelope without candidates", `{"response":{"usageMetadata":{}}}`, ""},
 		{"gemini no functionCall", `{"candidates":[{"content":{"parts":[{"text":"x"}]}}]}`, ""},
 		{"gemini empty candidates content", `{"candidates":[{}]}`, ""},
 		{"gemini content no parts", `{"candidates":[{"content":{}}]}`, ""},
@@ -602,6 +639,32 @@ func TestExtractSSEToolNameBranches(t *testing.T) {
 			}
 			if got := ExtractSSEToolName(doc); got != c.want {
 				t.Errorf("ExtractSSEToolName(%s) = %q, want %q", c.doc, got, c.want)
+			}
+		})
+	}
+}
+
+func TestExtractSSEDelta(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{"anthropic text delta", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"chunk"}}`, "chunk"},
+		{"openai chat delta", `{"choices":[{"delta":{"content":"chunk"}}]}`, "chunk"},
+		{"gemini candidates", `{"candidates":[{"content":{"parts":[{"text":"chunk"}]}}]}`, "chunk"},
+		{"gemini cloudcode envelope", `{"response":{"candidates":[{"content":{"parts":[{"text":"chunk"}]}}]}}`, "chunk"},
+		{"response envelope without candidates", `{"response":{"usageMetadata":{}}}`, ""},
+		{"unknown shape", `{"foo":"bar"}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(c.doc), &doc); err != nil {
+				t.Fatalf("bad test doc: %v", err)
+			}
+			if got := ExtractSSEDelta(doc); got != c.want {
+				t.Errorf("ExtractSSEDelta(%s) = %q, want %q", c.doc, got, c.want)
 			}
 		})
 	}

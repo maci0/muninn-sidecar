@@ -62,6 +62,27 @@ func TestGroundMemoriesTopK(t *testing.T) {
 	}
 }
 
+func TestGroundMemoriesEvictsRejectionsFromWindow(t *testing.T) {
+	g := &stubGrounder{}
+	inj := New(Config{MCPURL: "http://unused", Grounder: g, GroundTopK: 5})
+	recalled := []memory{
+		{ID: "1", Concept: "a", Content: "has the ANSWER", Score: 0.9},
+		{ID: "2", Concept: "b", Content: "same topic, judged irrelevant", Score: 0.8},
+	}
+	// Mirror Enrich's fresh-recall path: merge into the window, gate, ground.
+	merged := selectForInjection(inj.mergeMemories(recalled), 0.6)
+	got := inj.groundMemories(context.Background(), "q", merged)
+	if len(got) != 1 || got[0].ID != "1" {
+		t.Fatalf("expected only the ANSWER-bearing memory kept, got %+v", got)
+	}
+	// The same-intent continuation path rebuilds the injection set from the
+	// window without re-grounding, so the rejection must be evicted from it.
+	reused := selectForInjection(inj.snapshotWindow(), 0.6)
+	if len(reused) != 1 || reused[0].ID != "1" {
+		t.Fatalf("continuation reuse would inject %+v, want only memory 1", reused)
+	}
+}
+
 func TestGroundMemoriesStats(t *testing.T) {
 	st := &stats.Stats{}
 	g := &stubGrounder{}

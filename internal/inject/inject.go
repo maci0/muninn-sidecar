@@ -465,7 +465,8 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		merged = selectForInjection(inj.mergeMemories(memories), minScore)
 		// Optional answer-grounding rerank: drop gated candidates the judge says
 		// don't answer the query (the cross-encoder precision step, §B4). Only on
-		// fresh recalls — the window holds already-vetted memories.
+		// fresh recalls; groundMemories also evicts rejections from the session
+		// window, so the same-intent reuse path above holds only vetted memories.
 		if inj.grounder != nil && len(merged) > 0 {
 			merged = inj.groundMemories(ctx, query, merged)
 		}
@@ -898,14 +899,27 @@ func (inj *Injector) groundMemories(ctx context.Context, query string, mems []me
 	}
 	mask := inj.grounder.Relevant(ctx, query, passages) // one listwise call
 	kept := make([]memory, 0, len(mems))
-	dropped := 0
+	var droppedIDs []string
 	for i, m := range mems {
 		if i < n && i < len(mask) && !mask[i] {
-			dropped++
+			droppedIDs = append(droppedIDs, m.ID)
 			continue
 		}
 		kept = append(kept, m)
 	}
+	// Evict judge-rejected memories from the session window too. Continuations
+	// of the same intent reuse the window without re-grounding (Enrich's
+	// same-intent path), so leaving a rejected memory there would re-inject it
+	// on every subsequent round of the tool-use loop. A later *different* intent
+	// re-recalls and re-grounds it against the new query, so eviction loses nothing.
+	if len(droppedIDs) > 0 {
+		inj.mu.Lock()
+		for _, id := range droppedIDs {
+			delete(inj.recentMemories, id)
+		}
+		inj.mu.Unlock()
+	}
+	dropped := len(droppedIDs)
 	slog.Debug("inject: grounding rerank", "judged", n, "dropped", dropped, "kept", len(kept), "judge", inj.grounder.Label())
 	if inj.stats != nil {
 		inj.stats.GroundingRuns.Add(1)

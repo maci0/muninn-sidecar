@@ -58,7 +58,9 @@ func Prompt(query string, passages []string) string {
 	return sb.String()
 }
 
-var verdictRE = regexp.MustCompile(`(?i)(\d+)\s*[:.)\-]?\s*(yes|no|true|false|relevant|irrelevant)`)
+// The trailing \b keeps a verdict from matching as a prefix of ordinary prose
+// ("3 notes" is not "3: no"), which would overwrite a real verdict for that index.
+var verdictRE = regexp.MustCompile(`(?i)(\d+)\s*[:.)\-]?\s*(yes|no|true|false|relevant|irrelevant)\b`)
 
 // ParseMask reads "<n>: yes/no" verdicts from model text into a mask of length
 // n. Entries with no verdict default to true (fail-open). A bare single "yes"/
@@ -215,8 +217,11 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	}
 	cctx, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
-	args := append(append([]string(nil), g.argv[1:]...), Prompt(query, passages))
-	cmd := exec.CommandContext(cctx, g.argv[0], args...)
+	cmd := exec.CommandContext(cctx, g.argv[0], g.argv[1:]...)
+	// The prompt carries the user's query and recalled memory text; deliver it
+	// on stdin (CLI judges read it there), never argv, where /proc/<pid>/cmdline
+	// would expose it to every user on the host for the duration of the call.
+	cmd.Stdin = strings.NewReader(Prompt(query, passages))
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil && stdout.Len() == 0 {

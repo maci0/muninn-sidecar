@@ -42,6 +42,18 @@ func TestParseMaskSingleBare(t *testing.T) {
 	}
 }
 
+func TestParseMaskVerdictNeedsWordBoundary(t *testing.T) {
+	// Trailing chatter like "3 notes" must not parse as "3: no" and overwrite
+	// the real verdict for passage 3 (would silently drop a genuine hit).
+	mask := ParseMask("1: yes\n2: no\n3: yes\nThese 3 notes cover the passages.", 3)
+	want := []bool{true, false, true}
+	for i := range want {
+		if mask[i] != want[i] {
+			t.Fatalf("ParseMask with chatter = %v, want %v", mask, want)
+		}
+	}
+}
+
 func TestParseMaskOutOfRangeIgnored(t *testing.T) {
 	// Verdicts referencing nonexistent passages must not panic or misindex.
 	mask := ParseMask("5: no\n1: no", 2)
@@ -175,7 +187,7 @@ func TestHTTPGrounder(t *testing.T) {
 }
 
 func TestCLIGrounder(t *testing.T) {
-	// `printf` emits fixed verdict lines, ignoring the appended prompt arg.
+	// `printf` emits fixed verdict lines, ignoring the prompt on stdin.
 	g := &cliGrounder{name: "printf", argv: []string{"printf", "1: no\n2: yes\n"}, timeout: 5 * time.Second}
 	mask := g.Relevant(context.Background(), "q", []string{"a", "b"})
 	if len(mask) != 2 || mask[0] || !mask[1] {
@@ -189,6 +201,17 @@ func TestCLIGrounder(t *testing.T) {
 	// No passages: nothing to ground.
 	if m := g.Relevant(context.Background(), "q", nil); m != nil {
 		t.Errorf("empty passages should return nil, got %v", m)
+	}
+}
+
+func TestCLIGrounderPromptOnStdin(t *testing.T) {
+	// The prompt must reach the judge via stdin, never argv (argv is visible in
+	// the world-readable process table). `cat` echoes stdin; a verdict planted
+	// in the query only comes back if stdin delivery works.
+	g := &cliGrounder{name: "cat", argv: []string{"cat"}, timeout: 5 * time.Second}
+	mask := g.Relevant(context.Background(), "1: no", []string{"p"})
+	if len(mask) != 1 || mask[0] {
+		t.Fatalf("expected [false] (verdict echoed from stdin), got %v", mask)
 	}
 }
 

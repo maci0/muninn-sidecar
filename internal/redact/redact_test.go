@@ -34,6 +34,9 @@ func TestRedactSecrets(t *testing.T) {
 		{"basic auth header", "Authorization: Basic " + strings.Repeat("k", 24), strings.Repeat("k", 24)},
 		{"email address", "alice.dev" + "@" + "example.com", "alice.dev" + "@" + "example.com"},
 		{"email plus tag", "u.ser+tag" + "@" + "sub.corp.co.uk", "u.ser+tag" + "@" + "sub.corp.co.uk"},
+		{"email password combo", "john.doe" + "@" + "example.com:hunter2pass99", "example.com:hunter2pass99"},
+		{"email then colon word", "alice" + "@" + "example.com:signed", "alice" + "@" + "example.com"},
+		{"url embedded credentials", "https://user" + "@" + "example.com:pass" + "@" + "host.com/x", "example.com:pass"},
 		{"visa card", "4111" + "1111" + "1111" + "1111", "4111111111111111"},
 		{"mastercard card", "5500" + "0000" + "0000" + "0004", "5500000000000004"},
 		{"amex card", "3782" + "822463" + "10005", "378282246310005"},
@@ -60,14 +63,18 @@ func TestRedactSecrets(t *testing.T) {
 	// Legitimate prose must be left intact (no false positives).
 	clean := []string{
 		"Let's refactor the authentication module today.",
-		"The function returns sk- prefixed ids? no.", // "sk-" without 20+ chars
-		"bearer of bad news",                         // "bearer" without a token
-		"pk" + "_live_" + strings.Repeat("x", 24),    // Stripe publishable key is public — keep
-		"email me at the office",                      // "email" word without an address
-		"version 1.2.3 of the package",               // dotted numbers are not an email
-		"order id 1234567890123456 shipped",           // 16 digits but not a card prefix (starts with 1)
-		"build 8888-0000-0000-0000 tagged",            // dashed groups but not a card prefix
-		"ticket 12-34-5678 resolved",                  // not the SSN 3-2-4 grouping
+		"The function returns sk- prefixed ids? no.",           // "sk-" without 20+ chars
+		"bearer of bad news",                                   // "bearer" without a token
+		"pk" + "_live_" + strings.Repeat("x", 24),              // Stripe publishable key is public, keep
+		"email me at the office",                               // "email" word without an address
+		"version 1.2.3 of the package",                         // dotted numbers are not an email
+		"order id 1234567890123456 shipped",                    // 16 digits but not a card prefix (starts with 1)
+		"build 8888-0000-0000-0000 tagged",                     // dashed groups but not a card prefix
+		"ticket 12-34-5678 resolved",                           // not the SSN 3-2-4 grouping
+		"deploy task-management-service-prod now",              // "sk-" inside a word is not a key
+		"galaxai-" + strings.Repeat("m", 24),                   // "xai-" inside a word is not a key
+		"git clone git" + "@" + "github.com:org/repo.git",      // scp-style remote, not an email
+		"rsync app deploy" + "@" + "prod.example.com:/var/www", // scp target, not an email
 		"",
 	}
 	for _, c := range clean {
@@ -87,6 +94,11 @@ func TestRedactKeyValueSecrets(t *testing.T) {
 		{"json client secret", `"client_secret": "abc123def456ghi"`},
 		{"access token", "access_token = abcdef1234567890"},
 		{"private key var", "PRIVATE_KEY=longprivatekeymaterialxyz"},
+		{"quoted multi-word value", `DB_PASSWORD="correct horse battery"`},
+		{"quoted short first word", `PASSWORD="my secret pass"`},
+		{"single-quoted multi-word", `export SECRET='p@ss word1 word2'`},
+		{"unterminated quote", `password="abcdefgh12345`},
+		{"unterminated quote export", `export DB_PASSWORD="supersecretvalue123`},
 	}
 	for _, tc := range redacted {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,7 +107,7 @@ func TestRedactKeyValueSecrets(t *testing.T) {
 				t.Errorf("expected redaction, got %q", got)
 			}
 			// The key name must survive (context); the value must not.
-			for _, secretVal := range []string{"supersecretvalue123", "hunter2-longer-pw", "my-secret-passphrase", "abc123def456ghi", "abcdef1234567890", "longprivatekeymaterialxyz"} {
+			for _, secretVal := range []string{"supersecretvalue123", "hunter2-longer-pw", "my-secret-passphrase", "abc123def456ghi", "abcdef1234567890", "longprivatekeymaterialxyz", "correct horse battery", "my secret pass", "p@ss word1 word2", "abcdefgh12345"} {
 				if strings.Contains(got, secretVal) {
 					t.Errorf("value leaked: %q", got)
 				}
@@ -110,6 +122,7 @@ func TestRedactKeyValueSecrets(t *testing.T) {
 		"password=",                          // no value
 		"width=1200px",                       // non-sensitive key
 		"tokens=5 returned",                  // "tokens" != "token" (word boundary)
+		`password="abc"`,                     // quoted value under the 6-char minimum
 		"discuss the api_key design",         // no separator+value
 	}
 	for _, c := range clean {
@@ -143,6 +156,9 @@ func FuzzRedactSecrets(f *testing.F) {
 	f.Add("contact alice" + "@" + "example.com please")
 	f.Add("card 4111" + "1111" + "1111" + "1111 on file")
 	f.Add("ssn 123-45-6789 on record")
+	f.Add("login bob" + "@" + "example.com:hunter2pass99 now")
+	f.Add(`password="abcdefgh12345`)
+	f.Add(`pAsswd="000000"0`) // quoted match leaves a stray byte; second pass must not re-redact
 	f.Fuzz(func(t *testing.T, s string) {
 		got := Secrets(s)
 		// Idempotence: the marker contains no secret pattern, so a second pass

@@ -75,6 +75,31 @@ func TestWSExchangeReasoningOnlySkipped(t *testing.T) {
 	}
 }
 
+func TestReadHeaderBlockBoundedMidLine(t *testing.T) {
+	// A backend that streams bytes with no '\n' must not grow the accumulator
+	// without bound: the 64 KiB cap fires mid-line and returns ErrShortBuffer.
+	huge := bytes.Repeat([]byte("x"), 256<<10) // no newline anywhere
+	out, err := readHeaderBlock(bufio.NewReader(bytes.NewReader(huge)))
+	if err != io.ErrShortBuffer {
+		t.Fatalf("expected io.ErrShortBuffer for endless no-newline stream, got %v", err)
+	}
+	if len(out) > 64<<10+4096 {
+		t.Fatalf("accumulator exceeded bound: %d bytes", len(out))
+	}
+}
+
+func TestReadHeaderBlockReadsBlock(t *testing.T) {
+	// A normal 101 handshake block is returned verbatim through the end marker.
+	raw := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: abc\r\n\r\n"
+	out, err := readHeaderBlock(bufio.NewReader(strings.NewReader(raw + "framedata")))
+	if err != nil {
+		t.Fatalf("readHeaderBlock: %v", err)
+	}
+	if string(out) != raw {
+		t.Errorf("header block = %q, want %q", out, raw)
+	}
+}
+
 func FuzzReadHeaderBlock(f *testing.F) {
 	f.Add([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"))
 	f.Add([]byte("no terminator"))

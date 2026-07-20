@@ -176,6 +176,12 @@ func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mitm: parse ca key: %w", err)
 	}
+	// An interrupted persistCA (or two processes interleaving regeneration) can
+	// leave a key that doesn't belong to the cert; reusing such a pair mints
+	// leaves whose CA signature never verifies. Reject so the caller regenerates.
+	if !key.PublicKey.Equal(cert.PublicKey) {
+		return nil, fmt.Errorf("mitm: ca key does not match ca cert")
+	}
 	return &CA{cert: cert, key: key, certPEM: certPEM, cache: make(map[string]*tls.Certificate)}, nil
 }
 
