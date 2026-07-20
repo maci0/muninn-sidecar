@@ -20,14 +20,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -87,6 +91,7 @@ func run() error {
 		modelCmd    = flag.String("model-cmd", "", "comma-separated reader CLIs (e.g. \"claude -p,codex exec --skip-git-repo-check,grok -p\"); each gets the prompt as a final arg, the last non-empty stdout line is the answer")
 		minScore    = flag.Float64("min-score", 0.6, "injection cosine threshold (the gate)")
 		n           = flag.Int("n", 100, "number of questions to evaluate")
+		sampleSeed  = flag.Int64("sample-seed", 1, "question-sampling shuffle seed: all eligible questions are shuffled deterministically then truncated to -n, so runs stay reproducible and paired across models")
 		maxTokens   = flag.Int("max-tokens", 512, "model max_tokens (raise for thinking models)")
 		multiRecall = flag.Bool("multi-recall", false, "split query into entity spans, recall each, merge (multi-hop)")
 		timeout     = flag.Duration("timeout", 60*time.Second, "per-call timeout")
@@ -105,12 +110,19 @@ func run() error {
 	default:
 		return fmt.Errorf("invalid -dataset %q: must be one of squad, hotpot, generic", *dataset)
 	}
+	if *n <= 0 {
+		return fmt.Errorf("invalid -n %d: must be positive", *n)
+	}
 	if *modelKey == "" {
 		*modelKey = os.Getenv("OPENAI_API_KEY")
 	}
 	answerHint = *answerHintF
 
-	questions, err := loadDataset(*dataset, *squadFile, *n)
+	questions, err := loadDataset(*dataset, *squadFile, *n, *sampleSeed)
+	if err != nil {
+		return err
+	}
+	datasetSHA, err := fileSHA256(*squadFile)
 	if err != nil {
 		return err
 	}
@@ -133,15 +145,45 @@ func run() error {
 		injected, distract, grounded string
 	}
 	prep := make([]prepared, len(questions))
-	var coverage, groundCalls, groundPassages int
+	// Recall ungated (threshold 0) once per question; the gate is applied
+	// in-process below. The ungated recall doubles as the distractor pool: each
+	// question's distractor is the recall for the question shifted by n/2, so it
+	// is sampled per question, vault-matched, answers the wrong question, and is
+	// non-empty whenever the vault holds anything. Like the old fixed-query
+	// distractor it bypasses the gate: a gated distractor would degenerate to
+	// "none". A single question has no other question to borrow from (the shift
+	// would wrap to itself, handing the arm the correct context), so that arm is
+	// left empty with a warning.
+	ungated := make([][]cand, len(questions))
 	for i, q := range questions {
-		scands := recallStructured(ctx, mcp, *vault, q.Question, *minScore, *multiRecall)
+		ungated[i] = recallStructured(ctx, mcp, *vault, q.Question, 0, *multiRecall)
+	}
+	var coverage, distEmpty, distGold, groundCalls, groundPassages int
+	for i, q := range questions {
+		var scands []cand
+		for _, c := range ungated[i] {
+			if c.Score >= *minScore { // the gate
+				scands = append(scands, c)
+			}
+		}
 		inj := formatInjected(scands, *injectFmt)
 		contents := make([]string, len(scands))
 		for j, c := range scands {
 			contents[j] = c.Content
 		}
-		dis := recallContext(ctx, mcp, *vault, "unrelated trivia about cooking and weather", *minScore, false)
+		dis := ""
+		if len(questions) > 1 {
+			dis = formatInjected(ungated[(i+len(questions)/2)%len(questions)], *injectFmt)
+			switch {
+			case dis == "":
+				distEmpty++
+			case containsAnswer(dis, q.Answers):
+				// The shifted question's recall can hit the same article and
+				// carry this question's gold answer; count it so contaminated
+				// runs are visible instead of silently understating Δdist.
+				distGold++
+			}
+		}
 		grounded := ""
 		if grd != nil && len(scands) > 0 {
 			groundCalls++ // one listwise judge call per question
@@ -155,6 +197,16 @@ func run() error {
 	}
 	fmt.Fprintf(os.Stderr, "recall context contained the gold answer for %d/%d (%.0f%%)\n",
 		coverage, len(questions), 100*float64(coverage)/float64(max(1, len(questions))))
+	if len(questions) == 1 {
+		fmt.Fprintln(os.Stderr, "warn: only 1 question loaded; the distractor arm needs another question's recall, so it degenerates to \"none\"")
+	} else if distEmpty > 0 {
+		fmt.Fprintf(os.Stderr, "warn: empty distractor context for %d/%d questions (vault empty?); that arm degenerates to \"none\" there\n",
+			distEmpty, len(questions))
+	}
+	if distGold > 0 {
+		fmt.Fprintf(os.Stderr, "warn: distractor context contains the gold answer for %d/%d questions (shifted question overlaps the same article); Δdist is biased toward 0 there\n",
+			distGold, len(questions))
+	}
 	if grd != nil {
 		fmt.Fprintf(os.Stderr, "grounding arm enabled via %s (%d listwise calls judging ~%d passages)\n", grd.Label(), groundCalls, groundPassages)
 	}
@@ -173,9 +225,21 @@ func run() error {
 		}
 	}
 
+	labels := make([]string, len(readers))
+	for i, r := range readers {
+		labels[i] = r.label()
+	}
+	manifest := reproManifest(flag.CommandLine, datasetSHA, len(questions), labels)
+	fmt.Fprintln(os.Stderr, manifest)
+
 	if len(readers) == 0 {
 		fmt.Printf("BUILD-ONLY (no -model-url / -model-cmd): answer-coverage %d/%d. Supply a reader to score arms.\n", coverage, len(questions))
 		return nil
+	}
+	if *mdFile != "" {
+		if err := appendMDLine(*mdFile, "<!-- "+manifest+" -->\n"); err != nil {
+			return fmt.Errorf("write -md manifest: %w", err)
+		}
 	}
 
 	// Arms are dynamic: the grounded arm appears only when a grounder is set.
@@ -188,7 +252,7 @@ func run() error {
 	if grd != nil {
 		header += fmt.Sprintf(" %12s", "grnd EM/F1")
 	}
-	fmt.Printf("%s   %s\n", header, "Δinj F1")
+	fmt.Printf("%s   %s\n", header, "Δinj F1 [95% CI]  Δdist F1 [95% CI]")
 	for _, r := range readers {
 		agg := make([]armAgg, len(armNames))
 		for i, p := range prep {
@@ -199,24 +263,38 @@ func run() error {
 			for a := range armNames {
 				ans, err := r.answer(ctx, p.q.Question, ctxBlocks[a])
 				if err != nil {
+					// A failed call is excluded, not scored as "": empty answers
+					// would deflate the arm (injected prompts are the longest, so
+					// they time out most, biasing against injection).
 					fmt.Fprintf(os.Stderr, "  warn: %s q%d arm %s: %v\n", r.label(), i, armNames[a], err)
-					ans = ""
+					agg[a].fail()
+					continue
 				}
 				agg[a].add(exactMatch(ans, p.q.Answers), tokenF1(ans, p.q.Answers), containsAnswer(ans, p.q.Answers))
 			}
 		}
-		dInj := agg[1].f1() - agg[0].f1()
+		for a, name := range armNames {
+			if k := agg[a].failN(); k > 0 {
+				fmt.Fprintf(os.Stderr, "  arm %s: %d/%d calls failed (excluded)\n", name, k, len(agg[a].ok))
+			}
+		}
+		note := ""
+		if unreliable(agg) {
+			note = "   UNRELIABLE (an arm lost >10% of calls)"
+		}
 		row := fmt.Sprintf("%-26s  %4.2f/%4.2f   %4.2f/%4.2f   %4.2f/%4.2f",
 			trunc(r.label(), 26), agg[0].em(), agg[0].f1(), agg[1].em(), agg[1].f1(), agg[2].em(), agg[2].f1())
 		if grd != nil {
 			row += fmt.Sprintf("   %4.2f/%4.2f", agg[3].em(), agg[3].f1())
 		}
-		fmt.Printf("%s   %+5.2f\n", row, dInj)
+		fmt.Printf("%s   %s  %s%s\n", row, deltaCI(&agg[0], &agg[1]), deltaCI(&agg[0], &agg[2]), note)
 		if grd != nil {
 			fmt.Printf("    Δgrounded F1 = %+.2f (vs none), %+.2f (vs injected)\n", agg[3].f1()-agg[0].f1(), agg[3].f1()-agg[1].f1())
 		}
 		if *mdFile != "" {
-			appendMD(*mdFile, r.label(), len(questions), [3]armAgg{agg[0], agg[1], agg[2]})
+			if err := appendMD(*mdFile, r.label(), len(questions), [3]armAgg{agg[0], agg[1], agg[2]}); err != nil {
+				return fmt.Errorf("append -md row: %w", err)
+			}
 		}
 	}
 	return nil
@@ -239,39 +317,176 @@ func trunc(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-func appendMD(path, model string, n int, agg [3]armAgg) {
-	row := fmt.Sprintf("| %s | %d | %.2f/%.2f | %.2f/%.2f | %.2f/%.2f | %+.2f | %+.2f |\n",
-		model, n, agg[0].em(), agg[0].f1(), agg[1].em(), agg[1].f1(), agg[2].em(), agg[2].f1(),
-		agg[1].f1()-agg[0].f1(), agg[2].f1()-agg[0].f1())
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
+func appendMD(path, model string, n int, agg [3]armAgg) error {
+	note := ""
+	if unreliable(agg[:]) {
+		note = " <!-- unreliable: an arm lost >10% of calls -->"
 	}
-	defer f.Close()
-	f.WriteString(row)
+	row := fmt.Sprintf("| %s | %d | %.2f/%.2f | %.2f/%.2f | %.2f/%.2f | %s | %s |%s\n",
+		model, n, agg[0].em(), agg[0].f1(), agg[1].em(), agg[1].f1(), agg[2].em(), agg[2].f1(),
+		deltaCI(&agg[0], &agg[1]), deltaCI(&agg[0], &agg[2]), note)
+	return appendMDLine(path, row)
 }
 
+// appendMDLine appends one raw line to the markdown results file.
+func appendMDLine(path, line string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(line); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// fileSHA256 returns the hex SHA-256 of a file's contents.
+func fileSHA256(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+// reproManifest is a one-line provenance record for a run: every flag's
+// effective value (secrets redacted), the dataset digest, the sampled question
+// count, and the reader list. It is printed to stderr and written into -md
+// output so any results row can be traced to its exact configuration.
+func reproManifest(fs *flag.FlagSet, datasetSHA string, nQuestions int, readers []string) string {
+	var b strings.Builder
+	b.WriteString("msc-qa repro:")
+	fs.VisitAll(func(f *flag.Flag) {
+		v := f.Value.String()
+		switch f.Name {
+		case "token", "model-key", "ground-key":
+			if v != "" {
+				v = "<redacted>"
+			}
+		}
+		fmt.Fprintf(&b, " -%s=%q", f.Name, v)
+	})
+	fmt.Fprintf(&b, " dataset-sha256=%s questions=%d readers=%q", datasetSHA, nQuestions, strings.Join(readers, ","))
+	return b.String()
+}
+
+// armAgg accumulates per-question scores for one arm. Scores are kept as
+// parallel slices, not running sums, so paired bootstrap CIs can resample
+// question indices after the fact; failed model calls keep their index for
+// pairing (ok=false) but are excluded from every aggregate.
 type armAgg struct {
-	n, emN, ctxN int
-	f1Sum        float64
+	ems, f1s []float64
+	ok       []bool
+	ctxN     int
 }
 
 func (a *armAgg) add(em, f1 float64, usesCtx bool) {
-	a.n++
-	a.emN += int(em)
-	a.f1Sum += f1
+	a.ems = append(a.ems, em)
+	a.f1s = append(a.f1s, f1)
+	a.ok = append(a.ok, true)
 	if usesCtx {
 		a.ctxN++
 	}
 }
-func (a *armAgg) em() float64   { return safe(float64(a.emN), float64(a.n)) }
-func (a *armAgg) f1() float64   { return safe(a.f1Sum, float64(a.n)) }
-func (a *armAgg) util() float64 { return safe(float64(a.ctxN), float64(a.n)) }
+
+// fail records a failed model call for the next question index.
+func (a *armAgg) fail() {
+	a.ems = append(a.ems, 0)
+	a.f1s = append(a.f1s, 0)
+	a.ok = append(a.ok, false)
+}
+
+func (a *armAgg) n() int {
+	n := 0
+	for _, k := range a.ok {
+		if k {
+			n++
+		}
+	}
+	return n
+}
+func (a *armAgg) failN() int    { return len(a.ok) - a.n() }
+func (a *armAgg) em() float64   { return safe(sumWhere(a.ems, a.ok), float64(a.n())) }
+func (a *armAgg) f1() float64   { return safe(sumWhere(a.f1s, a.ok), float64(a.n())) }
+func (a *armAgg) util() float64 { return safe(float64(a.ctxN), float64(a.n())) }
+
+func sumWhere(xs []float64, ok []bool) float64 {
+	s := 0.0
+	for i, x := range xs {
+		if ok[i] {
+			s += x
+		}
+	}
+	return s
+}
+
 func safe(x, y float64) float64 {
 	if y == 0 {
 		return 0
 	}
 	return x / y
+}
+
+// Paired bootstrap over per-question F1 differences; draws and seed are fixed
+// so repeated runs report identical intervals.
+const (
+	bootstrapDraws = 2000
+	bootstrapSeed  = 1
+)
+
+// pairedF1Deltas returns arm-minus-base per-question F1 differences over the
+// questions where both arms' model calls succeeded.
+func pairedF1Deltas(base, arm *armAgg) []float64 {
+	var d []float64
+	for i := 0; i < min(len(base.f1s), len(arm.f1s)); i++ {
+		if base.ok[i] && arm.ok[i] {
+			d = append(d, arm.f1s[i]-base.f1s[i])
+		}
+	}
+	return d
+}
+
+// bootstrapCI returns the 95% percentile interval for the mean of deltas by
+// resampling indices with replacement.
+func bootstrapCI(deltas []float64, draws int, seed int64) (lo, hi float64) {
+	if len(deltas) == 0 {
+		return 0, 0
+	}
+	rng := rand.New(rand.NewSource(seed))
+	means := make([]float64, draws)
+	for d := range means {
+		s := 0.0
+		for range deltas {
+			s += deltas[rng.Intn(len(deltas))]
+		}
+		means[d] = s / float64(len(deltas))
+	}
+	sort.Float64s(means)
+	return means[int(0.025*float64(draws))], means[int(0.975*float64(draws))]
+}
+
+// deltaCI formats the mean paired F1 delta of arm vs base with its 95%
+// bootstrap CI, e.g. "+0.47 [+0.30, +0.62]".
+func deltaCI(base, arm *armAgg) string {
+	d := pairedF1Deltas(base, arm)
+	s := 0.0
+	for _, x := range d {
+		s += x
+	}
+	lo, hi := bootstrapCI(d, bootstrapDraws, bootstrapSeed)
+	return fmt.Sprintf("%+.2f [%+.2f, %+.2f]", safe(s, float64(len(d))), lo, hi)
+}
+
+// unreliable reports whether any arm lost more than 10% of its model calls;
+// the excluded failures could bias that row's comparison.
+func unreliable(aggs []armAgg) bool {
+	for _, a := range aggs {
+		if total := len(a.ok); total > 0 && a.failN()*10 > total {
+			return true
+		}
+	}
+	return false
 }
 
 // --- recall (mirrors the proxy's gated selection: cosine >= minScore) ---
@@ -332,14 +547,24 @@ func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query s
 // concept and relevance, highest-scored first.
 func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) []cand {
 	if multi {
-		seen := map[string]bool{}
+		// Dedup by content, keeping the best score across sub-queries: a memory
+		// scoring low vs the full question but high vs an entity sub-query must
+		// carry the high score, or a downstream gate would wrongly reject it.
+		seen := map[string]int{}
 		var parts []cand
 		for _, sub := range splitQueryQA(query) {
 			for _, c := range recallStructured(ctx, mcp, vault, sub, minScore, false) {
-				if c.Content != "" && !seen[c.Content] {
-					seen[c.Content] = true
-					parts = append(parts, c)
+				if c.Content == "" {
+					continue
 				}
+				if j, ok := seen[c.Content]; ok {
+					if c.Score > parts[j].Score {
+						parts[j] = c
+					}
+					continue
+				}
+				seen[c.Content] = len(parts)
+				parts = append(parts, c)
 			}
 		}
 		return parts
@@ -431,6 +656,10 @@ type answerer interface {
 
 // --- model client (OpenAI-compatible chat completions) ---
 
+// modelSeed pins the sampler (ollama's "seed" option) alongside temperature 0
+// so repeated runs decode identically.
+const modelSeed = 1
+
 type modelClient struct {
 	baseURL, key, model string
 	timeout             time.Duration
@@ -458,6 +687,7 @@ func (m *modelClient) answer(ctx context.Context, question, contextBlock string)
 		"model":       m.model,
 		"messages":    msgs,
 		"temperature": 0,
+		"seed":        modelSeed,
 		"max_tokens":  m.maxTokens,
 	})
 	req, err := newReq(ctx, m.baseURL+"/chat/completions", m.key, body)
@@ -655,15 +885,29 @@ func loadGenericQA(path string, n int) ([]qaItem, error) {
 	return out, nil
 }
 
-func loadDataset(dataset, path string, n int) ([]qaItem, error) {
+// loadDataset loads every eligible question, shuffles deterministically with
+// seed, then truncates to n. Datasets are grouped in file order (SQuAD by
+// article), so taking the first n unshuffled would cover only 1-2 articles.
+func loadDataset(dataset, path string, n int, seed int64) ([]qaItem, error) {
+	var qs []qaItem
+	var err error
 	switch dataset {
 	case "hotpot":
-		return loadHotpotQA(path, n)
+		qs, err = loadHotpotQA(path, math.MaxInt)
 	case "generic":
-		return loadGenericQA(path, n)
+		qs, err = loadGenericQA(path, math.MaxInt)
 	default:
-		return loadSquadQA(path, n)
+		qs, err = loadSquadQA(path, math.MaxInt)
 	}
+	if err != nil {
+		return nil, err
+	}
+	rng := rand.New(rand.NewSource(seed))
+	rng.Shuffle(len(qs), func(i, j int) { qs[i], qs[j] = qs[j], qs[i] })
+	if len(qs) > n {
+		qs = qs[:n]
+	}
+	return qs, nil
 }
 
 func envOr(k, d string) string {

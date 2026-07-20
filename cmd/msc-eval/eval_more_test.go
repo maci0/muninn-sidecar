@@ -83,6 +83,7 @@ func TestPrintersSmoke(t *testing.T) {
 	printOfflineReport(results, agg)
 	printSweep(inject.SweepMinScore(scenarios, []float64{0.5, 0.6}))
 	printStudy(inject.RunMethodStudy(1, 60, 3))
+	printSeedStudy(inject.RunMethodStudySeeds([]int64{1, 2}, 60, 3))
 	printLiveReport([]inject.LiveResult{{Scenario: "s", Recalled: 3, Expected: []string{"c"}, Hits: 1, HitRate: 1}})
 	if err := emitJSON(map[string]any{"ok": true}); err != nil {
 		t.Errorf("emitJSON: %v", err)
@@ -95,11 +96,18 @@ func TestRunOfflineAndLive(t *testing.T) {
 	os.Stdout = w
 	defer func() { os.Stdout = old; w.Close() }()
 
-	if err := runOffline("", 0, 0, true, false, false); err != nil {
+	if err := runOffline("", 0, 0, true, false, false, studyOpts{}); err != nil {
 		t.Errorf("runOffline table: %v", err)
 	}
-	if err := runOffline("", 0, 0, false, false, true); err != nil {
+	if err := runOffline("", 0, 0, false, false, true, studyOpts{}); err != nil {
 		t.Errorf("runOffline json: %v", err)
+	}
+	// -compare paths: explicit single seed, and the fixed multi-seed default.
+	if err := runOffline("", 0, 0, false, true, false, studyOpts{seed: 7, n: 60, folds: 3}); err != nil {
+		t.Errorf("runOffline compare single-seed: %v", err)
+	}
+	if err := runOffline("", 0, 0, false, true, true, studyOpts{n: 60, folds: 3}); err != nil {
+		t.Errorf("runOffline compare multi-seed: %v", err)
 	}
 
 	// runLive with a fake MuninnDB (seed + recall), no model needed.
@@ -145,5 +153,17 @@ func TestRunEval(t *testing.T) {
 	defer func() { os.Stdout = old; w.Close(); os.Args, flag.CommandLine = oldArgs, oldFS }()
 	if err := run(); err != nil {
 		t.Errorf("run: %v", err)
+	}
+
+	flag.CommandLine = flag.NewFlagSet("msc-eval", flag.ContinueOnError)
+	os.Args = []string{"msc-eval", "-compare", "-study-folds", "1"}
+	if err := run(); err == nil {
+		t.Error("run with -study-folds 1 should error")
+	}
+
+	flag.CommandLine = flag.NewFlagSet("msc-eval", flag.ContinueOnError)
+	os.Args = []string{"msc-eval", "-compare", "-study-n", "3"}
+	if err := run(); err == nil {
+		t.Error("run with -study-folds > -study-n should error")
 	}
 }

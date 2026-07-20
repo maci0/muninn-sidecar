@@ -68,6 +68,7 @@ func genSquad(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk 
 			// chunks localize the answer better at the cost of more siblings.
 			base := fmt.Sprintf("%s#%d", slug(art.Title), pi)
 			goldConcept := base
+			seededSents := 0
 			if chunk == "sentence" {
 				sents := splitSentences(para.Context)
 				for si, s := range sents {
@@ -75,6 +76,7 @@ func genSquad(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk 
 						break
 					}
 					items = append(items, item{Concept: fmt.Sprintf("%s#%d", base, si), Content: s})
+					seededSents++
 				}
 				// Gold = the sentence containing the answer (set per-probe below).
 			} else {
@@ -88,14 +90,16 @@ func genSquad(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk 
 					}
 					gold := goldConcept
 					if chunk == "sentence" {
-						// Find the sentence index containing the answer text.
+						// Find the sentence index containing the answer text. Skip if
+						// missing or beyond the seeded prefix (maxItems truncation):
+						// an unseeded gold could never be retrieved.
 						si := sentenceContaining(para.Context, qa.Answers[0].Text)
-						if si < 0 {
+						if si < 0 || si >= seededSents {
 							continue
 						}
 						gold = fmt.Sprintf("%s#%d", base, si)
 					}
-					present = append(present, probe{Query: qa.Question, Gold: gold, Present: true})
+					present = append(present, probe{Query: qa.Question, Gold: gold, Answer: qa.Answers[0].Text, Present: true})
 					break // one probe per paragraph keeps gold unambiguous
 				}
 			}
@@ -161,12 +165,14 @@ func genSquadHardNeg(path string, seedArticles, maxItems, nPresent, nAbsent int,
 				}
 				seenContent[para.Context] = true
 				base := fmt.Sprintf("%s#%d", slug(art.Title), pi)
+				seededSents := 0
 				if chunk == "sentence" {
 					for si, s := range splitSentences(para.Context) {
 						if len(items) >= maxItems {
 							break
 						}
 						items = append(items, item{Concept: fmt.Sprintf("%s#%d", base, si), Content: s})
+						seededSents++
 					}
 				} else {
 					items = append(items, item{Concept: base, Content: para.Context})
@@ -178,8 +184,10 @@ func genSquadHardNeg(path string, seedArticles, maxItems, nPresent, nAbsent int,
 						}
 						gold := base
 						if chunk == "sentence" {
+							// Skip if the answer sentence is missing or was truncated
+							// by maxItems: an unseeded gold could never be retrieved.
 							si := sentenceContaining(para.Context, qa.Answers[0].Text)
-							if si < 0 {
+							if si < 0 || si >= seededSents {
 								continue
 							}
 							gold = fmt.Sprintf("%s#%d", base, si)

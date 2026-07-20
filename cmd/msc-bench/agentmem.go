@@ -10,7 +10,10 @@ import "fmt"
 //
 // Returns items (to seed) and probes carrying the gold answer (for msc-qa via a
 // dumped QA file). This is the most realistic regime for the sidecar.
-func genAgentMem(n, nAbsent int) ([]item, []probe, []probe) {
+func genAgentMem(n, nAbsent int) ([]item, []probe, []probe, error) {
+	if err := checkNamespace(n, nAbsent, 1, coinNameSpace, "name"); err != nil {
+		return nil, nil, nil, err
+	}
 	dbs := []string{"PostgreSQL", "Redis", "DynamoDB", "ClickHouse", "Cassandra", "SQLite", "MongoDB", "CockroachDB"}
 	people := []string{"Priya", "Marcus", "Lena", "Toshiro", "Amara", "Diego", "Freya", "Omar"}
 	tools := []string{"ArgoCD", "Spinnaker", "GitHub Actions", "Jenkins", "Flux", "Drone"}
@@ -54,5 +57,5 @@ func genAgentMem(n, nAbsent int) ([]item, []probe, []probe) {
 		pr.Present = false
 		absent = append(absent, pr)
 	}
-	return items, present, absent
+	return items, present, absent, nil
 }

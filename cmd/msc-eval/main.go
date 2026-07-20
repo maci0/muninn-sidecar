@@ -4,14 +4,17 @@
 // selection logic and reports precision/recall/F1, nDCG, gate accuracy, and
 // budget efficiency — deterministic, no MuninnDB needed. The -sweep flag charts
 // those metrics across MinScore thresholds; -compare runs the cross-validated
-// study comparing when+what methods on synthetic data.
+// study comparing when+what methods on synthetic data, across a fixed set of
+// generator seeds by default (mean ± std of held-out F1 per method) or on a
+// single seed via -study-seed.
 //
 // Live mode (-live) seeds a real MuninnDB vault and exercises the full
 // recall + selection path, reporting how many expected concepts were injected.
 //
 //	msc-eval                          # offline report on the built-in corpus
 //	msc-eval -sweep                   # + MinScore when+what sweep
-//	msc-eval -compare                 # + cross-validated method study
+//	msc-eval -compare                 # + cross-validated method study (multi-seed)
+//	msc-eval -compare -study-seed 7   # + method study on one generator seed
 //	msc-eval -file scenarios.json     # offline report on a custom corpus
 //	msc-eval -json                    # machine-readable output
 //	msc-eval -live -live-file live.json -vault msc-eval
@@ -39,29 +42,47 @@ func main() {
 
 func run() error {
 	var (
-		file     = flag.String("file", "", "offline scenario JSON file (default: built-in corpus)")
-		minScore = flag.Float64("min-score", 0, "override injection threshold for all scenarios (0 = per-scenario/default 0.5)")
-		budget   = flag.Int("budget", 0, "override token budget for all scenarios (0 = per-scenario/default 2048)")
-		sweep    = flag.Bool("sweep", false, "also run a MinScore (when+what) sweep and print the tradeoff table")
-		compare  = flag.Bool("compare", false, "run the cross-validated method study (compares when+what strategies on synthetic data)")
-		asJSON   = flag.Bool("json", false, "emit machine-readable JSON instead of a table")
-		live     = flag.Bool("live", false, "run live end-to-end evaluation against a real MuninnDB")
-		liveFile = flag.String("live-file", "", "live scenario JSON file (required with -live)")
-		mcpURL   = flag.String("mcp-url", defaultMCPURL(), "MuninnDB MCP endpoint (live mode)")
-		token    = flag.String("token", "", "MuninnDB bearer token (live mode; default ~/.muninn/mcp.token)")
-		vault    = flag.String("vault", "msc-eval", "vault to seed/probe (live mode)")
-		settle   = flag.Duration("settle", 750*time.Millisecond, "delay after seeding before probing (live mode)")
-		timeout  = flag.Duration("timeout", 5*time.Second, "per-MCP-call timeout (live mode)")
+		file       = flag.String("file", "", "offline scenario JSON file (default: built-in corpus)")
+		minScore   = flag.Float64("min-score", 0, fmt.Sprintf("override injection threshold for all scenarios (0 = per-scenario/default %v)", inject.DefaultMinScore))
+		budget     = flag.Int("budget", 0, "override token budget for all scenarios (0 = per-scenario/default 2048)")
+		sweep      = flag.Bool("sweep", false, "also run a MinScore (when+what) sweep and print the tradeoff table")
+		compare    = flag.Bool("compare", false, "run the cross-validated method study (compares when+what strategies on synthetic data)")
+		studySeed  = flag.Int64("study-seed", 0, "single generator seed for the -compare study (0 = run the fixed multi-seed set and report cross-seed variance)")
+		studyN     = flag.Int("study-n", 600, "synthetic scenarios per seed for the -compare study")
+		studyFolds = flag.Int("study-folds", 5, "cross-validation folds for the -compare study")
+		asJSON     = flag.Bool("json", false, "emit machine-readable JSON instead of a table")
+		live       = flag.Bool("live", false, "run live end-to-end evaluation against a real MuninnDB")
+		liveFile   = flag.String("live-file", "", "live scenario JSON file (required with -live)")
+		mcpURL     = flag.String("mcp-url", defaultMCPURL(), "MuninnDB MCP endpoint (live mode)")
+		token      = flag.String("token", "", "MuninnDB bearer token (live mode; default ~/.muninn/mcp.token)")
+		vault      = flag.String("vault", "msc-eval", "vault to seed/probe (live mode)")
+		settle     = flag.Duration("settle", 750*time.Millisecond, "delay after seeding before probing (live mode)")
+		timeout    = flag.Duration("timeout", 5*time.Second, "per-MCP-call timeout (live mode)")
 	)
 	flag.Parse()
 
+	if *compare && (*studyN <= 0 || *studyFolds < 2 || *studyFolds > *studyN) {
+		return fmt.Errorf("-study-n must be > 0 and 2 <= -study-folds <= -study-n")
+	}
 	if *live {
 		return runLive(*liveFile, *mcpURL, resolveToken(*token), *vault, *minScore, *budget, *settle, *timeout, *asJSON)
 	}
-	return runOffline(*file, *minScore, *budget, *sweep, *compare, *asJSON)
+	return runOffline(*file, *minScore, *budget, *sweep, *compare, *asJSON, studyOpts{seed: *studySeed, n: *studyN, folds: *studyFolds})
 }
 
-func runOffline(file string, minScore float64, budget int, sweep, compare, asJSON bool) error {
+// studyOpts configures the -compare method study; seed 0 means "run the fixed
+// multi-seed set" so seed-to-seed variation is reported, not hidden.
+type studyOpts struct {
+	seed  int64
+	n     int
+	folds int
+}
+
+// fixedStudySeeds are the distinct generator seeds a multi-seed -compare run
+// uses, fixed so results stay reproducible across invocations.
+var fixedStudySeeds = []int64{20240529, 42, 1337, 271828, 3141592}
+
+func runOffline(file string, minScore float64, budget int, sweep, compare, asJSON bool, study studyOpts) error {
 	scenarios, err := loadOfflineScenarios(file)
 	if err != nil {
 		return err
@@ -85,18 +106,25 @@ func runOffline(file string, minScore float64, budget int, sweep, compare, asJSO
 	if sweep {
 		sweepPoints = inject.SweepMinScore(scenarios, []float64{0.0, 0.40, 0.44, 0.46, 0.48, 0.50, 0.52, 0.55, 0.60})
 	}
-	var study *inject.StudyReport
+	var studyRep *inject.StudyReport
+	var seedStudy *inject.SeedStudyReport
 	if compare {
-		s := inject.RunMethodStudy(20240529, 600, 5)
-		study = &s
+		if study.seed != 0 {
+			s := inject.RunMethodStudy(study.seed, study.n, study.folds)
+			studyRep = &s
+		} else {
+			s := inject.RunMethodStudySeeds(fixedStudySeeds, study.n, study.folds)
+			seedStudy = &s
+		}
 	}
 
 	if asJSON {
 		return emitJSON(map[string]any{
-			"results":   results,
-			"aggregate": agg,
-			"sweep":     sweepPoints,
-			"study":     study,
+			"results":    results,
+			"aggregate":  agg,
+			"sweep":      sweepPoints,
+			"study":      studyRep,
+			"seed_study": seedStudy,
 		})
 	}
 
@@ -104,8 +132,11 @@ func runOffline(file string, minScore float64, budget int, sweep, compare, asJSO
 	if sweep {
 		printSweep(sweepPoints)
 	}
-	if study != nil {
-		printStudy(*study)
+	if studyRep != nil {
+		printStudy(*studyRep)
+	}
+	if seedStudy != nil {
+		printSeedStudy(*seedStudy)
 	}
 	return nil
 }
@@ -213,6 +244,17 @@ func printStudy(rep inject.StudyReport) {
 			m.Name, m.F1Mean, m.F1Std, m.GateAcc*100, m.Wasted*100, m.AvgInjected)
 	}
 	fmt.Printf("WINNER (highest held-out F1): %s\n", rep.Best)
+}
+
+func printSeedStudy(rep inject.SeedStudyReport) {
+	fmt.Printf("\nMethod study across %d seeds %v: %d synthetic scenarios each, %d-fold cross-validation\n",
+		len(rep.Seeds), rep.Seeds, rep.N, rep.K)
+	fmt.Printf("%-20s %9s %7s   (mean ± std of held-out F1 across seeds)\n", "method", "f1(test)", "±std")
+	fmt.Println(strings.Repeat("-", 38))
+	for _, m := range rep.Methods {
+		fmt.Printf("%-20s %9.3f %7.3f\n", m.Name, m.F1Mean, m.F1Std)
+	}
+	fmt.Printf("WINNER (highest mean held-out F1 across seeds): %s\n", rep.Best)
 }
 
 func printLiveReport(results []inject.LiveResult) {

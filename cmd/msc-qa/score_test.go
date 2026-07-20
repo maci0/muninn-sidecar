@@ -40,6 +40,24 @@ func TestContainsAnswer(t *testing.T) {
 	}
 }
 
+func TestContainsAnswerTokenBoundary(t *testing.T) {
+	if containsAnswer("the code 18580 appears here", []string{"1858"}) {
+		t.Error("short numeric gold must not match inside a longer token")
+	}
+	if !containsAnswer("built in 1858 by workers", []string{"1858"}) {
+		t.Error("exact token should match")
+	}
+	if containsAnswer("neural network training", []string{"two"}) {
+		t.Error(`"two" must not match inside "network"`)
+	}
+	if !containsAnswer("the quick brown fox", []string{"quick brown"}) {
+		t.Error("multi-token gold should match a contiguous token run")
+	}
+	if containsAnswer("quick red brown", []string{"quick brown"}) {
+		t.Error("non-contiguous tokens must not match")
+	}
+}
+
 func FuzzScore(f *testing.F) {
 	f.Add("the Paris", "Paris")
 	f.Fuzz(func(t *testing.T, pred, gold string) {

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -57,6 +59,14 @@ func parseSubqueries(original, out string, max int) []string {
 	return subs
 }
 
+// failOpen logs why a rewrite fell back to the original query, so a
+// misconfigured backend (bad URL, missing API key) does not silently turn the
+// run into a baseline measurement.
+func failOpen(reason, query string) []string {
+	fmt.Fprintf(os.Stderr, "  warn: query rewrite failed open (%s); using original query\n", reason)
+	return []string{query}
+}
+
 func itoa(n int) string {
 	if n <= 0 {
 		return "0"
@@ -94,7 +104,7 @@ func (r *httpRewriter) Rewrite(ctx context.Context, query string, max int) []str
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return []string{query}
+		return failOpen(err.Error(), query)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if r.key != "" {
@@ -102,7 +112,7 @@ func (r *httpRewriter) Rewrite(ctx context.Context, query string, max int) []str
 	}
 	resp, err := (&http.Client{Timeout: r.timeout}).Do(req)
 	if err != nil {
-		return []string{query}
+		return failOpen(err.Error(), query)
 	}
 	defer resp.Body.Close()
 	// Bound the read so a misbehaving model endpoint can't exhaust memory,
@@ -110,7 +120,7 @@ func (r *httpRewriter) Rewrite(ctx context.Context, query string, max int) []str
 	// a handful of subqueries, so 4 MiB is far more than a real response needs.
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxRewriteResponse))
 	if resp.StatusCode >= 300 {
-		return []string{query}
+		return failOpen("HTTP "+resp.Status, query)
 	}
 	var out struct {
 		Choices []struct {
@@ -118,7 +128,7 @@ func (r *httpRewriter) Rewrite(ctx context.Context, query string, max int) []str
 		} `json:"choices"`
 	}
 	if json.Unmarshal(data, &out) != nil || len(out.Choices) == 0 {
-		return []string{query}
+		return failOpen("unparseable response", query)
 	}
 	return parseSubqueries(query, out.Choices[0].Message.Content, max)
 }
@@ -141,7 +151,7 @@ func (r *cliRewriter) Rewrite(ctx context.Context, query string, max int) []stri
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil && stdout.Len() == 0 {
-		return []string{query}
+		return failOpen(err.Error(), query)
 	}
 	// Pass the whole output to parseSubqueries (it splits internally) rather than a
 	// line scanner: bufio.Scanner's 64 KiB line cap silently stops on a long line

@@ -75,7 +75,7 @@ func genHotpot(path string, seedExamples, maxItems, nPresent, nAbsent int) ([]it
 		}
 		if len(present) < nPresent && ex.Question != "" {
 			if gold := firstSupport(ex.SupportingFacts); gold != "" {
-				present = append(present, probe{Query: ex.Question, Gold: gold, Present: true})
+				present = append(present, probe{Query: ex.Question, Gold: gold, Answer: ex.Answer, Present: true})
 			}
 		}
 	}

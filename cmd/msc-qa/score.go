@@ -73,13 +73,34 @@ func f1Tokens(pred, gold []string) float64 {
 	return 2 * prec * rec / (prec + rec)
 }
 
-// containsAnswer reports whether any gold answer appears (normalized) in text —
-// used to measure whether injected context actually carries the answer.
+// containsAnswer reports whether any gold answer appears in text on token
+// boundaries: the normalized gold token sequence must occur as a contiguous
+// run of the normalized text tokens (SQuAD-official style). Substring matching
+// would let short golds match inside unrelated tokens ("two" in "network",
+// "1858" in "18580"). Used to measure whether injected context actually
+// carries the answer.
 func containsAnswer(text string, golds []string) bool {
-	nt := normalizeAnswer(text)
+	toks := strings.Fields(normalizeAnswer(text))
 	for _, g := range golds {
-		ng := normalizeAnswer(g)
-		if ng != "" && strings.Contains(nt, ng) {
+		gt := strings.Fields(normalizeAnswer(g))
+		if len(gt) > 0 && hasTokenSeq(toks, gt) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTokenSeq reports whether seq occurs as a contiguous run within toks.
+func hasTokenSeq(toks, seq []string) bool {
+	for i := 0; i+len(seq) <= len(toks); i++ {
+		match := true
+		for j, s := range seq {
+			if toks[i+j] != s {
+				match = false
+				break
+			}
+		}
+		if match {
 			return true
 		}
 	}

@@ -44,8 +44,9 @@ func TestMethodStudy(t *testing.T) {
 			prod.F1Mean, best.Name, best.F1Mean)
 	}
 
-	// The tuned absolute threshold must validate the production default (0.5),
-	// not just the method shape. CV tunes per fold; the mean should land near 0.5.
+	// The tuned absolute threshold must validate the production default
+	// (defaultMinScore = 0.6), not just the method shape. CV tunes per fold;
+	// the mean should land near that default.
 	if prod.TunedAbs < defaultMinScore-0.05 || prod.TunedAbs > defaultMinScore+0.05 {
 		t.Errorf("tuned absolute threshold %.3f is far from production default %.2f; retune defaultMinScore",
 			prod.TunedAbs, defaultMinScore)
@@ -57,6 +58,49 @@ func TestMethodStudy(t *testing.T) {
 	rel := byName["relative-only"]
 	if rel.GateAcc >= prod.GateAcc {
 		t.Errorf("non-suppressing method gate acc %.2f should trail the threshold method %.2f", rel.GateAcc, prod.GateAcc)
+	}
+}
+
+// TestMethodStudySeeds checks the cross-seed aggregation: every method present,
+// rows sorted best-first, Best matching the top row, a single-seed run agreeing
+// with RunMethodStudy (std 0), and determinism across calls.
+func TestMethodStudySeeds(t *testing.T) {
+	const (
+		n = 120
+		k = 3
+	)
+	rep := RunMethodStudySeeds([]int64{1, 2, 3}, n, k)
+
+	if want := len(candidateMethods()); len(rep.Methods) != want {
+		t.Fatalf("got %d methods, want %d", len(rep.Methods), want)
+	}
+	if rep.Best != rep.Methods[0].Name {
+		t.Errorf("Best %q != top-ranked %q", rep.Best, rep.Methods[0].Name)
+	}
+	for i, m := range rep.Methods {
+		if m.F1Mean < 0 || m.F1Mean > 1 || m.F1Std < 0 {
+			t.Errorf("%s: implausible f1 mean %.3f std %.3f", m.Name, m.F1Mean, m.F1Std)
+		}
+		if i > 0 && rep.Methods[i-1].F1Mean < m.F1Mean {
+			t.Errorf("methods not sorted by F1Mean at index %d", i)
+		}
+	}
+
+	single := RunMethodStudy(7, n, k)
+	singleF1 := make(map[string]float64, len(single.Methods))
+	for _, m := range single.Methods {
+		singleF1[m.Name] = m.F1Mean
+	}
+	for _, m := range RunMethodStudySeeds([]int64{7}, n, k).Methods {
+		if m.F1Mean != singleF1[m.Name] || m.F1Std != 0 {
+			t.Errorf("%s: single-seed run diverges from RunMethodStudy (f1 %.3f vs %.3f, std %.3f)",
+				m.Name, m.F1Mean, singleF1[m.Name], m.F1Std)
+		}
+	}
+
+	again := RunMethodStudySeeds([]int64{1, 2, 3}, n, k)
+	if again.Best != rep.Best || again.Methods[0].F1Mean != rep.Methods[0].F1Mean {
+		t.Error("RunMethodStudySeeds is not deterministic for identical inputs")
 	}
 }
 

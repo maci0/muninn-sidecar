@@ -28,8 +28,12 @@ type studyCand struct {
 
 // genScenarios produces n labeled scenarios from overlapping score
 // distributions, deterministically from seed. Each scenario is a score-sorted
-// (descending) candidate list, already filtered by the recall floor (0.4), as a
-// selector would receive it in production.
+// (descending) candidate list, pre-filtered at s >= 0.30. That synthetic
+// pre-filter approximates the production server-side recall floor (0.05) but
+// sits higher, and the relative/margin grids can reach cuts below 0.30 (e.g.
+// relative-only at rel 0.40 with a 0.62 top cuts at 0.248), so candidates in
+// [0.05, 0.30) those methods would keep in production are pre-removed here.
+// Only methods with absolute cuts >= 0.30 are unaffected by the filter.
 //
 // Distribution model (per scenario) — calibrated to the embedding cosine
 // similarities observed against a real MuninnDB instance (cmd/msc-bench):
@@ -369,4 +373,52 @@ func paramsFloorRel(floors, rels []float64) []studyParams {
 		}
 	}
 	return out
+}
+
+// --- cross-seed aggregation ---
+
+// SeedStudyMethod aggregates one method's held-out F1 across generator seeds.
+type SeedStudyMethod struct {
+	Name   string  `json:"name"`
+	F1Mean float64 `json:"f1_mean"` // mean of per-seed held-out F1 means
+	F1Std  float64 `json:"f1_std"`  // std across seeds (seed sensitivity)
+}
+
+// SeedStudyReport compares methods across several generator seeds, exposing the
+// seed-to-seed variation a single RunMethodStudy call cannot show.
+type SeedStudyReport struct {
+	Seeds   []int64           `json:"seeds"`
+	N       int               `json:"n"` // scenarios per seed
+	K       int               `json:"k"` // CV folds per seed
+	Methods []SeedStudyMethod `json:"methods"`
+	Best    string            `json:"best"` // highest mean held-out F1 across seeds
+}
+
+// RunMethodStudySeeds runs RunMethodStudy once per seed and reports each
+// method's mean and std of held-out F1 across seeds, sorted best-first.
+func RunMethodStudySeeds(seeds []int64, n, k int) SeedStudyReport {
+	f1sByMethod := make(map[string][]float64)
+	var names []string // first-seen order, so map iteration never leaks in
+	for _, seed := range seeds {
+		for _, m := range RunMethodStudy(seed, n, k).Methods {
+			if _, seen := f1sByMethod[m.Name]; !seen {
+				names = append(names, m.Name)
+			}
+			f1sByMethod[m.Name] = append(f1sByMethod[m.Name], m.F1Mean)
+		}
+	}
+
+	methods := make([]SeedStudyMethod, 0, len(names))
+	for _, name := range names {
+		f1s := f1sByMethod[name]
+		mean := meanOf(f1s)
+		methods = append(methods, SeedStudyMethod{Name: name, F1Mean: mean, F1Std: stdOf(f1s, mean)})
+	}
+	sort.SliceStable(methods, func(i, j int) bool { return methods[i].F1Mean > methods[j].F1Mean })
+
+	best := ""
+	if len(methods) > 0 {
+		best = methods[0].Name
+	}
+	return SeedStudyReport{Seeds: seeds, N: n, K: k, Methods: methods, Best: best}
 }

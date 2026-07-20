@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -40,9 +43,73 @@ func TestArmAgg(t *testing.T) {
 	if a.em() != 0.5 || a.f1() != 0.75 || a.util() != 0.5 {
 		t.Errorf("armAgg em=%v f1=%v util=%v", a.em(), a.f1(), a.util())
 	}
+	a.fail()
+	if a.failN() != 1 || a.n() != 2 || a.f1() != 0.75 {
+		t.Errorf("failed call must be excluded: failN=%d n=%d f1=%v", a.failN(), a.n(), a.f1())
+	}
 	var z armAgg
 	if z.em() != 0 || z.f1() != 0 || z.util() != 0 {
 		t.Errorf("empty armAgg should be 0")
+	}
+}
+
+func TestPairedF1Deltas(t *testing.T) {
+	var base, arm armAgg
+	base.add(0, 0.2, false)
+	arm.add(1, 0.9, true)
+	base.add(0, 0.1, false)
+	arm.fail()
+	d := pairedF1Deltas(&base, &arm)
+	if len(d) != 1 || !approxf(d[0], 0.7) {
+		t.Errorf("pairing must skip failed calls: %v", d)
+	}
+}
+
+func TestBootstrapCI(t *testing.T) {
+	lo, hi := bootstrapCI([]float64{0.5, 0.5, 0.5}, 2000, 1)
+	if lo != 0.5 || hi != 0.5 {
+		t.Errorf("constant deltas should give a degenerate CI, got [%v, %v]", lo, hi)
+	}
+	lo, hi = bootstrapCI([]float64{0, 1}, 2000, 1)
+	if lo < 0 || hi > 1 || lo > hi {
+		t.Errorf("CI out of range: [%v, %v]", lo, hi)
+	}
+	lo2, hi2 := bootstrapCI([]float64{0, 1}, 2000, 1)
+	if lo != lo2 || hi != hi2 {
+		t.Error("bootstrap must be deterministic for a fixed seed")
+	}
+	if lo, hi := bootstrapCI(nil, 2000, 1); lo != 0 || hi != 0 {
+		t.Errorf("empty deltas should give [0, 0], got [%v, %v]", lo, hi)
+	}
+}
+
+func TestUnreliable(t *testing.T) {
+	aggs := make([]armAgg, 2)
+	for i := 0; i < 10; i++ {
+		aggs[0].add(1, 1, false)
+		aggs[1].add(1, 1, false)
+	}
+	if unreliable(aggs) {
+		t.Error("no failures should be reliable")
+	}
+	aggs[1].fail()
+	aggs[1].fail() // 2/12 > 10%
+	if !unreliable(aggs) {
+		t.Error(">10% failures in one arm should flag the row")
+	}
+}
+
+func TestReproManifest(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	fs.String("model", "m1", "")
+	fs.String("token", "hunter2", "")
+	got := reproManifest(fs, "abc123", 20, []string{"m1", "m2"})
+	if !strings.Contains(got, `-model="m1"`) || !strings.Contains(got, "dataset-sha256=abc123") ||
+		!strings.Contains(got, "questions=20") || !strings.Contains(got, `readers="m1,m2"`) {
+		t.Errorf("manifest missing fields: %s", got)
+	}
+	if strings.Contains(got, "hunter2") || !strings.Contains(got, "<redacted>") {
+		t.Errorf("manifest must redact secrets: %s", got)
 	}
 }
 
@@ -51,11 +118,30 @@ func TestAppendMD(t *testing.T) {
 	var a [3]armAgg
 	a[0].add(1, 0.2, false)
 	a[1].add(1, 0.8, true)
-	appendMD(path, "modelX", 10, a)
-	appendMD(path, "modelY", 10, a)
+	a[2].add(0, 0.1, false)
+	if err := appendMD(path, "modelX", 10, a); err != nil {
+		t.Fatalf("appendMD: %v", err)
+	}
+	if err := appendMD(path, "modelY", 10, a); err != nil {
+		t.Fatalf("appendMD: %v", err)
+	}
 	data, _ := os.ReadFile(path)
 	if n := countSub(string(data), "model"); n < 2 {
 		t.Errorf("expected 2 rows, got content: %s", data)
+	}
+	if !strings.Contains(string(data), "[") || strings.Contains(string(data), "unreliable") {
+		t.Errorf("rows should carry CIs and no unreliable marker: %s", data)
+	}
+	a[1].fail() // 1/2 calls failed in one arm: >10%
+	if err := appendMD(path, "modelZ", 10, a); err != nil {
+		t.Fatalf("appendMD: %v", err)
+	}
+	data, _ = os.ReadFile(path)
+	if !strings.Contains(string(data), "unreliable") {
+		t.Errorf("row with >10%% failed calls must be flagged: %s", data)
+	}
+	if err := appendMD(filepath.Join(t.TempDir(), "no", "such", "dir", "m.md"), "modelX", 10, a); err == nil {
+		t.Error("appendMD into a missing directory should error")
 	}
 }
 
@@ -73,21 +159,51 @@ func TestLoaders(t *testing.T) {
 	dir := t.TempDir()
 	squad := filepath.Join(dir, "s.json")
 	os.WriteFile(squad, []byte(`{"data":[{"paragraphs":[{"qas":[{"question":"q","is_impossible":false,"answers":[{"text":"A"}]}]}]}]}`), 0o644)
-	if qs, err := loadDataset("squad", squad, 10); err != nil || len(qs) != 1 || qs[0].Answers[0] != "A" {
+	if qs, err := loadDataset("squad", squad, 10, 1); err != nil || len(qs) != 1 || qs[0].Answers[0] != "A" {
 		t.Errorf("squad loader: err=%v qs=%+v", err, qs)
 	}
 	hp := filepath.Join(dir, "h.json")
 	os.WriteFile(hp, []byte(`[{"question":"q","answer":"yes"}]`), 0o644)
-	if qs, err := loadDataset("hotpot", hp, 10); err != nil || len(qs) != 1 || qs[0].Answers[0] != "yes" {
+	if qs, err := loadDataset("hotpot", hp, 10, 1); err != nil || len(qs) != 1 || qs[0].Answers[0] != "yes" {
 		t.Errorf("hotpot loader: err=%v qs=%+v", err, qs)
 	}
 	gen := filepath.Join(dir, "g.json")
 	os.WriteFile(gen, []byte(`[{"question":"q","answer":"PostgreSQL"}]`), 0o644)
-	if qs, err := loadDataset("generic", gen, 10); err != nil || len(qs) != 1 || qs[0].Answers[0] != "PostgreSQL" {
+	if qs, err := loadDataset("generic", gen, 10, 1); err != nil || len(qs) != 1 || qs[0].Answers[0] != "PostgreSQL" {
 		t.Errorf("generic loader: err=%v qs=%+v", err, qs)
 	}
-	if _, err := loadDataset("squad", filepath.Join(dir, "nope.json"), 1); err == nil {
+	if _, err := loadDataset("squad", filepath.Join(dir, "nope.json"), 1, 1); err == nil {
 		t.Error("missing file should error")
+	}
+}
+
+// TestSampleSeed: sampling shuffles the whole eligible pool with the seed then
+// truncates, so the same seed yields the same paired sample and a different
+// seed yields a different one (not just the first n in file order).
+func TestSampleSeed(t *testing.T) {
+	gen := filepath.Join(t.TempDir(), "g.json")
+	var sb strings.Builder
+	sb.WriteString("[")
+	for i := 0; i < 10; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"question":"q%d","answer":"a%d"}`, i, i)
+	}
+	sb.WriteString("]")
+	os.WriteFile(gen, []byte(sb.String()), 0o644)
+
+	a, err := loadDataset("generic", gen, 5, 1)
+	if err != nil || len(a) != 5 {
+		t.Fatalf("loadDataset: err=%v len=%d", err, len(a))
+	}
+	b, _ := loadDataset("generic", gen, 5, 1)
+	if !reflect.DeepEqual(a, b) {
+		t.Error("same seed must give the same sample")
+	}
+	c, _ := loadDataset("generic", gen, 5, 2)
+	if reflect.DeepEqual(a, c) {
+		t.Error("different seed should give a different sample")
 	}
 }
 
@@ -193,13 +309,129 @@ func TestRunEndToEnd(t *testing.T) {
 	}))
 	defer model.Close()
 
+	md := filepath.Join(dir, "out.md")
 	silenceStdout(t, func() {
 		// build-only path (no model-url)
 		runWith(t, "-dataset", "generic", "-squad-file", qa, "-vault", "v", "-mcp-url", muninn.URL, "-n", "1")
 		// scored path
 		runWith(t, "-dataset", "generic", "-squad-file", qa, "-vault", "v", "-mcp-url", muninn.URL,
-			"-model-url", model.URL, "-model", "m", "-n", "1", "-min-score", "0.1", "-timeout", "5s")
+			"-model-url", model.URL, "-model", "m", "-n", "1", "-min-score", "0.1", "-timeout", "5s", "-md", md)
 	})
+	data, _ := os.ReadFile(md)
+	if !strings.Contains(string(data), "msc-qa repro:") || !strings.Contains(string(data), "dataset-sha256=") {
+		t.Errorf("-md output missing repro manifest: %s", data)
+	}
+	if countSub(string(data), "| m |") != 1 {
+		t.Errorf("-md output missing results row: %s", data)
+	}
+}
+
+// TestFailedCallsExcluded: a reader whose every call fails must not deflate the
+// aggregates to fake zeros; the run completes and the -md row is flagged
+// unreliable because every arm lost >10% of its calls.
+func TestFailedCallsExcluded(t *testing.T) {
+	dir := t.TempDir()
+	qa := filepath.Join(dir, "g.json")
+	os.WriteFile(qa, []byte(`[{"question":"capital of France?","answer":"Paris"}]`), 0o644)
+
+	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner, _ := json.Marshal(map[string]any{"memories": []map[string]any{{"content": "Paris is the capital of France.", "vector_score": 0.9}}})
+		json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(inner)}}}})
+	}))
+	defer muninn.Close()
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer model.Close()
+
+	md := filepath.Join(dir, "out.md")
+	silenceStdout(t, func() {
+		runWith(t, "-dataset", "generic", "-squad-file", qa, "-vault", "v", "-mcp-url", muninn.URL,
+			"-model-url", model.URL, "-model", "m", "-n", "1", "-min-score", "0.1", "-timeout", "5s", "-md", md)
+	})
+	data, _ := os.ReadFile(md)
+	if !strings.Contains(string(data), "unreliable") {
+		t.Errorf("all-failed run must flag the row unreliable: %s", data)
+	}
+}
+
+// TestDistractorBypassesGate: with the vault's only memory below the gate, the
+// injected arm is empty but the distractor arm (the shifted question's ungated
+// recall) must still carry that memory, so per question exactly one of the
+// three model calls contains it.
+func TestDistractorBypassesGate(t *testing.T) {
+	dir := t.TempDir()
+	qa := filepath.Join(dir, "g.json")
+	os.WriteFile(qa, []byte(`[{"question":"capital of France?","answer":"Paris"},{"question":"capital of Spain?","answer":"Madrid"}]`), 0o644)
+
+	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner, _ := json.Marshal(map[string]any{"memories": []map[string]any{{"content": "irrelevant cooking fact", "vector_score": 0.3}}})
+		json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(inner)}}}})
+	}))
+	defer muninn.Close()
+	withCtx := 0
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := readAll(r)
+		if strings.Contains(string(body), "irrelevant cooking fact") {
+			withCtx++
+		}
+		json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{"content": "Paris"}}}})
+	}))
+	defer model.Close()
+
+	silenceStdout(t, func() {
+		runWith(t, "-dataset", "generic", "-squad-file", qa, "-vault", "v", "-mcp-url", muninn.URL,
+			"-model-url", model.URL, "-model", "m", "-n", "2", "-min-score", "0.6", "-timeout", "5s")
+	})
+	if withCtx != 2 {
+		t.Errorf("expected exactly 2 model calls with distractor context, got %d", withCtx)
+	}
+}
+
+// TestSingleQuestionDistractorEmpty: with only one question there is no other
+// question to borrow a distractor from, and the shift must not wrap the
+// question's own (correct) recall into that arm. Only the injected call may
+// carry the memory.
+func TestSingleQuestionDistractorEmpty(t *testing.T) {
+	dir := t.TempDir()
+	qa := filepath.Join(dir, "g.json")
+	os.WriteFile(qa, []byte(`[{"question":"capital of France?","answer":"Paris"}]`), 0o644)
+
+	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner, _ := json.Marshal(map[string]any{"memories": []map[string]any{{"content": "Paris is the capital of France.", "vector_score": 0.9}}})
+		json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(inner)}}}})
+	}))
+	defer muninn.Close()
+	withCtx := 0
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := readAll(r)
+		if strings.Contains(string(body), "Paris is the capital of France.") {
+			withCtx++
+		}
+		json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{"content": "Paris"}}}})
+	}))
+	defer model.Close()
+
+	silenceStdout(t, func() {
+		runWith(t, "-dataset", "generic", "-squad-file", qa, "-vault", "v", "-mcp-url", muninn.URL,
+			"-model-url", model.URL, "-model", "m", "-n", "1", "-min-score", "0.6", "-timeout", "5s")
+	})
+	if withCtx != 1 {
+		t.Errorf("expected only the injected call to carry the memory, got %d calls with it", withCtx)
+	}
+}
+
+func TestRunRejectsNonPositiveN(t *testing.T) {
+	for _, n := range []string{"0", "-3"} {
+		oldArgs, oldFS := os.Args, flag.CommandLine
+		flag.CommandLine = flag.NewFlagSet("msc-qa", flag.ContinueOnError)
+		os.Args = []string{"msc-qa", "-n", n}
+		err := run()
+		os.Args, flag.CommandLine = oldArgs, oldFS
+		if err == nil {
+			t.Errorf("run should reject -n %s", n)
+		}
+	}
 }
 
 func runWith(t *testing.T, args ...string) {
@@ -237,6 +469,79 @@ func TestSplitQueryQAAndMultiRecall(t *testing.T) {
 	if got != "fact A" {
 		t.Errorf("multi recallContext should dedup-merge to 'fact A', got %q", got)
 	}
+}
+
+// TestMultiRecallDedupKeepsMaxScore: when the same memory is returned by
+// several sub-queries with different scores, the merged candidate must carry
+// the best score, or an in-process gate would reject a memory the per-sub-query
+// gate used to admit.
+func TestMultiRecallDedupKeepsMaxScore(t *testing.T) {
+	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := readAll(r)
+		score := 0.45 // full question scores low
+		if strings.Contains(string(body), "Danny Green") {
+			score = 0.85 // entity sub-query scores high
+		}
+		inner, _ := json.Marshal(map[string]any{"memories": []map[string]any{{"content": "fact A", "vector_score": score}}})
+		json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(inner)}}}})
+	}))
+	defer muninn.Close()
+	cl := mcpclient.New(muninn.URL, "", time.Second)
+	cands := recallStructured(context.Background(), cl, "v", "who coached Danny Green?", 0, true)
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 deduped candidate, got %v", cands)
+	}
+	if cands[0].Score != 0.85 {
+		t.Errorf("dedup must keep the max score across sub-queries, got %v", cands[0].Score)
+	}
+}
+
+// TestDistractorGoldWarning: when the shifted-recall distractor happens to
+// contain a question's own gold answer, the run must warn instead of silently
+// understating distractor harm.
+func TestDistractorGoldWarning(t *testing.T) {
+	dir := t.TempDir()
+	qa := filepath.Join(dir, "g.json")
+	os.WriteFile(qa, []byte(`[{"question":"capital of France?","answer":"Paris"},{"question":"largest city of France?","answer":"Paris"}]`), 0o644)
+
+	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner, _ := json.Marshal(map[string]any{"memories": []map[string]any{{"content": "Paris is the capital and largest city of France.", "vector_score": 0.9}}})
+		json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(inner)}}}})
+	}))
+	defer muninn.Close()
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{"content": "Paris"}}}})
+	}))
+	defer model.Close()
+
+	stderr := captureStderr(t, func() {
+		silenceStdout(t, func() {
+			runWith(t, "-dataset", "generic", "-squad-file", qa, "-vault", "v", "-mcp-url", muninn.URL,
+				"-model-url", model.URL, "-model", "m", "-n", "2", "-min-score", "0.6", "-timeout", "5s")
+		})
+	})
+	if !strings.Contains(stderr, "distractor context contains the gold answer for 2/2") {
+		t.Errorf("expected distractor-gold warning, stderr:\n%s", stderr)
+	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	defer func() { os.Stderr = old }()
+	fn()
+	w.Close()
+	return <-done
 }
 
 func FuzzSplitQueryQA(f *testing.F) {

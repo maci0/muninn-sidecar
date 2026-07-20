@@ -104,6 +104,36 @@ func TestRunBench(t *testing.T) {
 	}
 }
 
+// TestRunBenchRewriteKey: -rewrite-key must reach the rewrite backend as a
+// bearer token; a keyless call against an authenticated endpoint would fail
+// open and silently measure the baseline.
+func TestRunBenchRewriteKey(t *testing.T) {
+	srv := fakeMuninn(t)
+	defer srv.Close()
+	var gotAuth string
+	rw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"choices":[{"message":{"content":"sub one"}}]}`))
+	}))
+	defer rw.Close()
+	old := os.Stdout
+	w, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	os.Stdout = w
+	oldArgs, oldFS := os.Args, flag.CommandLine
+	flag.CommandLine = flag.NewFlagSet("msc-bench", flag.ContinueOnError)
+	os.Args = []string{"msc-bench", "-probe", "-corpus", "agentmem", "-vault", "v",
+		"-mcp-url", srv.URL, "-n", "4", "-absent", "1", "-mode", "semantic",
+		"-rewrite-url", rw.URL, "-rewrite-key", "sk-test"}
+	defer func() { os.Stdout = old; w.Close(); os.Args, flag.CommandLine = oldArgs, oldFS }()
+	if err := run(); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	rw.Close() // waits for handlers, so reading gotAuth is race-free
+	if gotAuth != "Bearer sk-test" {
+		t.Errorf("rewrite backend got Authorization %q, want %q", gotAuth, "Bearer sk-test")
+	}
+}
+
 func TestRecallMerged(t *testing.T) {
 	srv := fakeMuninn(t)
 	defer srv.Close()

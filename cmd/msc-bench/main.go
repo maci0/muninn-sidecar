@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"math/rand"
 	"os"
@@ -48,7 +49,7 @@ func run() error {
 		mcpURL     = flag.String("mcp-url", envOr("MUNINN_MCP_URL", "http://127.0.0.1:8750/mcp"), "MuninnDB MCP endpoint")
 		token      = flag.String("token", "", "bearer token (default ~/.muninn/mcp.token)")
 		vault      = flag.String("vault", "msc-bench", "vault to seed/probe (dedicated; not 'default')")
-		corpus     = flag.String("corpus", "homogeneous", "corpus generator: homogeneous | diverse | facts | squad")
+		corpus     = flag.String("corpus", "homogeneous", "corpus generator: homogeneous | diverse | facts | squad | hotpot | agentmem")
 		squadFile  = flag.String("squad-file", "/tmp/squad-dev.json", "path to SQuAD JSON (corpus=squad)")
 		squadArts  = flag.Int("squad-articles", 12, "number of SQuAD articles to seed (rest are held out as absent)")
 		hardNeg    = flag.Bool("hard-neg", false, "squad: draw negatives from held-out paragraphs of SEEDED articles (same-topic hard negatives) instead of disjoint articles")
@@ -68,6 +69,7 @@ func run() error {
 		rewriteCmd = flag.String("rewrite-cmd", "", "LLM query rewrite/decomposition before recall via a CLI agent (e.g. \"claude -p\")")
 		rewriteURL = flag.String("rewrite-url", "", "LLM query rewrite via an OpenAI-compatible URL")
 		rewriteMod = flag.String("rewrite-model", "qwen2.5:7b-instruct", "rewrite model name (for -rewrite-url)")
+		rewriteKey = flag.String("rewrite-key", "", "rewrite model API key (for -rewrite-url)")
 		rewriteN   = flag.Int("rewrite-n", 4, "max sub-queries per probe (including the original)")
 		rewriteTO  = flag.Duration("rewrite-timeout", 60*time.Second, "per rewrite-call timeout")
 		multiRec   = flag.Bool("multi-recall", false, "split query into entity spans, recall each, merge (helps multi-hop)")
@@ -99,39 +101,36 @@ func run() error {
 	client := mcpclient.New(*mcpURL, resolveToken(*token), *timeout)
 	var items []item
 	var presentProbes, absentProbes []probe
+	var err error
 	switch *corpus {
 	case "squad":
-		var err error
 		if *hardNeg {
 			items, presentProbes, absentProbes, err = genSquadHardNeg(*squadFile, *squadArts, *n, *present, *absent, *chunk)
 		} else {
 			items, presentProbes, absentProbes, err = genSquad(*squadFile, *squadArts, *n, *present, *absent, *chunk)
 		}
-		if err != nil {
-			return err
-		}
 	case "hotpot":
-		var err error
 		items, presentProbes, absentProbes, err = genHotpot(*squadFile, *squadArts, *n, *present, *absent)
-		if err != nil {
-			return err
-		}
 	case "agentmem":
-		items, presentProbes, absentProbes = genAgentMem(*n, *absent)
+		items, presentProbes, absentProbes, err = genAgentMem(*n, *absent)
 	case "facts":
 		items, presentProbes, absentProbes = genFacts()
 	case "diverse":
-		items, presentProbes, absentProbes = genDiverse(*rngSeed, *n, *present, *absent)
+		items, presentProbes, absentProbes, err = genDiverse(*rngSeed, *n, *present, *absent)
 	default:
-		items, presentProbes, absentProbes = genDataset(*rngSeed, *n, *present, *absent)
+		items, presentProbes, absentProbes, err = genDataset(*rngSeed, *n, *present, *absent)
+	}
+	if err != nil {
+		return err
 	}
 	ctx := context.Background()
 
 	if *dumpQA != "" {
-		if err := writeQA(*dumpQA, presentProbes); err != nil {
+		nQA, err := writeQA(*dumpQA, presentProbes)
+		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "wrote %d QA pairs to %s\n", len(presentProbes), *dumpQA)
+		fmt.Fprintf(os.Stderr, "wrote %d QA pairs to %s\n", nQA, *dumpQA)
 	}
 
 	if *seed {
@@ -151,7 +150,7 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "probing %d queries (%d present, %d absent) mode=%q transform=%q rerank=%q...\n",
 		len(probes), len(presentProbes), len(absentProbes), *mode, *qTransform, *rerank)
 	opt := probeOpts{mode: *mode, transform: *qTransform, distractN: *distractN, rerank: *rerank, rerankLambda: *rerankL, multiRecall: *multiRec}
-	if rw := buildRewriter(*rewriteCmd, *rewriteURL, *rewriteMod, "", *rewriteTO); rw != nil {
+	if rw := buildRewriter(*rewriteCmd, *rewriteURL, *rewriteMod, *rewriteKey, *rewriteTO); rw != nil {
 		opt.rewriter = rw
 		opt.rewriteN = *rewriteN
 		fmt.Fprintf(os.Stderr, "query rewrite enabled via %s (≤%d sub-queries/probe)\n", rw.label(), *rewriteN)
@@ -247,16 +246,34 @@ var (
 	landmarks = []string{"the Old Salt Bridge", "Cinder Lake", "the Tannery Steps", "Marrow Ridge", "the Glasswind Pass", "Harrow Mill", "the Sunken Orchard", "Pikeman's Wharf"}
 )
 
+// checkNamespace rejects corpus sizes whose generator indices leave the modular
+// namespace of `space` distinct subjects: the n seeded items (indices 0..n-1)
+// must fit without colliding with each other, and the nAbsent absent probes
+// (indices n+1, n+1+stride, ...) must not wrap around onto seeded items. The
+// error names the actual overflow cause.
+func checkNamespace(n, nAbsent, stride, space int, kind string) error {
+	if n > space {
+		return fmt.Errorf("n=%d exceeds the %d-%s namespace: seeded items would collide with each other", n, space, kind)
+	}
+	if nAbsent > 0 && n+1+(nAbsent-1)*stride >= space {
+		return fmt.Errorf("n=%d with %d absent probes exceeds the %d-%s namespace: absent probes would wrap onto seeded items", n, nAbsent, space, kind)
+	}
+	return nil
+}
+
 // genDataset builds n unique memories from rare adjective+creature+place triples
 // and matched present/absent probes. Probes are worded differently from the
 // stored content so retrieval tests semantics, not lexical overlap.
-func genDataset(rngSeed int64, n, nPresent, nAbsent int) ([]item, []probe, []probe) {
+func genDataset(rngSeed int64, n, nPresent, nAbsent int) ([]item, []probe, []probe, error) {
 	rng := rand.New(rand.NewSource(rngSeed))
 	triple := func(i int) (string, string, string) {
 		a := adjs[i%len(adjs)]
 		c := creatures[(i/len(adjs))%len(creatures)]
 		p := places[(i/(len(adjs)*len(creatures)))%len(places)]
 		return a, c, p
+	}
+	if err := checkNamespace(n, nAbsent, 3, len(adjs)*len(creatures)*len(places), "triple"); err != nil {
+		return nil, nil, nil, err
 	}
 	concept := func(a, c, p string) string {
 		return strings.ToLower(fmt.Sprintf("%s-%s-%s", a, c, strings.ReplaceAll(p, " ", "")))
@@ -298,8 +315,12 @@ func genDataset(rngSeed int64, n, nPresent, nAbsent int) ([]item, []probe, []pro
 			Present: false,
 		})
 	}
-	return items, present, absent
+	return items, present, absent, nil
 }
+
+// coinNameSpace is the number of distinct names coinName can produce (16 first
+// parts x 16 middles x 16 endings); indices beyond it wrap around.
+const coinNameSpace = 16 * 16 * 16
 
 // coinName builds a deterministic distinctive pseudo-word from an index, so each
 // diverse memory has a unique, embedding-separable subject token.
@@ -314,7 +335,10 @@ func coinName(i int) string {
 // vocabulary, so embeddings separate them well — a realistic memory store rather
 // than the near-identical homogeneous corpus. Each memory has a unique coined
 // subject; probes paraphrase a fact about that subject.
-func genDiverse(rngSeed int64, n, nPresent, nAbsent int) ([]item, []probe, []probe) {
+func genDiverse(rngSeed int64, n, nPresent, nAbsent int) ([]item, []probe, []probe, error) {
+	if err := checkNamespace(n, nAbsent, 3, coinNameSpace, "name"); err != nil {
+		return nil, nil, nil, err
+	}
 	mem := func(i int) item {
 		x := coinName(i)
 		switch i % 8 {
@@ -377,7 +401,7 @@ func genDiverse(rngSeed int64, n, nPresent, nAbsent int) ([]item, []probe, []pro
 		absent[i].Gold = ""
 		absent[i].Present = false
 	}
-	return items, present, absent
+	return items, present, absent, nil
 }
 
 // --- seeding ---
@@ -736,6 +760,11 @@ type benchReport struct {
 	GateByVec       []gatePoint      `json:"gate_by_vector"`
 	BestScore       gatePoint        `json:"best_by_score"`
 	BestVec         gatePoint        `json:"best_by_vector"`
+	// Held-out variants: threshold picked on the tune half (probes whose query
+	// hash is even), metrics measured on the eval half (odd hash).
+	// BestScore/BestVec are in-sample optima and thus optimistic.
+	HeldOutScore gatePoint `json:"heldout_by_score"`
+	HeldOutVec   gatePoint `json:"heldout_by_vector"`
 }
 
 func analyze(results []probeResult) benchReport {
@@ -756,10 +785,14 @@ func analyze(results []probeResult) benchReport {
 
 	scoreThresholds := frange(0.3, 1.2, 0.05)
 	vecThresholds := frange(0.30, 0.85, 0.025)
-	rep.GateByScore = gateSweep(present, absent, scoreThresholds, func(m recalledMemory) float64 { return m.Score })
-	rep.GateByVec = gateSweep(present, absent, vecThresholds, func(m recalledMemory) float64 { return m.VectorScore })
+	scoreOf := func(m recalledMemory) float64 { return m.Score }
+	vecOf := func(m recalledMemory) float64 { return m.VectorScore }
+	rep.GateByScore = gateSweep(present, absent, scoreThresholds, scoreOf)
+	rep.GateByVec = gateSweep(present, absent, vecThresholds, vecOf)
 	rep.BestScore = bestGate(rep.GateByScore)
 	rep.BestVec = bestGate(rep.GateByVec)
+	rep.HeldOutScore = heldOutBest(results, scoreThresholds, scoreOf)
+	rep.HeldOutVec = heldOutBest(results, vecThresholds, vecOf)
 	return rep
 }
 
@@ -817,7 +850,7 @@ func gateSweep(present, absent []probeResult, thresholds []float64, field func(r
 			}
 		}
 		nP, nA := float64(len(present)), float64(len(absent))
-		acc := (injectWhenShould + suppressWhenAbsent) / (nP + nA)
+		acc := safeDiv(injectWhenShould+suppressWhenAbsent, nP+nA)
 		prec, rec := 0.0, 0.0
 		if tp+fp > 0 {
 			prec = float64(tp) / float64(tp+fp)
@@ -849,6 +882,41 @@ func bestGate(pts []gatePoint) gatePoint {
 		}
 	}
 	return best
+}
+
+// tuneHalf assigns a probe to the tune half of the held-out split by hashing
+// its query. Result-index parity would NOT work: the synthetic generators pick
+// question category by index modulo an even number, so an even/odd index split
+// puts disjoint category sets in each half and the "held-out" metric would
+// measure cross-category transfer instead of generalization. The hash is
+// deterministic so runs stay comparable.
+func tuneHalf(query string) bool {
+	h := fnv.New32a()
+	h.Write([]byte(query))
+	return h.Sum32()%2 == 0
+}
+
+// heldOutBest counters the in-sample optimism of bestGate, which selects and
+// scores the threshold on the same probes. It splits results into a tune half
+// and an eval half by query hash (see tuneHalf), picks the best threshold on
+// the tune half, and returns that threshold's gate metrics measured on the
+// eval half.
+func heldOutBest(results []probeResult, thresholds []float64, field func(recalledMemory) float64) gatePoint {
+	var tuneP, tuneA, evalP, evalA []probeResult
+	for _, r := range results {
+		switch {
+		case tuneHalf(r.Query) && r.Present:
+			tuneP = append(tuneP, r)
+		case tuneHalf(r.Query):
+			tuneA = append(tuneA, r)
+		case r.Present:
+			evalP = append(evalP, r)
+		default:
+			evalA = append(evalA, r)
+		}
+	}
+	best := bestGate(gateSweep(tuneP, tuneA, thresholds, field))
+	return gateSweep(evalP, evalA, []float64{best.Threshold}, field)[0]
 }
 
 func topByField(mems []recalledMemory, field func(recalledMemory) float64) (float64, bool) {
@@ -898,6 +966,10 @@ func printReport(rep benchReport, results []probeResult) {
 		rep.BestScore.Threshold, rep.BestScore.GateAcc, rep.BestScore.GateF1, rep.BestScore.InjectWhenS, rep.BestScore.SuppressOK, rep.BestScore.WhatCorrect)
 	fmt.Printf("BEST gate on vector: T=%.3f acc=%.2f f1=%.2f (inject@should=%.2f suppress@absent=%.2f what=%.2f)\n",
 		rep.BestVec.Threshold, rep.BestVec.GateAcc, rep.BestVec.GateF1, rep.BestVec.InjectWhenS, rep.BestVec.SuppressOK, rep.BestVec.WhatCorrect)
+	fmt.Printf("BEST gate (held-out) on score : T=%.3f acc=%.2f f1=%.2f (inject@should=%.2f suppress@absent=%.2f what=%.2f)\n",
+		rep.HeldOutScore.Threshold, rep.HeldOutScore.GateAcc, rep.HeldOutScore.GateF1, rep.HeldOutScore.InjectWhenS, rep.HeldOutScore.SuppressOK, rep.HeldOutScore.WhatCorrect)
+	fmt.Printf("BEST gate (held-out) on vector: T=%.3f acc=%.2f f1=%.2f (inject@should=%.2f suppress@absent=%.2f what=%.2f)\n",
+		rep.HeldOutVec.Threshold, rep.HeldOutVec.GateAcc, rep.HeldOutVec.GateF1, rep.HeldOutVec.InjectWhenS, rep.HeldOutVec.SuppressOK, rep.HeldOutVec.WhatCorrect)
 
 	// Validate auto-calibration: feed the observed cosines (what the injector's
 	// observeCalibration samples) to the production CalibrateThreshold and compare
@@ -928,8 +1000,10 @@ func printGate(title string, pts []gatePoint) {
 // --- helpers ---
 
 // writeQA dumps present probes as a generic QA JSON ([{question,answer}]) that
-// msc-qa reads with -dataset generic.
-func writeQA(path string, probes []probe) error {
+// msc-qa reads with -dataset generic, returning the pair count. Probes without
+// an answer span are an error: writing an empty file would silently give a
+// later msc-qa run zero questions.
+func writeQA(path string, probes []probe) (int, error) {
 	type qa struct {
 		Question string `json:"question"`
 		Answer   string `json:"answer"`
@@ -940,11 +1014,14 @@ func writeQA(path string, probes []probe) error {
 			out = append(out, qa{Question: p.Query, Answer: p.Answer})
 		}
 	}
+	if len(out) == 0 {
+		return 0, fmt.Errorf("no present probes carry an answer span; -dump-qa needs a corpus with answers (squad, hotpot, agentmem)")
+	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return len(out), os.WriteFile(path, data, 0o644)
 }
 
 func frange(lo, hi, step float64) []float64 {
