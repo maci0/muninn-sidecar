@@ -112,9 +112,11 @@ the **same user message** every round of a tool-use chain (with new tool results
 appended), so firing a fresh recall each time is wasted latency. `Enrich` hashes
 the query; if unchanged **and** the session window still holds memories, it
 **reuses the window instead of recalling**. Two refinements: a **negative cache**
-skips re-querying when a repeated intent already recalled nothing, and an opt-in
-**semantic trigger** (`QuerySimReuse < 1`) reuses on high query word-set overlap,
-not just exact match. A continuation neither re-queries nor advances decay, so
+skips re-querying when a repeated intent already recalled nothing, and a
+**semantic reuse trigger** (`QuerySimReuse < 1`) that reuses on high query
+word-set overlap, not just exact match; the latter exists at the library level
+but is not currently exposed as a CLI flag, so production runs use exact-match
+reuse. A continuation neither re-queries nor advances decay, so
 the turn counter tracks distinct *intents*, not raw requests. First turn and an
 empty window always recall.
 
@@ -220,7 +222,7 @@ it per vault), confirmed three independent ways:
 
 - **Real MuninnDB benchmark** (`msc-bench`, labeled corpus): gating cosine at 0.6
   gave perfect inject/suppress accuracy, clean plateau over [0.575, 0.675].
-- **Corpus MinScore sweep** (`msc-eval -sweep`): plateau 0.55–0.65.
+- **Corpus MinScore sweep** (`msc-eval -sweep`): plateau [0.52, 0.60].
 - **Synthetic CV study** (`msc-eval -compare`): tuned absolute threshold ≈ 0.56.
 
 ## Does retrieval actually work?
@@ -279,8 +281,9 @@ omits that field, update `normalizeRelevance` in `internal/inject/inject.go`.
 
 ## Observability
 
-`msc status` (session summary) reports the decisions so the transparent gate is
-not a black box:
+At session end, `msc` prints a summary of the decisions so the transparent gate
+is not a black box (`msc status` separately reports MuninnDB reachability and
+vault population):
 
 ```
 inject: 42 injected, 11 suppressed, ~38.0K tokens

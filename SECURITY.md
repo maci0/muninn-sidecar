@@ -24,8 +24,10 @@ warrant care:
   leaving the machine) and mints per-host leaf certs to decrypt the agent's HTTPS.
   Trust is scoped to the launched child via env vars (`NODE_EXTRA_CA_CERTS` /
   `SSL_CERT_FILE` / …) — msc never installs the CA into the system trust store.
-  Only the upstream host is terminated by default; other hosts are blind-tunneled
-  (`--mitm-host` to scope explicitly).
+  By default `--mitm` TLS-terminates every CONNECT host the agent opens (the
+  agents that need MITM often talk to a backend that isn't their nominal API
+  host); use `--mitm-host` to scope interception to the upstream plus listed
+  hosts, blind-tunneling everything else untouched.
 - **Captured content & secrets.** Exchanges are stored in MuninnDB. msc redacts
   well-known credential formats and personal data (emails, payment-card numbers,
   SSNs) before storage and before injecting recalled

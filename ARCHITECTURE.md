@@ -75,6 +75,9 @@ cmd/msc-eval/            Injection-quality evaluation CLI (offline + live)
 cmd/msc-bench/           Real-MuninnDB retrieval + when-to-inject benchmark
   main.go                Seed labeled corpus, probe, sweep score vs vector_score
   facts.go               Distinct-subject corpus + unrelated absent probes
+cmd/msc-qa/              Downstream answer-quality eval across models (none/injected/distractor arms)
+  main.go                Dataset loading, model/CLI readers, arms
+  score.go               SQuAD EM/token-F1 scoring
 internal/
   agents/agents.go        Agent registry (claude, codex, grok, qwen, agy, ...)
   apiformat/apiformat.go  Format detection & message extraction (Anthropic/OpenAI/Gemini)
@@ -112,7 +115,7 @@ Each coding agent reads its API base URL from an environment variable (`ANTHROPI
 
 A few agents take their base URL from a CLI flag rather than an env var (e.g. Qwen Code's `--openai-base-url`). For those, the agent's `ProxyArgs` carry the flags with a `{proxy}` placeholder that `Exec` substitutes with the live proxy URL — the same transparent redirect, delivered as args instead of env.
 
-The `MSC_UPSTREAM` sentinel prevents infinite loops when msc is accidentally nested — a child msc instance reads the real upstream from the sentinel rather than picking up the inner proxy's address from the environment.
+The per-agent `MSC_UPSTREAM_<AGENT>` sentinel (e.g. `MSC_UPSTREAM_CLAUDE`) prevents infinite loops when msc is accidentally nested: a child msc instance for the same agent reads the real upstream from the sentinel rather than picking up the inner proxy's address from the environment, and a child running a different agent ignores it and resolves its own upstream.
 
 ### TLS-MITM Interception (opt-in, `--mitm`)
 
@@ -160,17 +163,19 @@ The greedy token-budget packer then runs over the survivors. Note the interactio
 
 ### Choosing the Method
 
-The threshold and the single-knob shape were not hand-picked — they won a cross-validated bake-off (`internal/inject/eval_study.go`, `eval_cv.go`). Five candidate when+what strategies were compared on 600 synthetic scenarios drawn from *overlapping* relevant/noise score distributions (so no threshold separates them cleanly), using 5-fold cross-validation: each method's hyperparameters are tuned on training folds and scored on a held-out test fold, so the numbers reflect generalization, not memorization. Held-out macro-F1 (which rewards correct suppression *and* correct selection):
+The threshold and the single-knob shape were not hand-picked; they won a cross-validated bake-off (`internal/inject/eval_study.go`, `eval_cv.go`). Nine candidate when+what strategies were compared on 600 synthetic scenarios drawn from *overlapping* relevant/noise score distributions (so no threshold separates them cleanly), using 5-fold cross-validation: each method's hyperparameters are tuned on training folds and scored on a held-out test fold, so the numbers reflect generalization, not memorization. Held-out macro-F1 (which rewards correct suppression *and* correct selection), from `go run ./cmd/msc-eval -compare`:
 
 | method | F1 (held-out) | gate acc | wasted | note |
 |---|---|---|---|---|
-| **absolute** (1 knob) | **0.913** | 95% | 4% | winner — simplest, least wasteful |
-| absfloor + relative (2 knobs) | 0.910 | 95% | 7% | ties within noise, more complex |
-| relative-only (no suppression) | 0.870 | 92% | 15% | can't decide *when* |
-| fixed top-k above recall floor | 0.821 | 92% | 19% | legacy baseline |
-| absfloor + gap-cut | 0.810 | 95% | 2% | over-suppresses, recall suffers |
+| **absolute** (1 knob) | **0.983** | 99% | 1% | winner: simplest, least wasteful |
+| absolute + cap-N / sep-gate / z-gate | 0.983 | 99% | 1% | extra knobs tune to off |
+| absfloor + relative (2 knobs) | 0.956 | 99% | 8% | ties on gate, more complex, more waste |
+| absfloor + margin | 0.945 | 99% | 8% | |
+| absfloor + gap-cut | 0.924 | 99% | 1% | over-suppresses, recall suffers |
+| relative-only (no suppression) | 0.838 | 86% | 19% | can't decide *when* |
+| fixed top-k above recall floor | 0.716 | 86% | 32% | legacy baseline |
 
-Two conclusions: methods that make an explicit *when* decision beat those that always inject (gate accuracy 95% vs 92%, much less wasted budget) — so a suppression decision is necessary; and the single absolute threshold matches the more complex two-knob method while being simpler and wasting less, so it wins on Occam. A finer threshold sweep is flat-topped over [0.48, 0.52] across five seeds, peaking at **0.50** (below it, low scores are indistinguishable from noise; above it, recall drops as real matches get suppressed) — hence the tuned threshold. `TestMethodStudy` guards that "absolute" stays the winner and its tuned threshold stays near 0.5.
+Two conclusions: methods that make an explicit *when* decision beat those that always inject (gate accuracy 99% vs 86%, much less wasted budget), so a suppression decision is necessary; and the single absolute threshold matches every more complex variant while being simpler and wasting less, so it wins on Occam. The tuned absolute threshold lands at ~0.56; `TestMethodStudy` guards that "absolute" stays the winner and its tuned threshold stays within ±0.05 of the production default (0.6).
 
 The dataset is synthetic but principled; its score distributions are calibrated to the embedding cosines observed on a real instance (below).
 
@@ -197,7 +202,7 @@ This is what fixed the production gate to use `vector_score` and set `MinScore` 
 Selection is a heuristic, so it ships with an evaluation harness (`internal/inject/eval.go`, CLI at `cmd/msc-eval`) that measures whether injected memories are actually useful and whether the selection choices hold up.
 
 - **Offline layer** (deterministic, CI-gated): a labeled corpus (`internal/inject/testdata/scenarios.json`) gives each candidate a simulated recall score and a gold relevance label, plus a `should_inject` gate label per scenario. `RunScenario` feeds candidates through the real `selectForInjection` + `withinBudget` pipeline and scores the outcome: **precision/recall/F1** (did we inject the useful memories and skip noise?), **gate accuracy** (was the inject-vs-suppress decision right?), **nDCG** (are injected memories ordered by true relevance?), and **budget efficiency**. `TestCorpusRegression` fails CI if aggregate quality drops below floors.
-- **MinScore sweep**: `SweepMinScore` (`msc-eval -sweep`) charts gate accuracy, precision/recall, and wasted budget across thresholds on the corpus. It plateaus at perfect over [0.46, 0.52], independently confirming the ~0.5 optimum chosen by the synthetic study (the production gate runs on `vector_score`, where 0.6 is the default — see above); `TestMinScoreThresholdImproves` guards it.
+- **MinScore sweep**: `SweepMinScore` (`msc-eval -sweep`) charts gate accuracy, precision/recall, and wasted budget across thresholds on the corpus. It plateaus at perfect over [0.52, 0.60], consistent with the 0.6 production default on `vector_score` (see above); `TestMinScoreThresholdImproves` guards it.
 - **Method study**: `RunMethodStudy` (`msc-eval -compare`) runs the cross-validated comparison above.
 - **Live layer** (`internal/inject/eval_live.go`, opt-in): seeds a throwaway MuninnDB vault and exercises the full recall + selection path, reporting how many expected concepts were injected. This covers recall quality (embedding search) on top of selection quality. It has side effects and needs a running server, so it runs only via `msc-eval -live`, never in the normal test suite — and is the way to re-tune `MinScore` against real score distributions.
 

@@ -61,6 +61,17 @@ distributions) comparing gate variants. **Held-out F1:**
 | absfloor + relative | 0.956 | |
 | relative-only / top-k | 0.84 / 0.72 | can't suppress |
 
+Note on the F1 convention: a correctly-suppressed noise-only turn scores a
+vacuous F1 = 1.0 (`eval_cv.go` `scoreSet`), and ~15% of the synthetic scenarios
+are noise-only, so every method gets those points for free. Absolute values are
+therefore inflated; the comparisons between rows are the finding.
+
+Scope note: the synthetic cosine distributions are calibrated to msc-bench
+observations (`eval_study.go` `genScenarios`), so the study ranks methods under
+that generative model; it does not certify absolute F1 on real traffic.
+Seed-to-seed variance is now reported by `msc-eval -compare`, which runs a fixed
+multi-seed set by default (`-study-seed` pins a single seed).
+
 **Decision:** keep the single absolute `vector_score ≥ MinScore` gate; cap-N and
 margin variants give no benefit. (Threshold value 0.6 justified in
 [recall-and-injection.md](recall-and-injection.md).)
@@ -186,12 +197,16 @@ answer-grounding judgment before the reader sees them. Grounder = qwen2.5:7b
 | granite3.1-dense:2b | 0.32 | 0.10 | **0.34** | **+0.24** |
 | llama3.2:3b | 0.20 | 0.14 | **0.21** | **+0.08** |
 
-**Grounding recovers the harm of bad injection — and beats the threshold gate at
-it.** Naive injection cost granite −0.22 (0.32→0.10); grounding restores it to
-0.34 (≈ baseline, +0.01 vs none). The earlier production-gate confirming run only
-recovered granite to −0.10 at min-score 0.6; **grounding recovers to +0.01 —
-better than the cosine gate**, because it drops paragraphs by answer-presence
-rather than by a score band that wrong paragraphs still clear. Grounding doesn't
+**Grounding recovers the harm of bad injection, at least as well as the
+threshold gate (within run noise).** Naive injection cost granite −0.22
+(0.32→0.10); grounding restores it to 0.34 (≈ baseline, +0.01 vs none). The
+earlier production-gate confirming run only recovered granite to −0.10 at
+min-score 0.6; grounding recovers to +0.01 in this run. The mechanism argument
+favors grounding: it drops paragraphs by answer-presence
+rather than by a score band that wrong paragraphs still clear. But note the
++0.01-vs-−0.10 ordering rests on N=20 runs (the −0.10 from a separate earlier
+run), so treat it as "at least as good" until an N ≥ 100 run with CIs confirms
+it. Grounding doesn't
 *add* over the no-context baseline on multi-hop (no single paragraph fully answers,
 so it correctly drops them → ≈ none), but it *eliminates the downstream harm* that
 the threshold gate only partially contains.
@@ -199,8 +214,8 @@ the threshold gate only partially contains.
 **Refined decision:** the cosine gate + auto-calibration stays the default
 in-flight (≈11ms, no model). For **harm-prone vaults** (weak retrieval / many
 on-topic-but-wrong neighbours, e.g. multi-hop), a *fast local* grounder
-(`-ground-url`, ~1s/judge) is a viable in-flight precision upgrade that beats the
-threshold at harm-recovery. **Frontier CLIs** (`-ground-cmd`) remain offline-only
+(`-ground-url`, ~1s/judge) is a viable in-flight precision upgrade that recovers
+harm at least as well as the threshold. **Frontier CLIs** (`-ground-cmd`) remain offline-only
 (~3.5s/judge, §B3) — best for vault audit/curation. The grounding lever is real;
 its place is set by the grader's latency.
 
@@ -211,7 +226,10 @@ grader practical: an inject turn costs *one* round-trip regardless of how many
 candidates survived the gate — measured ~289ms for a local qwen2.5:7b judging 3
 passages (vs ~1.9s when the same judge ran 3 separate calls), and one frontier
 `claude -p` call instead of K. Batching preserved the harm-recovery downstream
-(granite on HotpotQA: grounded F1 0.25 vs cosine-inject 0.10, +0.15). It also
+(granite on HotpotQA: grounded F1 0.25 vs cosine-inject 0.10, +0.15). The 0.34
+(main run) vs 0.25 (batching check) spread on the same grounded-granite
+configuration is observed run-to-run variance at N=20, itself larger than
+several deltas this log treats as findings, hence the caution above. It also
 narrows the frontier-CLI gap: a single ~3.5s call per *inject* turn (the gate
 already suppresses most turns) is borderline-viable in-flight, not only offline.
 
@@ -360,20 +378,24 @@ conditions):
 | qwen2.5:7b rewrite | 0.17 | 0.25 | 0.25 | 0.220 | ~1s |
 | **claude -p rewrite** | 0.17 | 0.25 | 0.33 | 0.225 | **~5.5s** |
 
-**No lift — not even from the frontier model**, at 5.5s/probe. The reason is
-structural, not a model-quality gap: parallel decomposition cannot satisfy a
+**Consistent with no lift at N=12, even from the frontier model** (the three
+conditions differ by at most one probe; R@1 resolution is 0.083/probe), at
+5.5s/probe. Re-run at N ≥ 50 present probes before citing this table outside
+this log. The primary claim is structural, not a model-quality gap: parallel
+decomposition cannot satisfy a
 multi-hop question because the second hop's query *depends on the first hop's
 answer* — no upfront rewrite, however capable, can phrase "the director of the
 film that won X" as a lookup without first retrieving X. The sub-queries recall
 the same paragraphs the original already found (or noise), so merging doesn't add
 the bridge fact. True multi-hop needs *iterative* retrieve→read→retrieve (multiple
 recalls + model calls per turn), which is far outside a transparent sidecar's
-latency budget. **Decision: not shipped.** Kept as `msc-bench -rewrite-*` flags
+latency budget. **Decision: not shipped** (on the structural argument; the N=12
+table is consistent with it but too small to carry the conclusion alone). Kept as `msc-bench -rewrite-*` flags
 for future datasets where a single underspecified turn (not a reasoning chain)
 genuinely benefits from rewriting; the confidence gate remains the multi-hop
 mitigation. This closes the recall side as the grounding work closed the
-precision side: frontier models help injection precision in-flight, but do not
-improve single-shot recall on reasoning-chain queries.
+precision side: frontier models help injection precision in-flight, but did not
+improve single-shot recall on reasoning-chain queries here.
 
 ## Staleness & contradiction resolution — validated end-to-end (live proxy)
 
@@ -479,6 +501,11 @@ as a "systematic undershoot to fix" was wrong — corrected here after inspectin
 the cluster geometry and the downstream lift. The valley is a principled,
 recall-favoring default; the balanced-accuracy "best" is one reference point, not
 ground truth. The AUTO-CALIBRATED instrument stays for inspecting any vault.
+One caveat: the benchmark feeds `CalibrateThreshold` a balanced probe mix (80
+present + 80 absent), while live traffic's relevant:noise mix is unknown,
+vault-dependent, and likely noise-heavy. Otsu's valley moves with class balance,
+so this validates that the mechanism finds the valley on the observed mix, not
+that live traffic reproduces this mix.
 
 ## E — Downstream answer quality (gold metric) — RUN (real model)
 

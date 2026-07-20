@@ -3,6 +3,59 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+## [Unreleased]
+
+### Fixed
+
+- **Upgrades survive capture.** 101 Switching Protocols responses are no longer
+  consumed by capture on the plain proxy path; WebSocket upgrades pass through
+  intact.
+- **Tunnels drain both directions.** `blindTunnel` and the WebSocket splice
+  waited on the first copy direction only, tearing down the peer mid-transfer;
+  both now finish (half-close forwarded through the conn wrappers). CONNECT
+  bytes pipelined behind the header (early TLS ClientHello) are kept, and
+  header-block reads are bounded even without a newline.
+- **permessage-deflate stays in sync.** Skipped compressed WebSocket messages
+  now advance the inflater dictionary instead of desyncing context takeover.
+- **Gemini Cloud Code output is captured.** The `{"response":{...}}` envelope is
+  unwrapped for assistant/SSE extraction; user-query extractors scan back past
+  tool-result and text-free turns, and an omitted role defaults to `user`.
+- **Grounding rejections stick.** Judge-rejected memories are evicted from the
+  session window, so tool-use continuations no longer re-inject them. Verdict
+  parsing requires a word boundary ("3 notes" no longer reads as "3: no"), and
+  the CLI grounder prompt travels over stdin instead of argv (was visible in
+  the process table).
+- **Redaction corrects both directions.** `sk-`/`xai-` patterns are word-anchored
+  (no more mangled hyphenated identifiers), scp-style remotes are no longer
+  eaten as emails while `email:password` combos now are redacted, multi-word and
+  unterminated quoted values are fully scrubbed, and redaction is idempotent.
+- **Scoped MITM keeps TLS working.** `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`/
+  `CURL_CA_BUNDLE` now point at a combined system+msc bundle instead of
+  replacing the child's entire trust store; a mismatched CA cert/key pair is
+  detected and regenerated.
+- **No orphaned agents.** SIGINT/SIGTERM to msc is forwarded to the agent child
+  (SIGKILL after 3s), without double-signaling on terminal Ctrl+C; msc exits
+  128+signum for signal-terminated children.
+- **Nesting resolves the right upstream.** The upstream sentinel is scoped per
+  agent (`MSC_UPSTREAM_<AGENT>`), and a nested msc detects a base-URL var
+  poisoned by a different agent's parent proxy. Gemini-mode `countTokens` no
+  longer stores duplicate user-only memories.
+
+### Changed
+
+- **Eval methodology hardened.** `msc-qa`: paired-bootstrap 95% CIs on F1
+  deltas, deterministic `-sample-seed` question sampling, failed calls excluded
+  (not scored as wrong), per-question distractors instead of one shared passage,
+  token-boundary answer matching, and a repro manifest (flags, dataset SHA-256,
+  seed) embedded in output. `msc-bench`: held-out best-gate reporting alongside
+  the in-sample optimum, validated probe namespaces, `-rewrite-key` for
+  authenticated rewrite endpoints. `msc-eval`: `-study-seed`/`-study-n`/
+  `-study-folds`; `-compare` reports cross-seed mean and std of held-out F1.
+- **Docs corrected against code.** SECURITY.md had MITM scoping backwards (no
+  `--mitm-host` means intercept-all); stale thresholds, sweep plateaus, and fuzz
+  counts fixed; eval claims right-sized with provenance and limitations notes
+  (N=20 tables are directional; per-model deltas need N >= 100).
+
 ## [0.4.4] — 2026-06-02
 
 ### Fixed

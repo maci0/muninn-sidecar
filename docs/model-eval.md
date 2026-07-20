@@ -33,9 +33,16 @@ Run: `make eval-models` or
 older qwen3.6 is a thinking model that times out at scale under GPU contention —
 omitted; qwen3:1.7b covers the thinking case.)
 
+**Provenance:** the rows in this doc predate the msc-qa repro manifest. They
+sampled the first N questions in file order (SQuAD groups questions by article,
+so N=20 spans only 1-2 articles) and used a single shared distractor passage
+for every question. Future runs record a full repro header (flags, dataset
+SHA-256, `-sample-seed`), sample the distractor per question, and carry 95%
+paired-bootstrap CIs on the F1 deltas.
+
 ## Findings (10 models, 6 families, 1b–7b)
 
-- **Auto-injection improves every model.** Δinj F1 ranges +0.03 (gemma3:1b) to
+- **Auto-injection is non-negative for every model, and large for most.** Δinj F1 ranges +0.03 (gemma3:1b) to
   +0.57 (qwen2.5:3b, qwen3:1.7b). Typical lift is large (often 3–12× the
   no-context F1): qwen2.5:3b 0.05→0.62, nemotron-mini 0.23→0.68, qwen3:1.7b
   0.12→0.68. The sign is positive for **every** model — injection is robustly
@@ -50,6 +57,10 @@ omitted; qwen3:1.7b covers the thinking case.)
   (+0.17) gain least — the smallest / least context-following models. The payoff
   scales with the model's ability to use provided context, but stays positive.
 
+At N=20 per arm, deltas under ~0.2 F1 are within run noise (one question moves F1
+by 0.05), so treat signs, not magnitudes, as the finding. Any future table that
+states a per-model delta as a finding should run at N ≥ 100 (the `-n` default).
+
 **Implication for the sidecar:** the value proposition (inject relevant memory →
 better answers) holds across the model zoo, and the cost of a false injection is
 real — validating both *that* we inject and the *gate* deciding *when*. The gate's
@@ -57,7 +68,10 @@ precision is what keeps results in the "injected" regime, not the "distractor" o
 
 Method: SQuAD vault, recall reused across models, min-score 0.1 (≈ungated top
 recall), max-tokens 256 (instruct) / 2048 (thinking), local ollama under GPU
-contention, 0 failed calls.
+contention, 0 failed calls. Note min-score 0.1 measures the injection *ceiling*
+with the gate bypassed; gated behavior is measured separately (the HotpotQA
+confirming run below, and the cross-cutting section of
+[experiments.md](experiments.md)).
 
 ## HotpotQA (multi-hop)
 
@@ -106,8 +120,9 @@ The gate reduces multi-hop harm (llama −0.07→+0.02, granite −0.22→−0.1
 suppressing low-confidence recalls. It doesn't fully erase it: some wrong
 paragraphs still clear 0.6, so the residual harm is a *retrieval-precision* limit
 (multi-hop needs decomposed/iterative retrieval), not a gate limit. Net: the gate
-turns a losing regime into roughly break-even — injection stays safe even where
-retrieval is weak.
+moves a losing regime toward break-even; injection stays safe even where
+retrieval is weak. (At N=20 the per-model deltas, including the llama sign flip,
+are within run noise; the consistent direction across models is the finding.)
 
 ## Agent-memory (msc use case: decisions/config/ownership)
 
@@ -196,6 +211,20 @@ keeps FEVER safe. (FEVER answers are labels, not spans, so it is scored with
 `msc-qa -answer-hint "SUPPORTS, REFUTES"`; the default extractive prompt scores it
 a spurious 0.)
 
+### Limitations
+
+- **Public-benchmark contamination.** SQuAD, BoolQ, HotpotQA, and the HF-zoo
+  datasets are present in every tested model's pretraining data. The near-zero
+  none-arm scores suggest passage-specific spans are not memorized, but
+  contamination can still inflate injected-arm EM (models may have seen these
+  exact question/answer pairs in fine-tuning corpora), flattering the injection
+  lift on public datasets. The agent-memory corpus (coined subjects, none-arm
+  0.00) is the contamination-free reference, and is why it is the headline
+  regime.
+- **One embedding, one MuninnDB.** All retrieval numbers depend on a single
+  embedding model and MuninnDB version, so "seven regimes, one law" is
+  one-embedding evidence.
+
 ## Adversarial QA (hard extractive) — 5th regime
 
 Seeded `msc-advqa` from **UCLNLP/adversarial_qa** (`adversarialQA`, validation),
@@ -221,7 +250,9 @@ Even with the gold answer in context 100% of the time, injected F1 tops out
 
 `msc-qa -model-cmd` runs any CLI agent as the reader: the prompt (instruction +
 `<retrieved-context>` block + question) is the final argv, and the last non-empty
-stdout line is the answer. Same `msc-advqa` vault (N=8, gold context 8/8):
+stdout line is the answer. Same `msc-advqa` vault (N=8, gold context 8/8). This
+is a pilot: at N=8 a single question moves F1 by 0.125, so the table is
+directional only:
 
 | reader | none EM/F1 | inj EM/F1 | dist EM/F1 | Δinj F1 |
 |---|---|---|---|---|
@@ -234,12 +265,13 @@ go run ./cmd/msc-qa -dataset squad -squad-file /tmp/advqa.json -vault msc-advqa 
   -model-cmd "claude -p,codex exec --skip-git-repo-check,grok -p" -n 8 -min-score 0.1 -timeout 180s
 ```
 
-**The law generalizes from local to frontier.** Passage-specific extractive
-answers are *not* in any model's parametric memory, so the none-arm F1 stays low
-(0.08–0.26) even for frontier agents — capability alone can't substitute for the
-missing fact. Injection is the only path to it (+0.09…+0.30), and the distractor
-arm is ≤ baseline for all three. This is the cleanest validation of the sidecar's
-gate against frontier readers: inject the confident recall, suppress the rest —
+**Directionally, the law carries from local to frontier.** Passage-specific
+extractive answers are *not* in any model's parametric memory, so the none-arm F1
+stays low (0.08–0.26) even for frontier agents; capability alone can't
+substitute for the missing fact. Injection is the only path to it (+0.09…+0.30),
+and the distractor arm is ≤ baseline for all three. Read as a pilot, this is
+consistent with the sidecar's gate story against frontier readers: inject the
+confident recall, suppress the rest:
 a wrong inject never helps, no matter how capable the reader. (claude's smaller
 lift is partly a measurement artifact: terser/explanatory phrasing lowers
 span-overlap F1 even when the answer is right.)

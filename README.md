@@ -200,7 +200,7 @@ SSE streaming responses are handled incrementally — chunks flow through to the
 
 ### Nested invocations
 
-`msc` sets `MSC_UPSTREAM` in the child environment so nested `msc` calls detect the real upstream and avoid infinite proxy loops.
+`msc` sets a per-agent `MSC_UPSTREAM_<AGENT>` sentinel (e.g. `MSC_UPSTREAM_CLAUDE`) in the child environment so a nested `msc` for the same agent detects the real upstream and avoids infinite proxy loops, while a nested `msc` for a different agent resolves its own upstream.
 
 ## Configuration
 
@@ -224,11 +224,11 @@ Command-line flags take precedence over environment variables.
 -d, --debug           Enable debug logging (verbose structured output)
 -q, --quiet           Suppress msc's own output
 -n, --dry-run         Show resolved config without launching
--j, --json            Machine-readable output (for list, status, version)
+-j, --json            Machine-readable output (for list, status, ca, version, --dry-run)
 -f, --force           Launch even if MuninnDB is unreachable
     --no-inject       Disable memory injection (enabled by default)
     --inject-budget N Max tokens to inject per request (default: 2048)
-    --inject-min-score F  Min cosine score to inject a memory, 0-1 (default: 0.6)
+    --inject-min-score F  Min cosine score to inject a memory, in (0,1] (default: 0.6)
     --no-auto-calibrate   Disable per-vault auto-calibration of the injection gate (calibrated by default)
     --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
     --ground-url URL      Opt-in answer-grounding rerank via an OpenAI-compatible model (fast local judge, ~1s); drops recalled passages the model says don't answer the query

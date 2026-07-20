@@ -19,7 +19,7 @@
   unifying law: *injection value ≈ retrieval accuracy × the model's in-context
   ability; a wrong injection never helps*.
 - **[testing.md](testing.md)** — test + fuzz posture: every function tested,
-  54 fuzz targets over all parsing/transform surfaces, `make cover` / `make fuzz`.
+  60 fuzz targets over all parsing/transform surfaces, `make cover` / `make fuzz`.
 
 ## Dataset zoo
 
@@ -52,7 +52,7 @@ go run ./cmd/msc-bench -seed -probe -corpus squad -squad-file /tmp/code.json \
 | tool | purpose |
 |---|---|
 | `msc-eval` | offline selection-quality harness + `MinScore` sweep + cross-validated method study |
-| `msc-bench` | seed a labeled corpus into a real MuninnDB vault; measure retrieval + the gate; validate auto-calibration vs the empirical best. Flags: `-corpus squad\|hotpot\|agentmem\|facts\|diverse`, `-squad-file` (any dataset above), `-hard-neg` (same-article hard negatives), `-ground-url\|-ground-cmd`, `-rewrite-url\|-rewrite-cmd`, `-dump-qa` |
+| `msc-bench` | seed a labeled corpus into a real MuninnDB vault; measure retrieval + the gate; validate auto-calibration vs the empirical best. Flags: `-corpus homogeneous\|squad\|hotpot\|agentmem\|facts\|diverse`, `-squad-file` (any dataset above), `-hard-neg` (same-article hard negatives), `-ground-url\|-ground-cmd`, `-rewrite-url\|-rewrite-cmd`, `-dump-qa` |
 | `msc-qa` | downstream answer-quality across models. Flags: `-dataset squad\|hotpot\|generic`, `-model "m1,m2"` (HTTP) / `-model-cmd "claude -p"` (frontier CLI readers), `-ground-url\|-ground-cmd` (4th grounded arm), `-inject-format bare\|labeled\|scored`, `-answer-hint` (classification regimes like FEVER) |
 
 Architecture overview: [../ARCHITECTURE.md](../ARCHITECTURE.md).
