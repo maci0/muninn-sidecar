@@ -43,6 +43,13 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Changed
 
+- **Dev loop matches CI.** `make lint` and `make vuln` no longer swallow a
+  linter's real failure behind a "not installed, skipping" message; a missing
+  tool now fails with the `go install` line to run. `make check` reproduces the
+  CI test job locally (tidy, gofmt, vet, staticcheck, race test, build), `make
+  help` lists every target, `make tools` installs the two CI linters, and
+  `make test PKG=... RUN='^TestFoo$'` (plus `make test-fast`) narrows the
+  edit-test loop to one package or test.
 - **Eval methodology hardened.** `msc-qa`: paired-bootstrap 95% CIs on F1
   deltas, deterministic `-sample-seed` question sampling, failed calls excluded
   (not scored as wrong), per-question distractors instead of one shared passage,

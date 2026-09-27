@@ -62,3 +62,17 @@ corrected over-strict invariants (non-JSON passthrough, float64 number overflow)
 make test    # race, all packages
 go test ./...
 ```
+
+While iterating, narrow the run to the package or test being edited instead of
+paying for the whole tree under `-race`:
+
+```sh
+make test PKG=./internal/inject                    # one package, still -race
+make test PKG=./internal/inject RUN='^TestSelect$' # one test
+make test-fast PKG=./internal/inject                # no -race, quicker
+```
+
+`make check` runs the full CI `test` job locally (tidy, gofmt, vet,
+staticcheck, `go test -race`, build) so nothing waits for a push to fail.
+`make fuzz` and `make vuln` are the two CI jobs that stay separate, being slow
+and network-bound.

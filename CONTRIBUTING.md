@@ -3,6 +3,22 @@
 Thanks for contributing. This guide covers the workflow and the project's
 quality bar so a change lands cleanly.
 
+## Prerequisites
+
+- **Go 1.25 or newer** (pinned in `go.mod`; CI tracks the latest 1.25.x patch).
+- **staticcheck and govulncheck**, which CI installs and runs, so `make check`
+  and `make vuln` require them too:
+
+  ```sh
+  make tools   # go install both into GOBIN (no sudo, no system packages)
+  ```
+
+  Pin versions with `make tools STATICCHECK_VERSION=v0.6.0
+  GOVULNCHECK_VERSION=latest` if you need to match a specific linter release.
+
+`make help` lists every target. There are no other system dependencies: no
+database, no C toolchain, no services to start for a build or test run.
+
 ## Build & run
 
 ```sh
@@ -12,19 +28,34 @@ go run ./cmd/msc status # quick smoke against a local MuninnDB
 ```
 
 `msc` needs [MuninnDB](https://github.com/scrypster/muninn) reachable (default
-`http://127.0.0.1:8750/mcp`, override with `MUNINN_MCP_URL`).
+`http://127.0.0.1:8750/mcp`, override with `MUNINN_MCP_URL`). The tests use
+`httptest` fakes, so no MuninnDB is needed to run them.
+
+## The edit-test loop
+
+`make test` runs the whole tree under `-race` (about 25s). Narrow it to what you
+are editing:
+
+```sh
+make test PKG=./internal/redact            # one package, still -race
+make test PKG=./internal/redact RUN='^TestFoo$'  # one test
+make test-fast PKG=./internal/inject       # same, without -race
+```
 
 ## Before you open a PR
 
-Everything below must pass — CI enforces it:
+One command runs everything the CI `test` job runs, in the same order:
 
 ```sh
-make fmt                # gofmt -w (or: gofmt -l . must be empty)
-make lint               # go vet + staticcheck
-make test               # go test -race -count=1 ./...
-make cover              # coverage report
-FUZZTIME=8s make fuzz   # run every fuzz target briefly
+make check   # tidy-check, fmt-check, go vet, staticcheck, go test -race, build
+```
+
+The other two CI jobs are separate because they are slow or need the network:
+
+```sh
+FUZZTIME=8s make fuzz   # brief campaign over every fuzz target
 make vuln               # govulncheck against the Go vulnerability DB
+make cover              # coverage report
 ```
 
 The module has **no third-party dependencies** (standard library only) — keep it

@@ -3,7 +3,65 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: build install test cover lint vuln fmt tidy clean eval eval-models fuzz bench
+.PHONY: help tools check build install test cover lint vuln fmt fmt-check tidy \
+	tidy-check clean eval eval-models fuzz bench
+
+# Packages/tests for the `test` target. PKG=./internal/redact narrows the
+# edit-test loop to the package being edited; RUN='^TestFoo$' narrows it to one
+# test. Both default to everything, so `make test` stays the full race run.
+PKG ?= ./...
+RUN ?=
+
+STATICCHECK_VERSION ?= latest
+GOVULNCHECK_VERSION ?= latest
+STATICCHECK_PKG = honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
+GOVULNCHECK_PKG = golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+help:
+	@echo 'dev targets:'
+	@echo '  make tools        go install the two CI linters (staticcheck, govulncheck) into GOBIN'
+	@echo '  make check        everything CI runs locally: tidy-check fmt-check vet lint test build'
+	@echo '  make test         go test -race -count=1 $(PKG)   (override PKG=... or RUN='"'"'^TestFoo$$'"'"')'
+	@echo '  make test-fast    same without -race, for a quicker loop'
+	@echo '  make fmt          gofmt -w over the tree'
+	@echo '  make fmt-check    fail on unformatted files (what CI does)'
+	@echo '  make lint         go vet + staticcheck (staticcheck required, like CI)'
+	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
+	@echo '  make cover        race + coverage report'
+	@echo '  make fuzz         brief campaign over every fuzz target (FUZZTIME=60s for longer)'
+	@echo '  make vuln         govulncheck against the Go vulnerability DB (govulncheck required)'
+	@echo '  make bench        all benchmarks with allocation stats'
+	@echo '  make build        build msc, msc-bench, msc-eval, msc-qa'
+	@echo '  make install      go install ./cmd/msc'
+	@echo '  make eval         offline selection-quality report + MinScore threshold sweep'
+	@echo '  make eval-models  downstream answer quality over local models (needs ollama + a seeded vault)'
+	@echo '  make clean        remove built binaries and coverage output'
+	@echo 'optional tools:'
+	@echo '  go install $(STATICCHECK_PKG)'
+	@echo '  go install $(GOVULNCHECK_PKG)'
+
+# `go install` puts the linters in $(go env GOBIN): no sudo, no system packages,
+# and the same install CI does.
+tools:
+	go install $(STATICCHECK_PKG)
+	go install $(GOVULNCHECK_PKG)
+	@echo "installed into $$(go env GOBIN || echo $$(go env GOPATH)/bin); that directory must be on PATH"
+
+# The full local mirror of the CI `test` job, in CI's order. Run this before
+# pushing: anything it misses is a red CI run.
+check: tidy-check fmt-check lint test
+	go build -o /dev/null ./...   # all binaries, matching CI's build step
+
+# CI runs `go mod tidy` and fails if it changes anything, so a stale go.mod
+# only surfaces after a push. Same check, same message, locally.
+tidy-check:
+	go mod tidy
+	@if [ -n "$$(git status --porcelain go.mod go.sum)" ]; then \
+	  echo "go mod tidy changed go.mod/go.sum — commit the result" >&2; \
+	  git status --porcelain go.mod go.sum; \
+	  git diff go.mod; \
+	  exit 1; \
+	fi
 
 # Build all binaries. Version ldflags only resolve in cmd/msc (the others have
 # no main.version symbol, so -X is a harmless no-op there).
@@ -27,7 +85,12 @@ install:
 	go install -ldflags '$(LDFLAGS)' ./cmd/msc/
 
 test:
-	go test -race -count=1 ./...
+	go test -race -count=1 $(if $(RUN),-run '$(RUN)') $(PKG)
+
+# Same packages without -race: much quicker while iterating, still worth a
+# race-enabled `make test` before pushing.
+test-fast:
+	go test -count=1 $(if $(RUN),-run '$(RUN)') $(PKG)
 
 cover:
 	go test -race -count=1 -coverprofile=cover.out ./...
@@ -50,16 +113,30 @@ fuzz:
 	  done; \
 	done; echo "all fuzz targets clean"
 
+# CI runs staticcheck and fails the build, so a missing local copy must fail
+# here too: skipping it silently reports green and turns into a red CI run.
 lint:
 	go vet ./...
-	@command -v staticcheck >/dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed, skipping (go install honnef.co/go/tools/cmd/staticcheck@latest)"
+	@command -v staticcheck >/dev/null 2>&1 || { \
+	  echo "staticcheck is required (CI runs it): go install $(STATICCHECK_PKG)" >&2; exit 1; }
+	staticcheck ./...
 
 # Scan reachable code against the Go vulnerability DB (CI runs this too).
 vuln:
-	@command -v govulncheck >/dev/null 2>&1 && govulncheck ./... || echo "govulncheck not installed, skipping (go install golang.org/x/vuln/cmd/govulncheck@latest)"
+	@command -v govulncheck >/dev/null 2>&1 || { \
+	  echo "govulncheck is required (CI runs it): go install $(GOVULNCHECK_PKG)" >&2; exit 1; }
+	govulncheck ./...
 
 fmt:
 	gofmt -l -w .
+
+fmt-check:
+	@unformatted="$$(gofmt -l .)"; \
+	if [ -n "$$unformatted" ]; then \
+	  echo "gofmt found unformatted files, run 'make fmt'" >&2; \
+	  echo "$$unformatted" >&2; \
+	  exit 1; \
+	fi
 
 tidy:
 	go mod tidy

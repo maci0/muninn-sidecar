@@ -286,6 +286,10 @@ Command-line flags take precedence over environment variables.
 
 ## Contributing
 
+Clone needs Go 1.25+ and nothing else; `make tools` adds the two linters CI
+runs, `make help` lists every target, and `make check` reproduces the CI test
+job locally.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the build/test/fuzz workflow, the
 quality bar, how to add an agent (verify empirically), and commit conventions.
 
