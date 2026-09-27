@@ -264,14 +264,14 @@ func TestNewReqAndDoJSON(t *testing.T) {
 	var out struct {
 		OK bool `json:"ok"`
 	}
-	if err := doJSON(req2, time.Second, &out); err != nil || !out.OK {
+	if err := doJSON(&http.Client{Timeout: time.Second}, req2, &out); err != nil || !out.OK {
 		t.Errorf("doJSON: err=%v out=%+v", err, out)
 	}
 
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }))
 	defer bad.Close()
 	req3, _ := newReq(context.Background(), bad.URL, "", []byte(`{}`))
-	if err := doJSON(req3, time.Second, &out); err == nil {
+	if err := doJSON(&http.Client{Timeout: time.Second}, req3, &out); err == nil {
 		t.Error("doJSON should error on 500")
 	}
 }
@@ -290,7 +290,7 @@ func TestAnswerAndRecallContext(t *testing.T) {
 		})
 	}))
 	defer model.Close()
-	mc := &modelClient{baseURL: model.URL, model: "m", timeout: 2 * time.Second, maxTokens: 64}
+	mc := newModelClient(model.URL, "", "m", 2*time.Second, 64)
 	ans, err := mc.answer(context.Background(), "capital?", "France info")
 	if err != nil || ans != "Paris" {
 		t.Errorf("answer: err=%v ans=%q", err, ans)

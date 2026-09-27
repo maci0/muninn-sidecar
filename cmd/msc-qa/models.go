@@ -39,8 +39,13 @@ func newReq(ctx context.Context, url, key string, body []byte) (*http.Request, e
 // exhaust memory, matching the caps used by mcpclient and grounding.
 const maxModelResponse = 4 << 20 // 4 MiB
 
-func doJSON(req *http.Request, timeout time.Duration, out any) error {
-	client := &http.Client{Timeout: timeout}
+// doJSON performs one model request on the caller's long-lived client and
+// decodes the response into out. The client is a parameter, not built here: a
+// per-call http.Client owns a private Transport whose idle connections are
+// never reaped (a hand-built Transport's IdleConnTimeout is zero), so every
+// question answered would strand one socket and its read/write goroutines on a
+// transport nobody can reach, for the life of the run.
+func doJSON(client *http.Client, req *http.Request, out any) error {
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("call model endpoint %s: %w", req.URL, err)
@@ -70,8 +75,37 @@ const modelSeed = 1
 
 type modelClient struct {
 	baseURL, key, model string
-	timeout             time.Duration
+	client              *http.Client
 	maxTokens           int
+}
+
+// modelIdleConnTimeout is how long an unused connection to the model endpoint
+// is held before it is closed. Without it the pool's connections live as long as
+// the run, which is fine for a handful but keeps every socket the run opened
+// alive at the end of the loop.
+const modelIdleConnTimeout = 90 * time.Second
+
+// maxIdleConnsPerModel bounds the model's idle pool, so a burst of parallel
+// questions cannot park an unbounded number of keep-alive connections.
+const maxIdleConnsPerModel = 2
+
+// newModelClient builds a reader with one long-lived HTTP client shared by every
+// question this model is asked, so connections are reused instead of one fresh
+// socket per question.
+func newModelClient(baseURL, key, model string, timeout time.Duration, maxTokens int) *modelClient {
+	return &modelClient{
+		baseURL:   baseURL,
+		key:       key,
+		model:     model,
+		maxTokens: maxTokens,
+		client: &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				MaxIdleConnsPerHost: maxIdleConnsPerModel,
+				IdleConnTimeout:     modelIdleConnTimeout,
+			},
+		},
+	}
 }
 
 func (m *modelClient) label() string { return m.model }
@@ -114,7 +148,7 @@ func (m *modelClient) answer(ctx context.Context, question, contextBlock string)
 			Message struct{ Content string } `json:"message"`
 		} `json:"choices"`
 	}
-	if err := doJSON(req, m.timeout, &out); err != nil {
+	if err := doJSON(m.client, req, &out); err != nil {
 		return "", err
 	}
 	if len(out.Choices) == 0 {

@@ -275,7 +275,7 @@ func run() error {
 	var readers []answerer
 	if *modelURL != "" {
 		for _, m := range splitCSV(*model) {
-			readers = append(readers, &modelClient{baseURL: strings.TrimRight(*modelURL, "/"), key: *modelKey, model: m, timeout: *timeout, maxTokens: *maxTokens})
+			readers = append(readers, newModelClient(strings.TrimRight(*modelURL, "/"), *modelKey, m, *timeout, *maxTokens))
 		}
 	}
 	for _, cmd := range splitCSV(*modelCmd) {

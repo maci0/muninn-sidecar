@@ -1373,6 +1373,14 @@ func TestSetPreparerConcurrentWithStore(t *testing.T) {
 	// must carry the tag, and any lost swap during the run shows up.
 	s.SetPreparer(func(ex *CapturedExchange) { ex.Model = "test-model" })
 
+	// Install the preparer once, before the first capture is queued. The worker
+	// starts inside New, so an exchange enqueued before this call is prepared by
+	// the nil preparer (documented: an exchange is normalized by the preparer in
+	// force when the worker reaches it) and would be counted as a lost swap. The
+	// swaps below still overlap the worker's reads, which is what this test
+	// pins.
+	s.SetPreparer(func(ex *CapturedExchange) { ex.Model = "test-model" })
+
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 

@@ -49,6 +49,15 @@ minor bump is safe.
   like any other recall failure, alongside the existing "recall failed for N/M
   questions" warning and the all-questions-failed abort. A reply that decodes
   and carries no memories is still a genuine empty result.
+- **`msc-qa` and `msc-bench` no longer strand a socket per model call.** Both
+  tools built a fresh `http.Client` for every question they asked, and each one
+  owns a private `Transport` whose `IdleConnTimeout` is zero: the keep-alive
+  connection the call opened went back to a pool nothing could reach, taking its
+  read and write goroutines with it, for the life of the run. A run over a
+  dataset leaked one socket and two goroutines per question, on top of
+  re-handshaking a connection that could have been reused. Both now hold one
+  client for the run, with a bounded idle pool and a 90s idle timeout, the same
+  shape `internal/grounding` already used for its judge.
 - **A panic in a turn no longer takes the session down.** The request pipeline
   had no recovery of its own, so a panic fell through to the stdlib's
   per-connection recover with `http.Server.ErrorLog` left nil. That default

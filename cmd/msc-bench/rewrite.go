@@ -114,7 +114,36 @@ const maxRewriteResponse = 4 << 20 // 4 MiB
 
 type httpRewriter struct {
 	baseURL, key, model string
-	timeout             time.Duration
+	client              *http.Client
+}
+
+// rewriteIdleConnTimeout is how long an unused connection to the rewrite
+// endpoint is held before it is closed. A hand-built Transport's
+// IdleConnTimeout is zero, meaning "keep forever", so without this every
+// connection the run opened would still be parked at the end of it.
+const rewriteIdleConnTimeout = 90 * time.Second
+
+// maxIdleRewriteConns bounds the rewriter's idle pool, so a burst of parallel
+// scenarios cannot park an unbounded number of keep-alive connections.
+const maxIdleRewriteConns = 2
+
+// newHTTPRewriter builds a rewriter with one long-lived HTTP client shared by
+// every query it decomposes. A client per Rewrite would own a private Transport
+// whose idle connections are never reaped, stranding one socket and its
+// read/write goroutines per query on a transport nobody can reach.
+func newHTTPRewriter(baseURL, key, model string, timeout time.Duration) *httpRewriter {
+	return &httpRewriter{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		key:     key,
+		model:   model,
+		client: &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				MaxIdleConnsPerHost: maxIdleRewriteConns,
+				IdleConnTimeout:     rewriteIdleConnTimeout,
+			},
+		},
+	}
 }
 
 func (r *httpRewriter) label() string { return "http:" + r.model }
@@ -134,7 +163,7 @@ func (r *httpRewriter) Rewrite(ctx context.Context, query string, max int) []str
 	if r.key != "" {
 		req.Header.Set("Authorization", "Bearer "+r.key)
 	}
-	resp, err := (&http.Client{Timeout: r.timeout}).Do(req)
+	resp, err := r.client.Do(req)
 	if err != nil {
 		return failOpen(err.Error(), query)
 	}
@@ -200,7 +229,7 @@ func buildRewriter(cmd, url, model, key string, timeout time.Duration) rewriter 
 		}
 	}
 	if url != "" {
-		return &httpRewriter{baseURL: strings.TrimRight(url, "/"), key: key, model: model, timeout: timeout}
+		return newHTTPRewriter(url, key, model, timeout)
 	}
 	return nil
 }
