@@ -24,6 +24,27 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 - **The session window has a stable order.** The window is built from a map, so
   memories with equal effective scores were emitted in a different order on
   every run. Ties now break on ID, so the injected block is replayable.
+- **The grounding judge no longer leaks a connection per turn.** `--ground-url`
+  built a fresh `http.Client` and `http.Transport` inside every `Relevant` call,
+  and that transport sets no idle-connection timeout, so each grounded turn
+  stranded its keep-alive socket (and its read/write goroutines) on a transport
+  nothing could close. One client is now built per grounder and reused, with a
+  bounded idle pool. The CLI judge gained the matching bounds: its output is
+  captured into a capped tail buffer instead of an unbounded `bytes.Buffer`,
+  and a judge that times out is killed as a process group, so the helpers it
+  spawned do not outlive the call.
+- **A signalled agent's own children go down with it.** Signal forwarding
+  reached only the agent's pid, so helpers it had spawned survived msc's exit
+  (most visibly after the 3s SIGKILL fallback) and kept running against a proxy
+  that was about to close. The agent's process group is signalled instead,
+  except when that is the group msc itself belongs to, which also holds the
+  user's shell.
+- **The model breakdown stops growing without a ceiling.** Model names are read
+  out of captured request bodies, so every distinct string a client ever sent
+  became a permanent session counter, and one long name was retained verbatim.
+  Names are now capped in count and length, and the captures past the cap are
+  reported as `other (N)` in the summary rather than dropped silently or, worse,
+  leaving the list looking complete.
 - **Direct identifiers no longer reach third parties on the read path.** The
   recall query is scrubbed before it is sent to MuninnDB, and
   `grounding.Prompt` scrubs the query and candidate passages before they reach

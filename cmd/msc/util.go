@@ -139,8 +139,19 @@ func signalChildren(sig os.Signal) {
 		return
 	}
 	fgPgrp := termForegroundPgrp()
+	self := selfPgrp()
 	for _, c := range children {
 		if !shouldForward(s, c.pgrp, fgPgrp) {
+			continue
+		}
+		// Signal the child's whole group when it is a group of its own, so
+		// helpers the agent spawned go down with it instead of outliving msc
+		// and running against a proxy that no longer exists. msc's own group
+		// also holds the shell, so it is signalled per-pid only.
+		if c.pgrp > 0 && c.pgrp != self {
+			if err := signalPIDGroup(c.pgrp, s); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+				slog.Warn("failed to signal child process group", "pgrp", c.pgrp, "err", err)
+			}
 			continue
 		}
 		if err := signalPID(c.pid, s); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {

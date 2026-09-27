@@ -136,6 +136,7 @@ const maxModelNameLen = 64
 // RecordModel increments the usage count for a model. Names past
 // maxTrackedModels are counted in ModelsDropped rather than tracked
 // individually.
+
 func (s *Stats) RecordModel(model string) {
 	if model == "" {
 		return

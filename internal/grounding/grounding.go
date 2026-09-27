@@ -35,6 +35,11 @@ import (
 // hostile grounding endpoint from exhausting memory.
 const maxGroundResponse = 4 << 20 // 4 MiB
 
+// groundIdleConnTimeout is how long an unused connection to the judge is held
+// before the transport closes it, so the shared pool cannot retain sockets
+// indefinitely.
+const groundIdleConnTimeout = 90 * time.Second
+
 // Grounder grades, in a single call, which of the passages answer the query.
 type Grounder interface {
 	// Relevant returns a mask parallel to passages: true = keep (contains an
@@ -177,7 +182,7 @@ func allTrue(n int) []bool {
 
 type httpGrounder struct {
 	baseURL, key, model string
-	timeout             time.Duration
+	client              *http.Client
 }
 
 func (g *httpGrounder) Label() string { return "http:" + g.model }
@@ -201,14 +206,11 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 	if g.key != "" {
 		req.Header.Set("Authorization", "Bearer "+g.key)
 	}
-	// Enforce a TLS 1.2 floor: the API key is sent as a bearer token, so the
-	// transport to the (possibly third-party) grounding endpoint must not
-	// negotiate down to a legacy protocol version. mcpclient and the proxy's
-	// upstream leg require 1.3; only the MITM forward leg uses this 1.2 floor.
-	resp, err := (&http.Client{
-		Timeout:   g.timeout,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
-	}).Do(req)
+	// The client is built once per grounder (see newHTTPGrounder) and reused
+	// across calls: it carries the request timeout and the TLS 1.2 floor, since
+	// the API key is sent as a bearer token and the grounding endpoint may be a
+	// third party.
+	resp, err := g.client.Do(req)
 	if err != nil {
 		// Fail-open is by design (a flaky judge must never drop real hits), but a
 		// silent one is undebuggable — surface why grounding degraded to the gate.
@@ -250,12 +252,17 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	cctx, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, g.argv[0], g.argv[1:]...)
+	isolateProcessGroup(cmd)
 	// The prompt carries the user's query and recalled memory text; deliver it
 	// on stdin (CLI judges read it there), never argv, where /proc/<pid>/cmdline
 	// would expose it to every user on the host for the duration of the call.
 	cmd.Stdin = strings.NewReader(Prompt(query, passages))
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+	// Judge agents are chatty (reasoning traces, banners) and nothing bounds how
+	// much they print, so capture into a capped buffer: a runaway judge would
+	// otherwise grow the sidecar's heap unbounded on the request path. Verdict
+	// lines come last, so a truncated buffer keeps its tail, where they are.
+	stdout := &tailBuffer{limit: maxGroundResponse}
+	cmd.Stdout = stdout
 	if err := cmd.Run(); err != nil && stdout.Len() == 0 {
 		// Fail-open with a trace: a misconfigured argv or a judge that timed out
 		// (cctx deadline) otherwise degrades to the gate with no signal why.
@@ -269,6 +276,27 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	return ParseMask(stdout.String(), len(passages))
 }
 
+// tailBuffer accumulates the tail of a stream that may outgrow any fixed budget.
+// Writes past the limit drop the oldest bytes: the judge prints its verdicts last,
+// so keeping the tail preserves what ParseMask needs. It is not safe for
+// concurrent use; exec.Cmd writes to it from a single goroutine.
+type tailBuffer struct {
+	buf   []byte
+	limit int
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.limit {
+		t.buf = append(t.buf[:0], t.buf[len(t.buf)-t.limit:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return string(t.buf) }
+
+func (t *tailBuffer) Len() int { return len(t.buf) }
+
 // New builds the grounder selected by its arguments, or nil if none is set. A
 // CLI command takes precedence over an HTTP URL when both are given.
 func New(cmd, url, model, key string, timeout time.Duration) Grounder {
@@ -278,7 +306,30 @@ func New(cmd, url, model, key string, timeout time.Duration) Grounder {
 		}
 	}
 	if url != "" {
-		return &httpGrounder{baseURL: strings.TrimRight(url, "/"), key: key, model: model, timeout: timeout}
+		return newHTTPGrounder(strings.TrimRight(url, "/"), model, key, timeout)
 	}
 	return nil
+}
+
+// newHTTPGrounder builds an httpGrounder with one long-lived client. The
+// transport is shared deliberately: a client per Relevant call would strand
+// that call's keep-alive connections (and their readLoop/writeLoop goroutines)
+// on a transport nobody can close, so every grounded turn would leak a couple
+// of sockets to the judge for the life of the process.
+func newHTTPGrounder(baseURL, model, key string, timeout time.Duration) *httpGrounder {
+	return &httpGrounder{
+		baseURL: baseURL,
+		key:     key,
+		model:   model,
+		client: &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+				// Bound the idle pool: a judge that is slow to answer must not
+				// leave connections parked for the process's lifetime.
+				MaxIdleConnsPerHost: 2,
+				IdleConnTimeout:     groundIdleConnTimeout,
+			},
+		},
+	}
 }
