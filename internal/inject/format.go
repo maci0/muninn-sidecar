@@ -16,10 +16,18 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
-// entryFraming is the fixed part of one context-block entry's format:
-// "[" + "] (relevance: " + ")\n\n". The score sits between the label and the
-// closing bracket and is measured by entryOverhead.
-const entryFraming = len("[] (relevance: ") + len(")\n\n")
+// entryFraming is the fixed part of one context-block entry's format as
+// formatContextBlock writes it: "[" + concept + "] (relevance: " + score +
+// ")\n" + content + "\n\n". The score sits between the label and the closing
+// bracket and is measured by entryOverhead.
+//
+// The two label halves are counted apart because the concept is written between
+// them: "[] (relevance: " as one literal is one byte shorter than the bracket
+// plus the label the formatter actually emits, and the entry then costs a byte
+// less than the block it is in. Over a turn's worth of memories that shortfall
+// adds up to an emitted block past the budget, and a reported token count
+// computed from a byte count the block does not have.
+const entryFraming = len("[") + len("] (relevance: ") + len(")\n") + len("\n\n")
 
 // entryOverhead is the framing cost of one entry at a given score: entryFraming
 // plus the width the score actually prints at. The width is measured, not
@@ -34,12 +42,21 @@ func entryOverhead(score float64) int {
 }
 
 // entryBytes estimates how many bytes a memory contributes to a context block
-// without allocating an intermediate string. Format is
-// "[" + concept + "] (relevance: X.XX)\n" + content + "\n\n". Both text fields
-// are measured as NeutralizeMarkers would leave them, not as they arrive: the
-// block formatter escapes every marker in both, and the escaped form is not a
-// fixed size larger, so measuring the raw length would size a block that is
-// never the one written.
+// without allocating an intermediate string, measured the way
+// formatContextBlock writes it: redaction and marker neutralization applied,
+// then "[" + concept + "] (relevance: X.XX)\n" + content + "\n\n".
+//
+// Both fields are measured as the formatter would leave them, not as they
+// arrive. The block formatter escapes every marker in both, and the escaped
+// form is not a fixed size larger, so measuring the raw length would size a
+// block that is never the one written.
+//
+// Redaction is part of the measurement, not a step that follows it. The marker
+// is ten bytes, so replacing a secret can make the text longer than it was: a
+// body of short email addresses or "phone:"-style assignments grows by several
+// bytes per secret. Measuring the pre-redaction text and writing the
+// post-redaction one understates the entry, and a block packed on that estimate
+// comes out well past the budget it was given.
 //
 // The unit is bytes, not characters: charPerToken is a bytes-per-token
 // heuristic, and tokenizers charge by encoded length, so a CJK or emoji memory
@@ -47,16 +64,29 @@ func entryOverhead(score float64) int {
 // entryChars keeps the "chars" in the names and in charPerToken from claiming
 // a precision the measurement does not have.
 func entryBytes(m memory) int {
-	return apiformat.NeutralizedLen(m.Concept) + apiformat.NeutralizedLen(m.Content) + entryOverhead(m.Score)
+	return conceptBytes(m) + contentBytes(m) + entryOverhead(m.Score)
 }
 
-// contextOverheadBytes is the fixed cost of the block wrapper: the markers, the
-// two separating newlines, and the data-not-instructions notice, plus one byte
-// of slack so the estimator can never under-count the wrapper. Shared by the
-// budget estimator and the formatter so the token count the injector reports
-// matches the bytes it actually writes.
+// conceptBytes and contentBytes measure one field of an entry as the block
+// writes it, kept apart because the oversized-memory clip is budgeted on the
+// concept and the content separately.
+func conceptBytes(m memory) int {
+	return apiformat.NeutralizedLen(redact.Secrets(m.Concept))
+}
+
+func contentBytes(m memory) int {
+	return apiformat.NeutralizedLen(redact.Secrets(m.Content))
+}
+
+// contextOverheadBytes is the fixed cost of the block wrapper: the opening
+// marker, the notice on its own line, and the closing marker, with one newline
+// after each of the first two and no others. Shared by the budget estimator and
+// the formatter so the token count the injector reports matches the bytes it
+// actually writes; counting a third newline here charged every block a byte it
+// does not have and, against the per-entry framing, left a multi-memory block's
+// byte total short of its own length.
 const contextOverheadBytes = len(apiformat.ContextPrefix) + len(apiformat.ContextNotice) +
-	len(apiformat.ContextSuffix) + 3
+	len(apiformat.ContextSuffix) + len("\n\n")
 
 // minOversizedMemoryBytes is the floor for an over-budget memory's truncated
 // content. A budget below this would otherwise make the first memory
@@ -131,16 +161,16 @@ func withinBudget(memories []memory, budget int) []memory {
 				break
 			}
 			// First memory and it alone blows the budget: keep it, clipped.
-			room := budgetBytes - totalBytes - apiformat.NeutralizedLen(m.Concept) - entryOverhead(m.Score)
+			room := budgetBytes - totalBytes - conceptBytes(m) - entryOverhead(m.Score)
 			if room < minOversizedMemoryBytes {
 				room = minOversizedMemoryBytes
 			}
-			// room is bytes, so re-clip until the *neutralized* content fits:
-			// a tag surviving the clip keeps adding bytes per tag, and each
-			// pass shortens the content, so this converges.
+			// room is bytes, so re-clip until the *written* content fits: a
+			// redacted secret or a surviving tag keeps changing the size after
+			// the clip, and each pass shortens the content, so this converges.
 			for {
 				m.Content = truncateToBytes(m.Content, room)
-				entry := apiformat.NeutralizedLen(m.Concept) + apiformat.NeutralizedLen(m.Content) + entryOverhead(m.Score)
+				entry := conceptBytes(m) + contentBytes(m) + entryOverhead(m.Score)
 				if totalBytes+entry <= budgetBytes {
 					break
 				}

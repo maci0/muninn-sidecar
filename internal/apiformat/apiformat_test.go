@@ -757,8 +757,8 @@ func TestNeutralizeMarkers(t *testing.T) {
 				strings.Contains(got, "<global-guide") {
 				t.Errorf("marker tag survived: %q", got)
 			}
-			if n := NeutralizedLen(tc.in); n != len(got) {
-				t.Errorf("NeutralizedLen = %d, len(NeutralizeMarkers) = %d for %q", n, len(got), tc.in)
+			if n, want := NeutralizedLen(tc.in), len(got); n != want {
+				t.Errorf("NeutralizedLen = %d, len(NeutralizeMarkers) = %d for %q", n, want, tc.in)
 			}
 		})
 	}
@@ -780,6 +780,39 @@ func TestNeutralizedLenMatchesEscapedForm(t *testing.T) {
 		if got, want := NeutralizedLen(in), len(NeutralizeMarkers(in)); got != want {
 			t.Errorf("NeutralizedLen(%q) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+// NeutralizedLen is the budget counterpart of NeutralizeMarkers, so it has to
+// agree with it byte for byte. The growth per marker is not a constant: the
+// pattern matches the optional slash and whitespace, the rewrite keeps only
+// the bracket and the tag name, and every one of these spellings is a real one
+// in stored memory.
+func TestNeutralizedLenMatchesRewrite(t *testing.T) {
+	cases := []string{
+		"<retrieved-context>",
+		"</retrieved-context>",
+		"< / retrieved-context >",
+		"</ session-context",
+		"</GLOBAL-GUIDE>",
+		"<<retrieved-context>>",
+		"plain text",
+		"",
+		strings.Repeat("</retrieved-context>", 40),
+		"mixed </retrieved-context> and < / session-context and <div>text</div>",
+	}
+	for _, in := range cases {
+		if got, want := NeutralizedLen(in), len(NeutralizeMarkers(in)); got != want {
+			t.Errorf("NeutralizedLen(%.40q) = %d, want %d", in, got, want)
+		}
+	}
+	// Pin the growth itself, so a future rewrite that changed it would be
+	// caught here rather than silently shifting every context block's size.
+	if got, want := NeutralizedLen("</retrieved-context>")-len("</retrieved-context>"), 2; got != want {
+		t.Errorf("closing tag grew by %d bytes, want %d", got, want)
+	}
+	if got, want := NeutralizedLen("< / retrieved-context")-len("< / retrieved-context"), 0; got != want {
+		t.Errorf("spaced tag grew by %d bytes, want %d", got, want)
 	}
 }
 

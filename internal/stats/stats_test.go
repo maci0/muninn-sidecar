@@ -415,6 +415,10 @@ func TestFormatCount(t *testing.T) {
 		{9999, "9999"},
 		{10000, "10.0K"},
 		{50000, "50.0K"},
+		{999949, "999.9K"},
+		// Rounds up to 1000.0K, which would read as more than the 1.0M below.
+		{999950, "1.0M"},
+		{999999, "1.0M"},
 		{1000000, "1.0M"},
 		{2500000, "2.5M"},
 	}

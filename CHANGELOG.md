@@ -236,16 +236,26 @@ minor bump is safe.
 
 ### Fixed
 
-- **The injection budget is measured on the block that is written.** The token
-  estimator priced every escaped marker at a fixed three bytes, on the reasoning
-  that neutralization only ever adds them. It also removes them: a match loses
-  the optional slash and the whitespace inside the brackets, so `</retrieved-
-  context>` grows by two and `< / retrieved-context` does not grow at all. The
-  estimate was therefore a loose bound, packing blocks short of the configured
-  budget and over-reporting the tokens it wrote. `apiformat.NeutralizedLen` now
-  measures each match against the rewrite that replaces it, sharing the
-  neutralizer's own regex, and the packer and the reported token count agree
-  with the emitted block.
+- **The inject token budget is now charged for the block that is written.**
+  Three separate miscounts let a turn carry more context than `--inject-budget`
+  allows. The per-entry framing constant was a byte short of what the formatter
+  writes (the opening bracket is emitted before the concept, not as part of one
+  `"[] (relevance: "` literal), so every memory cost a byte less than it has;
+  the block-wrapper constant was a byte over, counting a third newline that is
+  never written. Entries were measured before secret redaction and marker
+  neutralization, and both can *grow* text: the `[REDACTED]` marker is ten
+  bytes, so a body of short addresses or `phone:`-style assignments grew by a
+  third, and a closing `</retrieved-context>` grows by two bytes, not the three
+  the estimator charged per tag. A body full of addresses produced a block
+  about a quarter over budget while being packed, and the reported token count
+  no longer matched the bytes written. `apiformat.NeutralizedLen` now measures
+  the rewrite exactly, and the packer measures the redacted text.
+
+- **A token count of 999,999 is no longer printed as `1000.0K`.** The K/M unit
+  was chosen from the raw count, so a count that rounds up to 1000.0K read as
+  more than the 1.0M printed for 1,000,000. The unit now follows the rounded
+  value.
+
 - **The release notes are one section again.** `[Unreleased]` carried eight
   impact-group headings in two interleaved runs, and eleven entries were stated
   twice, so the release gate failed on a clean tree and a tag would have shipped

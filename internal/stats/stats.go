@@ -425,13 +425,28 @@ func (s *Stats) Summary() string {
 	return sb.String()
 }
 
-// formatCount formats a number with K/M suffixes for readability.
+// formatCount formats a number with K/M suffixes for readability. The unit is
+// chosen from the value as scaled and rounded, not from the raw count: 999,999
+// scales to 1000.0K, which reads as more than the 1.0M printed for 1,000,000,
+// so a count that rounds up into the next unit is printed in that unit. The
+// rounding test is in integers because comparing the scaled float against the
+// rounding boundary would leave the cutoff to depend on how the tie rounds.
 func formatCount(n int64) string {
+	const (
+		perK = 1_000
+		perM = 1_000_000
+		// minAbbreviated is the smallest count worth abbreviating at all: past
+		// it the raw digits stop being quicker to read.
+		minAbbreviated = 10 * perK
+		// minMillions is the smallest count that rounds to 1000.0K, 999.95K, and
+		// is therefore printed in millions.
+		minMillions = perM - 50
+	)
 	switch {
-	case n >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
-	case n >= 10_000:
-		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	case n >= minMillions:
+		return fmt.Sprintf("%.1fM", float64(n)/perM)
+	case n >= minAbbreviated:
+		return fmt.Sprintf("%.1fK", float64(n)/perK)
 	default:
 		return fmt.Sprintf("%d", n)
 	}

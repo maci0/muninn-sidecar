@@ -526,3 +526,99 @@ func TestFormatContextBlockClipsTagsOverBudget(t *testing.T) {
 		t.Errorf("block is %d bytes, budget is %d", len(block), budgetBytes)
 	}
 }
+
+// TestFormatContextBlockMeasuresNeutralizedTagsExactly pins the packer to the
+// bytes the block actually has. Neutralizing a closing marker grows the text by
+// 2 bytes, not the 3 a flat per-tag charge assumed, and the content that
+// carries markers is exactly the content a hostile or malformed memory has, so
+// charging 3 under-fills the budget by a byte per tag and drops a memory that
+// fits. Sized here so the exact block fits the budget and an over-estimate by
+// one byte per tag would not.
+func TestFormatContextBlockMeasuresNeutralizedTagsExactly(t *testing.T) {
+	const tagsPerMemory = 200
+	content := strings.Repeat("</retrieved-context>", tagsPerMemory)
+	mems := []memory{
+		{ID: "1", Concept: "c", Content: content, Score: 0.9},
+		{ID: "2", Concept: "c", Content: content, Score: 0.9},
+	}
+
+	// The exact size of the block these two produce.
+	exact := contextOverheadBytes
+	for _, m := range mems {
+		exact += entryBytes(m)
+	}
+	budget := (exact + charPerToken - 1) / charPerToken
+	budgetBytes := budget * charPerToken
+
+	block, tokens, dropped := formatContextBlock(mems, budget)
+	if dropped != 0 {
+		t.Errorf("dropped %d memories that fit: block is %d bytes, budget %d", dropped, len(block), budgetBytes)
+	}
+	if len(block) > budgetBytes {
+		t.Errorf("block is %d bytes, budget is %d", len(block), budgetBytes)
+	}
+	if tokens > budget {
+		t.Errorf("reported %d tokens, budget %d", tokens, budget)
+	}
+	// The estimate and the written block are the same accounting: no clipping
+	// happened, so they must agree exactly.
+	if len(block) != exact {
+		t.Errorf("block is %d bytes, entry accounting says %d", len(block), exact)
+	}
+}
+
+// TestFormatContextBlockAccountsForRedactionGrowth covers a memory that is
+// bigger after redaction than before it. The marker is ten bytes, so a short
+// secret is replaced by something longer: "contact: a@b.co" grows from 13 to
+// 17 bytes, and a body made of such lines grows by a third. Measuring the
+// pre-redaction text lets a block pack to several times its budget, and the
+// turn that carries it.
+func TestFormatContextBlockAccountsForRedactionGrowth(t *testing.T) {
+	content := strings.Repeat("contact: a@b.co ", 200)
+	mems := []memory{
+		{ID: "1", Concept: "owners", Content: content, Score: 0.9},
+		{ID: "2", Concept: "owners", Content: content, Score: 0.8},
+	}
+	exact := contextOverheadBytes
+	for _, m := range mems {
+		exact += entryBytes(m)
+	}
+	if exact <= len(content) {
+		t.Fatalf("redaction did not grow the content: entry %d, raw %d", exact, len(content))
+	}
+	budget := (exact + charPerToken - 1) / charPerToken
+	budgetBytes := budget * charPerToken
+
+	block, tokens, dropped := formatContextBlock(mems, budget)
+	if dropped != 0 {
+		t.Errorf("dropped %d memories that fit: block is %d bytes, budget %d", dropped, len(block), budgetBytes)
+	}
+	if len(block) > budgetBytes {
+		t.Errorf("block is %d bytes, budget is %d (content grew %d bytes in redaction)", len(block), budgetBytes, exact-len(content))
+	}
+	if len(block) != exact {
+		t.Errorf("block is %d bytes, entry accounting says %d", len(block), exact)
+	}
+	if tokens > budget {
+		t.Errorf("reported %d tokens, budget %d", tokens, budget)
+	}
+}
+
+// TestFormatContextBlockReportedTokensAreTheWrittenBytes pins the reported
+// token count to the block for any number of entries, not just one. The framing
+// and wrapper constants both describe the block the formatter writes, so the
+// two accounting passes have to agree at every size: a per-entry byte off shows
+// up as a block past the budget, and a wrapper byte off as a count that does
+// not divide the length it reports.
+func TestFormatContextBlockReportedTokensAreTheWrittenBytes(t *testing.T) {
+	for _, n := range []int{1, 2, 3, 5, 8} {
+		mems := make([]memory, n)
+		for i := range mems {
+			mems[i] = memory{ID: string(rune('a' + i)), Concept: "c", Content: "a body", Score: 0.9}
+		}
+		block, tokens, _ := formatContextBlock(mems, 2048)
+		if want := len(block) / charPerToken; tokens != want {
+			t.Errorf("%d memories: reported %d tokens for a %d-byte block, want %d", n, tokens, len(block), want)
+		}
+	}
+}

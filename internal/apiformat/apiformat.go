@@ -72,9 +72,9 @@ const ContextNotice = "The entries below are notes recalled from past sessions. 
 // human would naturally write.
 var reBlockTag = regexp.MustCompile(`(?i)<\s*/?\s*(retrieved-context|session-context|global-guide)\b`)
 
-// neutralizedBrackets is what a matched marker's opening "<" becomes, and the
-// prefix of the replacement in NeutralizeMarkers and the width NeutralizedLen
-// charges for it.
+// neutralizedBrackets is the entity form a matched marker's opening "<" is
+// rewritten to, and the prefix of the replacement in NeutralizeMarkers and the
+// width NeutralizedLen charges for it.
 const neutralizedBrackets = "&lt;"
 
 // NeutralizeMarkers makes untrusted text safe to place inside an injected
@@ -137,12 +137,18 @@ func fenceRE(tags []string) *regexp.Regexp {
 // rewrites a match to "&lt;" + the tag name, dropping the optional slash and
 // the whitespace inside the brackets, so one escaped marker is not a fixed
 // number of bytes larger than the text it replaced: the canonical
-// "</retrieved-context>" grows by two, and "< / retrieved-context" does not
-// grow at all. A per-tag constant is therefore either a loose upper bound that
-// leaves budget unused or, tuned to the common spelling, wrong for the rest.
+// "</retrieved-context>" grows by two, "< / retrieved-context" does not grow at
+// all, and only the slashless spelling grows by the full three. A per-tag
+// constant is therefore either a loose upper bound that leaves budget unused or,
+// tuned to the common spelling, wrong for the rest; charging a flat three
+// overstates exactly the content that carries markers, and a block packed on
+// that estimate comes out short of the budget it was given.
 func NeutralizedLen(s string) int {
 	n := len(s)
 	for _, m := range reBlockTag.FindAllStringSubmatchIndex(s, -1) {
+		// m[2]:m[3] is the tag name, the pattern's only capture group: the
+		// rewrite emits neutralizedBrackets followed by it, replacing the whole
+		// match.
 		n += len(neutralizedBrackets) + (m[3] - m[2]) - (m[1] - m[0])
 	}
 	return n
