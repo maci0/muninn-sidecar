@@ -34,30 +34,18 @@ func vaultStats(mcpURL, token, vault string) (total int, health string, err erro
 	if err != nil {
 		return 0, "", err
 	}
-	var env struct {
-		Result struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
+	text, ok := mcpclient.TextContent(body)
+	if !ok {
+		return 0, "", fmt.Errorf("no status content in response")
 	}
-	if err := json.Unmarshal(body, &env); err != nil {
-		return 0, "", err
+	var st struct {
+		TotalMemories int    `json:"total_memories"`
+		Health        string `json:"health"`
 	}
-	for _, ct := range env.Result.Content {
-		if ct.Type != "text" {
-			continue
-		}
-		var st struct {
-			TotalMemories int    `json:"total_memories"`
-			Health        string `json:"health"`
-		}
-		if json.Unmarshal([]byte(ct.Text), &st) == nil && st.Health != "" {
-			return st.TotalMemories, st.Health, nil
-		}
+	if err := json.Unmarshal([]byte(text), &st); err != nil || st.Health == "" {
+		return 0, "", fmt.Errorf("no status content in response")
 	}
-	return 0, "", fmt.Errorf("no status content in response")
+	return st.TotalMemories, st.Health, nil
 }
 
 // cmdCA loads (or creates) the local TLS-MITM certificate authority and prints
@@ -111,11 +99,6 @@ func cmdCA(o *opts) int {
 	return 0
 }
 
-// caTrustHints returns the lines telling the user how to trust the CA outside
-// an msc-launched agent. goos is a parameter so both shells are covered by
-// tests on the one platform they run on: `export` is not a cmd or PowerShell
-// command, and the cert path lives under %AppData%, which routinely contains a
-// space and so needs quoting there.
 // caTrustHints returns the lines telling the user how to trust the CA outside
 // an msc-launched agent. goos is a parameter so both shells are covered by
 // tests on the one platform they run on: `export` is not a cmd or PowerShell

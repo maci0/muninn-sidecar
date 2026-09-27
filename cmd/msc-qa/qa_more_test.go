@@ -416,7 +416,7 @@ func FuzzLoadGenericQA(f *testing.F) {
 		dir := t.TempDir()
 		p := filepath.Join(dir, "g.json")
 		os.WriteFile(p, data, 0o644)
-		_, _ = loadFlatQA(p, "generic qa", 10)
+		_, _ = loadFlatQA(p, "generic qa")
 	})
 }
 

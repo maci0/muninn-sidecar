@@ -28,7 +28,6 @@ type Config struct {
 	Token         string        // Bearer token for auth
 	Vault         string        // vault to recall from (default: "sidecar")
 	Budget        int           // max approximate tokens to inject (default: 2048)
-	Threshold     float64       // recall floor sent to MuninnDB, on its *composite* score (default: 0.05). Keep it below the gate's calibration floor (calibMinThreshold) so this server-side pre-filter never drops a memory the client-side cosine gate would accept; New() warns but does not clamp a value above it (see New()).
 	MinScore      float64       // injection threshold: a memory is injected only if its effective score >= MinScore; a turn where nothing clears it injects nothing (default: 0.6)
 	RecallMode    string        // MuninnDB recall mode: semantic|recent|balanced|deep (default: "semantic")
 	QuerySimReuse float64       // reuse window (skip recall) when query word-set Jaccard vs last query >= this; 1.0 = exact-match only (default)
@@ -76,6 +75,17 @@ const defaultMinScore = 0.6
 // "recent" (recency-biased) added noise that lowered it. So the injector asks
 // for semantic recall and gates on the cosine it returns.
 const defaultRecallMode = "semantic"
+
+// defaultRecallFloor is the server-side pre-filter sent to MuninnDB, on its
+// *composite* score (recency/graph-inflated) rather than the cosine the gate
+// uses. It sits far below the gate's calibration floor (calibMinThreshold) so
+// the pre-filter never drops a memory the client-side cosine gate would accept:
+// on a low-cosine vault where auto-calibration lowers MinScore toward 0.10, a
+// higher floor would silently withhold high-cosine-but-low-composite memories.
+// The cosine gate does the real suppression; this only avoids returning obvious
+// nothing. (Verified: at composite-threshold 0.4 a cosine-0.45 memory was
+// withheld that 0.05 returned — see docs/experiments.md.)
+const defaultRecallFloor = 0.05
 
 // Exported defaults New applies for optional config. Callers that preview what
 // New *would* do (e.g. the CLI --dry-run output) should reference these instead
@@ -224,22 +234,6 @@ func New(cfg Config) *Injector {
 	if cfg.Budget <= 0 {
 		cfg.Budget = DefaultBudget
 	}
-	if cfg.Threshold <= 0 {
-		// The recall floor filters MuninnDB's *composite* score (recency/graph-
-		// inflated), a different axis from the cosine the gate uses. Keep it below
-		// the gate's calibration floor (calibMinThreshold): otherwise, on a
-		// low-cosine vault where auto-calibration lowers MinScore toward 0.10, this
-		// server-side pre-filter would silently drop high-cosine-but-low-composite
-		// memories the calibrated gate would have injected. The cosine gate
-		// (MinScore) does the real suppression; this just avoids returning obvious
-		// nothing. (Verified: at composite-threshold 0.4 a cosine-0.45 memory was
-		// withheld that 0.05 returned — see docs/experiments.md.)
-		cfg.Threshold = 0.05
-	}
-	if cfg.Threshold > calibMinThreshold {
-		slog.Warn("inject: recall floor exceeds the gate calibration floor; calibration below it cannot inject (server pre-filter caps it)",
-			"recall_floor", cfg.Threshold, "calib_floor", calibMinThreshold)
-	}
 	// NaN fails both comparisons, so the test is written as a positive range
 	// check: a NaN gate would silently disable the threshold downstream.
 	if !(cfg.MinScore > 0 && cfg.MinScore <= 1) {
@@ -262,7 +256,7 @@ func New(cfg Config) *Injector {
 		mcp:            mcpclient.New(cfg.MCPURL, cfg.Token, cfg.Timeout),
 		vault:          cfg.Vault,
 		budget:         cfg.Budget,
-		threshold:      cfg.Threshold,
+		threshold:      defaultRecallFloor,
 		minScore:       cfg.MinScore,
 		recallMode:     cfg.RecallMode,
 		querySimReuse:  cfg.QuerySimReuse,

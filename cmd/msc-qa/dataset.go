@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"math/rand"
 	"os"
 )
@@ -15,7 +14,7 @@ type qaItem struct {
 	Answers  []string
 }
 
-func loadSquadQA(path string, n int) ([]qaItem, error) {
+func loadSquadQA(path string) ([]qaItem, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read squad: %w", err)
@@ -48,22 +47,19 @@ func loadSquadQA(path string, n int) ([]qaItem, error) {
 					golds = append(golds, a.Text)
 				}
 				out = append(out, qaItem{Question: qa.Question, Answers: golds})
-				if len(out) >= n {
-					return out, nil
-				}
 			}
 		}
 	}
 	return out, nil
 }
 
-// loadFlatQA reads a flat [{question, answer}] JSON, keeping the first n
-// questions that carry both. label names the source in the error text. Callers
+// loadFlatQA reads a flat [{question, answer}] JSON, keeping every question
+// that carries both. label names the source in the error text. Callers
 // pass the official HotpotQA array format ({question, answer, context,
 // supporting_facts}, multi-hop questions with a single gold answer including
 // yes/no, as seeded by `msc-bench -corpus hotpot`) or the dump format
 // `msc-bench -dump-qa` produces for an arbitrary seeded vault.
-func loadFlatQA(path, label string, n int) ([]qaItem, error) {
+func loadFlatQA(path, label string) ([]qaItem, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", label, err)
@@ -81,9 +77,6 @@ func loadFlatQA(path, label string, n int) ([]qaItem, error) {
 			continue
 		}
 		out = append(out, qaItem{Question: d.Question, Answers: []string{d.Answer}})
-		if len(out) >= n {
-			break
-		}
 	}
 	return out, nil
 }
@@ -96,11 +89,11 @@ func loadDataset(dataset, path string, n int, seed int64) ([]qaItem, error) {
 	var err error
 	switch dataset {
 	case "hotpot":
-		qs, err = loadFlatQA(path, "hotpot", math.MaxInt)
+		qs, err = loadFlatQA(path, "hotpot")
 	case "generic":
-		qs, err = loadFlatQA(path, "generic qa", math.MaxInt)
+		qs, err = loadFlatQA(path, "generic qa")
 	default:
-		qs, err = loadSquadQA(path, math.MaxInt)
+		qs, err = loadSquadQA(path)
 	}
 	if err != nil {
 		return nil, err

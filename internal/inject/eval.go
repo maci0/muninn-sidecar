@@ -40,7 +40,6 @@ type EvalMemory struct {
 // JSON zero value false.
 type EvalScenario struct {
 	Name         string       `json:"name"`
-	Desc         string       `json:"desc,omitempty"`
 	Budget       int          `json:"budget,omitempty"`
 	MinScore     float64      `json:"min_score,omitempty"`
 	ShouldInject *bool        `json:"should_inject,omitempty"`

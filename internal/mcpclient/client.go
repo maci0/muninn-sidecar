@@ -359,6 +359,45 @@ func ContentTexts(body []byte) ([]string, error) {
 	return texts, nil
 }
 
+// TextBlock is one content block of a JSON-RPC result.
+type TextBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// TextResponse is the JSON-RPC envelope every MuninnDB tool replies in. The
+// tool's own payload is carried as text inside a content block, not as the
+// result value itself.
+type TextResponse struct {
+	Result struct {
+		Content []TextBlock `json:"content"`
+	} `json:"result"`
+}
+
+// DecodeTextResponse parses a JSON-RPC response body into its envelope.
+func DecodeTextResponse(body []byte) (TextResponse, error) {
+	var resp TextResponse
+	err := json.Unmarshal(body, &resp)
+	return resp, err
+}
+
+// TextContent extracts the text of the first text-typed content block in a
+// JSON-RPC response. It reports false for a body that does not parse and for
+// one carrying no text block: a broken response and an empty one are different
+// failures, so callers decide which one to raise.
+func TextContent(body []byte) (string, bool) {
+	resp, err := DecodeTextResponse(body)
+	if err != nil {
+		return "", false
+	}
+	for _, c := range resp.Result.Content {
+		if c.Type == "text" && c.Text != "" {
+			return c.Text, true
+		}
+	}
+	return "", false
+}
+
 // CheckEnvelope reports whether a 2xx body is the JSON-RPC response object the
 // protocol requires. A server answering 200 with truncated JSON, an HTML error
 // page from an intermediary, or an empty body yields no confirmation that the

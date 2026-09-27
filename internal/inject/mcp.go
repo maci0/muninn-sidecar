@@ -60,6 +60,7 @@ func parseMCPTextContent(body []byte) string {
 			return t
 		}
 	}
+	slog.Warn("inject: MCP response carried no text content block", "bytes", len(body))
 	return ""
 }
 
