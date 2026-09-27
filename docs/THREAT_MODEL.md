@@ -25,7 +25,7 @@ Ranked by exploitability on a single-user developer machine, then by impact.
 | 4 | Bearer token for MuninnDB crosses the network in the clear on a non-loopback HTTP endpoint | `cmd/msc/main.go:206`, `internal/mcpclient/client.go:234` | Low (user-configured remote endpoint) | Full vault read/write for the token's lifetime | Warn only; `--mcp-url` scheme validated, TLS 1.3 floor for HTTPS |
 | 5 | The MITM CA private key is a machine-wide decryption key for everything the child sends | `internal/mitm/ca.go:140` | Low (requires local file read as another user, or root) | Decryption of any session routed through msc, and minting leaves trusted by anything that imported `msc ca` | `0600` key in a `0700` dir, permission re-check and warn on every load |
 | 6 | Unbounded concurrent buffering on a loopback listener with no connection cap | `internal/proxy/proxy.go:54`, `:58`, `:264` | Low (local, requires many concurrent clients) | msc memory exhaustion, agent outage | Per-body size caps, 30s `ReadHeaderTimeout` against slowloris, timeouts on every leg |
-| 7 | Cross-project memory bleed through the default vault name | `internal/config/config.go:201` | Low (two projects with the same directory base name, or one shared checkout) | Content from one codebase injected into an agent working on another | None; `--vault` / `MSC_VAULT` override |
+| 7 | Cross-project memory bleed through the default vault name | `internal/config/config.go:234` | Low (two projects with the same directory base name, or one shared checkout) | Content from one codebase injected into an agent working on another | None; `--vault` / `MSC_VAULT` override |
 
 ## 1. Attack surface inventory
 
@@ -45,9 +45,9 @@ remote-facing; the only outbound sockets are to operator-named endpoints.
 | SSE / ndjson response tap | upstream response bodies | `internal/proxy/stream.go:40` |
 | CLI flags and passthrough agent argv | `msc <agent> [args...]` | `cmd/msc/flags.go:76`, `internal/agents/agents.go:520` |
 | `msc` subcommands (`ca`, `status`, `list`, `help`, `version`, `completion`) | local process, stdout | `cmd/msc/main.go:119`, `cmd/msc/commands.go:319`, `cmdCA` at `cmd/msc/commands.go:60` |
-| Environment variables | `MUNINN_MCP_URL`, `MUNINN_TOKEN`, `MSC_VAULT`, `MSC_UPSTREAM_<AGENT>`, `GEMINI_API_KEY` (upstream-selector), `MSC_WS_DEBUG`, `OPENAI_API_KEY`, `SSL_CERT_FILE`, `SHELL` | `internal/config/config.go:59`, `:171`, `:205`, `internal/agents/agents.go:215`, `:226`, `internal/proxy/wscapture.go:26`, `cmd/msc/main.go:328`, `:150`, `internal/agents/agents.go:428` |
-| Config files read from disk | `~/.muninn/mcp.token`, `~/.config/muninn-sidecar/mitm/{ca-key.pem,ca-cert.pem,ca-bundle.pem}` | `internal/config/config.go:29`, `internal/mitm/ca.go:80`, `internal/agents/agents.go:353` |
-| Outbound JSON-RPC client to MuninnDB | `MUNINN_MCP_URL`, default `http://127.0.0.1:8750/mcp` | `internal/config/config.go:20`, `internal/mcpclient/client.go:67` |
+| Environment variables | `MUNINN_MCP_URL`, `MUNINN_TOKEN`, `MUNINN_TOKEN_FILE`, `MSC_VAULT`, `MSC_UPSTREAM_<AGENT>`, `GEMINI_API_KEY` (upstream-selector), `MSC_WS_DEBUG`, `OPENAI_API_KEY`, `SSL_CERT_FILE`, `SHELL` | `internal/config/config.go:62`, `:205`, `:186`, `:238`, `internal/agents/agents.go:215`, `:226`, `internal/proxy/wscapture.go:26`, `cmd/msc/main.go:328`, `:150`, `internal/agents/agents.go:428` |
+| Config files read from disk | `~/.muninn/mcp.token`, `~/.config/muninn-sidecar/mitm/{ca-key.pem,ca-cert.pem,ca-bundle.pem}` | `internal/config/config.go:30`, `internal/mitm/ca.go:80`, `internal/agents/agents.go:353` |
+| Outbound JSON-RPC client to MuninnDB | `MUNINN_MCP_URL`, default `http://127.0.0.1:8750/mcp` | `internal/config/config.go:21`, `internal/mcpclient/client.go:67` |
 | Outbound HTTPS to the LLM provider | resolved upstream, TLS 1.3 floor | `internal/proxy/proxy.go:209` |
 | Optional grounding judge (HTTP URL or local CLI) | `--ground-url`, `--ground-cmd` | `internal/grounding/grounding.go:307`, `:269` |
 | Launched child process | agent binary resolved via `PATH` | `internal/agents/agents.go:520` (MITM launch at `:486`) |
@@ -59,7 +59,7 @@ off the machine.
 
 | Entry point | What it takes | File |
 |-------------|---------------|------|
-| `msc-eval` flags and its MuninnDB client | CLI argv; `-token` or `MUNINN_TOKEN` | `cmd/msc-eval/main.go:81` |
+| `msc-eval` flags and its MuninnDB client | CLI argv; `-token` or `MUNINN_TOKEN` | `cmd/msc-eval/main.go:64` |
 | `msc-qa` model endpoint (`-model-url`, `-model-key`) | corpus questions plus recalled passages, with a bearer key | `cmd/msc-qa/main.go:57`, `:58`, `cmd/msc-qa/models.go:33` |
 | `msc-qa` grounding endpoint (`-ground-url`, `-ground-key`) | the same text, through `internal/grounding` | `cmd/msc-qa/main.go:68` |
 | `msc-qa` dataset files (`-dataset`, `-squad-file`) | arbitrary local JSON, read whole into memory | `cmd/msc-qa/dataset.go:19`, `:67` |
@@ -151,7 +151,7 @@ CA signing key are the three credentials msc holds in the request path. None is
 ever persisted by msc except the CA key, which it generates. `OPENAI_API_KEY` is
 a fourth, and it is the one credential msc may send to an operator-named
 third-party host: msc warns for a non-TLS endpoint and for any host that is not
-`api.openai.com` (`cmd/msc/main.go:328`, `internal/config/config.go:108`), but
+`api.openai.com` (`cmd/msc/main.go:328`, `internal/config/config.go:139`), but
 proceeds.
 
 ## 3. Assets
@@ -160,7 +160,7 @@ proceeds.
   MuninnDB indefinitely.
 - **LLM provider API keys**: transit only, in the request header.
 - **MuninnDB bearer token**: grants full read/write on the memory vault
-  (`internal/config/config.go:167`).
+  (`internal/config/config.go:174`).
 - **MITM CA private key**: can mint a certificate for any host
   (`internal/mitm/ca.go:237`). Ten-year validity (`internal/mitm/ca.go:41`),
   renewed only within 30 days of expiry.
@@ -219,7 +219,7 @@ userinfo, and fragment replaced (`internal/proxy/proxy.go:965`), and
 
 **Disk → msc (spoofing, information disclosure).** Both the token file and the
 CA key are read from fixed paths; msc warns but continues when their
-permissions are loose (`internal/config/config.go:190`,
+permissions are loose (`internal/config/config.go:223`,
 `internal/mitm/ca.go:101`). A local user who can replace `ca-key.pem` with a
 readable file, or who points `MUNINN_MCP_URL` at a host they control, captures
 the token and the memory traffic.
@@ -259,7 +259,7 @@ response (`cmd/msc-qa/models.go:52`) bounds memory, not trust.
 | Leaf certificate cache capped at 1024 entries; host name length capped at 253 | unbounded CA memory, adversarial SNI | `internal/mitm/ca.go:60`, `:65` |
 | Usage counters from an untrusted body range-checked to 0 on NaN, negative, or out-of-range values | a hostile body turning a float→int conversion into a garbage session total | `internal/proxy/proxy.go:870` |
 | TLS 1.3 floor to the real upstream, normal certificate verification; TLS 1.2 floor with normal verification on the MITM forward leg | msc never forges trust toward the provider, and never trusts a bad upstream | `internal/proxy/proxy.go:209`, `:334` |
-| TLS 1.3 floor for HTTPS MuninnDB; `--mcp-url` scheme and host validated at startup | downgrade, undialable config | `internal/mcpclient/client.go:74`, `internal/config/config.go:121`, `cmd/msc/main.go:194` |
+| TLS 1.3 floor for HTTPS MuninnDB; `--mcp-url` scheme and host validated at startup | downgrade, undialable config | `internal/mcpclient/client.go:74`, `internal/config/config.go:152`, `cmd/msc/main.go:195` |
 | CA key `0600` in a `0700` directory, `chmod` forced on rewrite, permission re-check on every load | CA theft by another local user | `internal/mitm/ca.go:81`, `:140`, `:147`, `:101` |
 | Combined system-roots + CA bundle for the vars that replace the trust store | breaking TLS to blind-tunneled hosts | `internal/agents/agents.go:453` |
 | Secret and PII redaction before storage, on by default, `--no-redact` warns loudly | credential persistence | `internal/redact/redact.go:63`, `internal/store/muninn.go:207`, `cmd/msc/main.go:232` |
@@ -273,8 +273,8 @@ response (`cmd/msc-qa/models.go:52`) bounds memory, not trust.
 | Bounded async queue (256) and 8s drain | capture loss under store outage, unbounded growth | `internal/store/muninn.go:201`, `:133` |
 | Sanitized JSON error responses; query, userinfo, and fragment redacted in logs | stack traces and API keys in logs and client bodies | `internal/proxy/proxy.go:769`, `:965` |
 | Warnings for plaintext HTTP to a non-loopback MuninnDB, and for `OPENAI_API_KEY` to a non-OpenAI or non-TLS grounding endpoint | silent credential exposure to an operator-misconfigured host | `cmd/msc/main.go:206`, `:328` |
-| Warning naming the process list and shell history when a secret is passed as a flag, in all four binaries | token or API key exposed through `ps` and the shell's history | `internal/config/config.go:93`, `cmd/msc/main.go:204`, `cmd/msc-eval/main.go:81`, `cmd/msc-bench/main.go:152`, `cmd/msc-qa/main.go:142` |
-| Eval endpoint URLs scheme- and host-validated at startup; `OPENAI_API_KEY` fallback warns for a non-OpenAI, non-loopback `-model-url` | an undialable or hostile endpoint reached only after the corpus is in flight | `cmd/msc-qa/main.go:107`, `:129`, `config.ValidateURL` at `internal/config/config.go:121` |
+| Warning naming the process list and shell history when a secret is passed as a flag, in all four binaries | token or API key exposed through `ps` and the shell's history | `internal/config/config.go:124`, `cmd/msc/main.go:204`, `cmd/msc-eval/main.go:92`, `cmd/msc-bench/main.go:163`, `cmd/msc-qa/main.go:147` |
+| Eval endpoint URLs scheme- and host-validated at startup; `OPENAI_API_KEY` fallback warns for a non-OpenAI, non-loopback `-model-url` | an undialable or hostile endpoint reached only after the corpus is in flight | `cmd/msc-qa/main.go:113`, `:136`, `config.ValidateURL` at `internal/config/config.go:152` |
 | Model and judge responses capped (4 MiB each), judge stdout into a fixed tail buffer | a hostile or broken model endpoint exhausting memory or unbounded output | `cmd/msc-qa/models.go:40`, `internal/grounding/grounding.go:39`, `internal/tailbuf/tailbuf.go` |
 | Dataset loaders reject an empty or wrong-shaped file instead of reporting a run over zero questions | a silent all-zeros evaluation read as a passing one | `cmd/msc-qa/main.go:153` |
 | Secret redaction and prompt fencing on the eval model and rewrite paths too, not just on `msc` | a credential inside a corpus question reaching an operator-named endpoint | `cmd/msc-qa/models.go:194`, `cmd/msc-bench/rewrite.go:52` |
@@ -312,7 +312,7 @@ These are scenarios with the enabling code path named. None was attempted.
    query passes the cosine gate and is injected at system priority
    (`internal/inject/inject.go:491`). Nothing records which session or process
    wrote it; the vault is keyed by name only
-   (`internal/config/config.go:201`).
+   (`internal/config/config.go:234`).
 4. **Cross-project bleed.** Two checkouts whose directories share a base name
    (for example two `src` trees) resolve to the same vault, so decisions made
    in one are injected into the other.
@@ -339,7 +339,7 @@ These are scenarios with the enabling code path named. None was attempted.
 10. **Secret in the process list.** `-token`, `-model-key`, `-ground-key`,
    and `-rewrite-key` take secrets on argv, where `ps` and the shell history
    expose them. All four binaries warn, and none refuses
-   (`internal/config/config.go:93`).
+   (`internal/config/config.go:124`).
 11. **Retaliatory reader CLIs.** `-model-cmd` runs an operator-named list of
    CLIs, comma-separated, once per question (`cmd/msc-qa/main.go:275`), so a
    long `-n` multiplies process spawns; the timeout bounds each call, not the
@@ -365,7 +365,7 @@ inventory. They are now enumerated in section 1, carry a boundary
 three abuse cases (section 6), and [SECURITY.md](../SECURITY.md) now names
 their endpoint and argv-secret exposure, which it previously did not mention at
 all. The claims added there were checked against `cmd/msc-qa/models.go:194`,
-`cmd/msc-qa/main.go:129`, and `internal/config/config.go:93`.
+`cmd/msc-qa/main.go:129`, and `internal/config/config.go:124`.
 
 ## 8. Response readiness
 

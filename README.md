@@ -280,7 +280,8 @@ A 4xx/5xx from the provider is a warn (the provider refused) and counts as an up
 | Variable | Description |
 |----------|-------------|
 | `MUNINN_MCP_URL` | MuninnDB MCP endpoint (default: `http://127.0.0.1:8750/mcp`) |
-| `MUNINN_TOKEN` | MuninnDB bearer token (default: reads `~/.muninn/mcp.token`) |
+| `MUNINN_TOKEN` | MuninnDB bearer token (default: reads the token file) |
+| `MUNINN_TOKEN_FILE` | Path of the token file read when `MUNINN_TOKEN` is unset (default: `~/.muninn/mcp.token`); `test-live.sh` reads the same variable |
 | `MSC_VAULT` | MuninnDB vault name (default: current directory name, fallback: `sidecar`) |
 | `OPENAI_API_KEY` | Bearer token for the answer-grounding judge when `--ground-url` targets an OpenAI-compatible endpoint that requires auth (optional; unneeded for unauthenticated local endpoints like ollama) |
 | `MSC_WS_DEBUG` | Turns on the WebSocket probe (with `--debug`, since it logs at INFO): logs the envelope `type` and size of every decoded WebSocket message under `--mitm` (not the content), to map a new agent's WebSocket protocol for capture. Any value except `0`, `false`, `off`, and `no` enables it |

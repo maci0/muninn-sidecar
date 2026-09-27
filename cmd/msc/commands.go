@@ -15,6 +15,8 @@ import (
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
 	"github.com/maci0/muninn-sidecar/internal/config"
+	"github.com/maci0/muninn-sidecar/internal/grounding"
+	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/mitm"
 	"github.com/maci0/muninn-sidecar/internal/redact"
@@ -339,7 +341,7 @@ Examples:
 Exit codes: 0 on success.
 `, true
 	case "status":
-		return `Usage: msc status [--json]
+		return fmt.Sprintf(`Usage: msc status [--json]
 
 Check whether MuninnDB is reachable and report the resolved vault, without
 launching an agent. When MuninnDB answers, the vault's memory count and health
@@ -348,8 +350,8 @@ exchanges are captured.
 
 Flags:
   -j, --json        Emit {mcp_url, vault, status, error?, memories?, vault_health?}
-      --mcp-url URL MuninnDB MCP endpoint (default: http://127.0.0.1:8750/mcp)
-      --token TOKEN MuninnDB bearer token (default: ~/.muninn/mcp.token)
+      --mcp-url URL MuninnDB MCP endpoint (default: %s)
+      --token TOKEN MuninnDB bearer token (default: $MUNINN_TOKEN_FILE, else ~/.muninn/mcp.token)
       --vault NAME  Vault to report on (default: current directory name)
 
 Examples:
@@ -359,7 +361,7 @@ Examples:
 
 Exit codes: 0 when MuninnDB is reachable, 1 when it is not, 2 for an unusable
 --mcp-url.
-`, true
+`, config.DefaultMCPURL), true
 	case "ca":
 		return `Usage: msc ca [--json]
 
@@ -494,17 +496,17 @@ Flags:
                          "C:\Program Files\...\claude.exe")
       --ground-model NAME
                          Grounding model for --ground-url (default:
-                         qwen2.5:7b-instruct)
-      --ground-topk K    Candidates to ground per recall (default: 3)
-      --ground-timeout D In-flight grounding-call timeout (default: 10s); fails
+                         %s)
+      --ground-topk K    Candidates to ground per recall (default: %d)
+      --ground-timeout D In-flight grounding-call timeout (default: %s); fails
                          open to the gate. --ground-model, --ground-topk and
                          --ground-timeout need --ground-url or --ground-cmd;
                          without one they would be silently ignored
       --vault NAME       MuninnDB vault name (default: current directory name,
-                         fallback: sidecar)
+                         fallback: %s)
       --mcp-url URL      MuninnDB MCP endpoint (default:
-                         http://127.0.0.1:8750/mcp)
-      --token TOKEN      MuninnDB bearer token (default: ~/.muninn/mcp.token)
+                         %s)
+      --token TOKEN      MuninnDB bearer token (default: $MUNINN_TOKEN_FILE, else ~/.muninn/mcp.token)
 
 Examples:
   msc claude                    Launch Claude Code with API capture
@@ -531,8 +533,11 @@ Exit codes:
 Environment (flags take precedence):
   MUNINN_MCP_URL   MuninnDB MCP endpoint
   MUNINN_TOKEN     MuninnDB bearer token
+  MUNINN_TOKEN_FILE
+                   Token file read when MUNINN_TOKEN is unset (default ~/.muninn/mcp.token)
   MSC_VAULT        MuninnDB vault name
   OPENAI_API_KEY   Bearer token for --ground-url (required if that endpoint needs auth)
   MSC_WS_DEBUG     Set to log WebSocket frame types/sizes (debug aid; 0, false, off, no leave it off)
-`)
+`, grounding.DefaultModel, inject.DefaultGroundTopK, grounding.DefaultTimeout,
+		config.DefaultVault, config.DefaultMCPURL)
 }

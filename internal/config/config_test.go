@@ -158,6 +158,40 @@ func TestTokenReadsFile(t *testing.T) {
 	}
 }
 
+func TestTokenFileEnvOverride(t *testing.T) {
+	t.Setenv("MUNINN_TOKEN", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// A token in the default location, and one where MUNINN_TOKEN_FILE points.
+	// The override must win, so a deployment (and test-live.sh) can move the
+	// file without the binaries reading a different one than the test harness.
+	if err := os.MkdirAll(filepath.Join(home, ".muninn"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".muninn", "mcp.token"), []byte("deftok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(elsewhere, []byte("envfiletok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MUNINN_TOKEN_FILE", elsewhere)
+	if got := TokenFilePath(); got != elsewhere {
+		t.Errorf("TokenFilePath() = %q, want %q", got, elsewhere)
+	}
+	if got := Token(""); got != "envfiletok" {
+		t.Errorf("token from MUNINN_TOKEN_FILE = %q", got)
+	}
+	// An empty value means "not configured", so the default applies.
+	t.Setenv("MUNINN_TOKEN_FILE", "")
+	if got := TokenFilePath(); got != filepath.Join(home, ".muninn", "mcp.token") {
+		t.Errorf("default path = %q", got)
+	}
+	if got := Token(""); got != "deftok" {
+		t.Errorf("token from the default file = %q", got)
+	}
+}
+
 func TestVaultPrecedence(t *testing.T) {
 	t.Setenv("MSC_VAULT", "envvault")
 	if got := Vault("flagvault"); got != "flagvault" {

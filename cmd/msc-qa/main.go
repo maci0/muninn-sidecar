@@ -57,7 +57,7 @@ func run() error {
 		dataset     = flag.String("dataset", "squad", "dataset format: squad | hotpot | generic")
 		vault       = flag.String("vault", "msc-squad", "vault to recall from (must be seeded, e.g. by msc-bench)")
 		mcpURL      = flag.String("mcp-url", config.MCPURL(""), "MuninnDB MCP endpoint")
-		token       = flag.String("token", "", "MuninnDB bearer token (default ~/.muninn/mcp.token)")
+		token       = flag.String("token", "", "MuninnDB bearer token (default $MUNINN_TOKEN_FILE, else ~/.muninn/mcp.token)")
 		modelURL    = flag.String("model-url", "", "OpenAI-compatible base URL (e.g. http://localhost:1234/v1); empty = build-only, no scoring")
 		modelKey    = flag.String("model-key", "", "model API key (default $OPENAI_API_KEY)")
 		model       = flag.String("model", "gpt-4o-mini", "model name(s); comma-separated to compare several")
@@ -71,14 +71,20 @@ func run() error {
 		mdFile      = flag.String("md", "", "append a results row per model to this markdown file")
 		groundURL   = flag.String("ground-url", "", "add a 4th \"grounded\" arm: LLM answer-grounding filter on the injected context via an OpenAI-compatible URL")
 		groundCmd   = flag.String("ground-cmd", "", "add a 4th \"grounded\" arm via a CLI agent grounder (e.g. \"claude -p\"); quote a path containing spaces")
-		groundMod   = flag.String("ground-model", "qwen2.5:7b-instruct", "grounding model name (for -ground-url)")
+		groundMod   = flag.String("ground-model", grounding.DefaultModel, "grounding model name (for -ground-url)")
 		groundKey   = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
 		groundTopK  = flag.Int("ground-topk", 5, "ground only the top-K recalled passages per question (must be positive; one listwise call per question)")
 		injectFmt   = flag.String("inject-format", "bare", "injected context presentation: bare | labeled | scored (scored = live proxy format)")
 		answerHintF = flag.String("answer-hint", "", "constrain answers to a fixed label set (e.g. \"SUPPORTS, REFUTES\") for classification regimes like FEVER; empty = extractive span")
 	)
 	flag.Parse()
-	if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
+	// The flag default is already the resolved endpoint, but an explicitly
+	// written `-mcp-url=` leaves the flag empty, and the flag package does not
+	// fall back to its default for that. Resolve again so an empty value means
+	// "not configured" (env, then default) as it does everywhere else, instead
+	// of an undialable empty endpoint.
+	endpoint := config.MCPURL(*mcpURL)
+	if err := config.ValidateURL("MuninnDB URL", endpoint); err != nil {
 		return err
 	}
 	switch *dataset {
@@ -161,7 +167,7 @@ func run() error {
 	}
 	fmt.Fprintf(os.Stderr, "loaded %d %s questions\n", len(questions), *dataset)
 
-	mcp := mcpclient.New(*mcpURL, config.Token(*token), *timeout)
+	mcp := mcpclient.New(endpoint, config.Token(*token), *timeout)
 	defer mcp.Close()
 	ctx := context.Background()
 

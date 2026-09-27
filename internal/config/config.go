@@ -29,6 +29,12 @@ const (
 // to the user's home directory.
 const tokenFile = ".muninn/mcp.token"
 
+// tokenFileEnv overrides where the bearer-token file is read from, for a
+// deployment that keeps MuninnDB's token outside the default home-directory
+// path. test-live.sh reads the same variable, so pointing it here points every
+// binary in the repo at one file instead of two that can disagree.
+const tokenFileEnv = "MUNINN_TOKEN_FILE"
+
 // EnvOr returns the value of the environment variable key, or def when the
 // variable is unset or empty.
 func EnvOr(key, def string) string {
@@ -173,9 +179,25 @@ func PlaintextRemoteHost(raw string) bool {
 	return u.Scheme == "http" && !IsLoopbackHost(u.Hostname())
 }
 
+// TokenFilePath returns the bearer-token file to read: MUNINN_TOKEN_FILE when
+// set, else ~/.muninn/mcp.token. A relative MUNINN_TOKEN_FILE resolves against
+// the working directory, as any other path argument would. Returns "" when
+// nothing is set and the home directory cannot be determined.
+func TokenFilePath() string {
+	if p := os.Getenv(tokenFileEnv); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, tokenFile)
+}
+
 // Token resolves the MuninnDB bearer token: the flag value if non-empty, else
-// MUNINN_TOKEN, else the ~/.muninn/mcp.token file. Returns "" when none is set;
-// a server that needs no auth is the only correct consumer of an empty token.
+// MUNINN_TOKEN, else the token file (MUNINN_TOKEN_FILE, or ~/.muninn/mcp.token).
+// Returns "" when none is set; a server that needs no auth is the only correct
+// consumer of an empty token.
 func Token(flagVal string) string {
 	if flagVal != "" {
 		return flagVal
@@ -183,11 +205,10 @@ func Token(flagVal string) string {
 	if t := os.Getenv("MUNINN_TOKEN"); t != "" {
 		return t
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	path := TokenFilePath()
+	if path == "" {
 		return ""
 	}
-	path := filepath.Join(home, tokenFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""

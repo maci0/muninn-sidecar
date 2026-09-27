@@ -62,7 +62,7 @@ func run() error {
 		live       = flag.Bool("live", false, "run live end-to-end evaluation against a real MuninnDB")
 		liveFile   = flag.String("live-file", "", "live scenario JSON file (required with -live)")
 		mcpURL     = flag.String("mcp-url", config.MCPURL(""), "MuninnDB MCP endpoint (live mode)")
-		token      = flag.String("token", "", "MuninnDB bearer token (live mode; default ~/.muninn/mcp.token)")
+		token      = flag.String("token", "", "MuninnDB bearer token (live mode; default $MUNINN_TOKEN_FILE, else ~/.muninn/mcp.token)")
 		vault      = flag.String("vault", "msc-eval", "vault to seed/probe (live mode)")
 		settle     = flag.Duration("settle", 750*time.Millisecond, "delay after seeding before probing (live mode)")
 		timeout    = flag.Duration("timeout", 5*time.Second, "per-MCP-call timeout (live mode)")
@@ -80,13 +80,19 @@ func run() error {
 		return config.Usagef("invalid -min-score %v: must be 0 (per-scenario default) or in (0,1]", *minScore)
 	}
 	if *live {
-		if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
+		// The flag default is already the resolved endpoint, but an explicitly
+		// written `-mcp-url=` leaves the flag empty, and the flag package does
+		// not fall back to its default for that. Resolve again so an empty value
+		// means "not configured" (env, then default) as it does everywhere else,
+		// instead of an undialable empty endpoint.
+		endpoint := config.MCPURL(*mcpURL)
+		if err := config.ValidateURL("MuninnDB URL", endpoint); err != nil {
 			return err
 		}
 		if w := config.ArgSecretWarning("-token", *token, "MUNINN_TOKEN"); w != "" {
 			fmt.Fprintln(os.Stderr, "warning:", w)
 		}
-		return runLive(*liveFile, *mcpURL, config.Token(*token), *vault, *minScore, *budget, *settle, *timeout, *asJSON)
+		return runLive(*liveFile, endpoint, config.Token(*token), *vault, *minScore, *budget, *settle, *timeout, *asJSON)
 	}
 	return runOffline(*file, *minScore, *budget, *sweep, *compare, *asJSON, studyOpts{seed: *studySeed, n: *studyN, folds: *studyFolds})
 }

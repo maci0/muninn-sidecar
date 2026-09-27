@@ -315,13 +315,13 @@ func run() int {
 		}
 		gm := o.groundModel
 		if gm == "" {
-			gm = "qwen2.5:7b-instruct"
+			gm = grounding.DefaultModel
 		}
 		// Bound the in-flight grounding call so a slow/hung judge fails open fast
 		// (degrading to the cosine gate) instead of stalling the user's request.
 		gto := o.groundTimeout
 		if gto <= 0 {
-			gto = 10 * time.Second
+			gto = grounding.DefaultTimeout
 		}
 		groundKey := os.Getenv("OPENAI_API_KEY")
 		// Warn before OPENAI_API_KEY is sent to a grounding endpoint that is not

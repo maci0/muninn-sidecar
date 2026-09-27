@@ -9,10 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
+	"github.com/maci0/muninn-sidecar/internal/config"
+	"github.com/maci0/muninn-sidecar/internal/grounding"
+	"github.com/maci0/muninn-sidecar/internal/inject"
 )
 
 // silence redirects stdout+stderr to /dev/null for the duration of fn, so the
@@ -533,6 +537,25 @@ func TestHelpUnknownTopic(t *testing.T) {
 	}
 	if code := runArgs(t, "help", "list", "status"); code != exitUsage {
 		t.Errorf("two help topics: exit %d, want %d", code, exitUsage)
+	}
+}
+
+// TestHelpStatesRealDefaults pins the help's stated defaults to the constants
+// the code actually applies, so a default that changes without the help
+// changing fails here instead of misleading an operator reading `msc --help`.
+func TestHelpStatesRealDefaults(t *testing.T) {
+	_, out := runArgsCapture(t, "help")
+	for _, want := range []string{
+		grounding.DefaultModel,
+		grounding.DefaultTimeout.String(),
+		strconv.Itoa(inject.DefaultGroundTopK),
+		config.DefaultMCPURL,
+		"MUNINN_TOKEN_FILE",
+		config.DefaultVault,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help must state the default %q, got:\n%s", want, out)
+		}
 	}
 }
 

@@ -54,7 +54,7 @@ func main() {
 func run() error {
 	var (
 		mcpURL     = flag.String("mcp-url", config.MCPURL(""), "MuninnDB MCP endpoint")
-		token      = flag.String("token", "", "bearer token (default ~/.muninn/mcp.token)")
+		token      = flag.String("token", "", "bearer token (default $MUNINN_TOKEN_FILE, else ~/.muninn/mcp.token)")
 		vault      = flag.String("vault", "msc-bench", "vault to seed/probe (dedicated; not 'default')")
 		corpus     = flag.String("corpus", "homogeneous", "corpus generator: homogeneous | diverse | facts | squad | hotpot | agentmem")
 		squadFile  = flag.String("squad-file", filepath.Join(os.TempDir(), "squad-dev.json"), "path to SQuAD JSON (corpus=squad)")
@@ -75,7 +75,7 @@ func run() error {
 		groundTO   = flag.Duration("ground-timeout", 60*time.Second, "per grounding-call timeout")
 		rewriteCmd = flag.String("rewrite-cmd", "", "LLM query rewrite/decomposition before recall via a CLI agent (e.g. \"claude -p\"); the prompt is delivered on stdin (quote a path containing spaces)")
 		rewriteURL = flag.String("rewrite-url", "", "LLM query rewrite via an OpenAI-compatible URL")
-		rewriteMod = flag.String("rewrite-model", "qwen2.5:7b-instruct", "rewrite model name (for -rewrite-url)")
+		rewriteMod = flag.String("rewrite-model", grounding.DefaultModel, "rewrite model name (for -rewrite-url)")
 		rewriteKey = flag.String("rewrite-key", "", "rewrite model API key (for -rewrite-url)")
 		rewriteN   = flag.Int("rewrite-n", 4, "max sub-queries per probe, must be positive (including the original; each one costs a recall)")
 		rewriteTO  = flag.Duration("rewrite-timeout", 60*time.Second, "per rewrite-call timeout")
@@ -91,7 +91,13 @@ func run() error {
 		asJSON     = flag.Bool("json", false, "emit machine-readable JSON")
 	)
 	flag.Parse()
-	if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
+	// The flag default is already the resolved endpoint, but an explicitly
+	// written `-mcp-url=` leaves the flag empty, and the flag package does not
+	// fall back to its default for that. Resolve again so an empty value means
+	// "not configured" (env, then default) as it does everywhere else, instead
+	// of an undialable empty endpoint.
+	endpoint := config.MCPURL(*mcpURL)
+	if err := config.ValidateURL("MuninnDB URL", endpoint); err != nil {
 		return err
 	}
 	if err := config.OneOf("-corpus", *corpus, "homogeneous", "diverse", "facts", "squad", "hotpot", "agentmem"); err != nil {
@@ -159,7 +165,7 @@ func run() error {
 		}
 	}
 
-	client := mcpclient.New(*mcpURL, config.Token(*token), *timeout)
+	client := mcpclient.New(endpoint, config.Token(*token), *timeout)
 	defer client.Close()
 	var items []item
 	var presentProbes, absentProbes []probe

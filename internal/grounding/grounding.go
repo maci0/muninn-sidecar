@@ -43,6 +43,19 @@ const maxGroundResponse = 4 << 20 // 4 MiB
 // indefinitely.
 const groundIdleConnTimeout = 90 * time.Second
 
+// DefaultModel is the judge model assumed when the operator names none. It is
+// a local instruct model, because the judge is meant to be the cheap in-flight
+// step: the 7b point is where docs/model-eval.md measures real answer-bearing
+// grading, below it the judge accepts nearly every passage and only costs a
+// call.
+const DefaultModel = "qwen2.5:7b-instruct"
+
+// DefaultTimeout bounds one in-flight grading call. The judge runs inside a
+// user's request, so a slow or hung endpoint has to fail open to the cosine
+// gate quickly rather than stall the turn; it is generous because a cold local
+// model load on first call is slow.
+const DefaultTimeout = 10 * time.Second
+
 // Grounder grades, in a single call, which of the passages answer the query.
 type Grounder interface {
 	// Relevant returns a mask parallel to passages: true = keep (contains an
