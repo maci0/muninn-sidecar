@@ -43,14 +43,14 @@ remote-facing; the only outbound sockets are to operator-named endpoints.
 | Blind TCP tunnel to any `host:port` (non-intercepted CONNECT targets) | same listener | `internal/proxy/mitm.go:272` |
 | WebSocket upgrade splice + decoder | reached only through the CONNECT tunnel | `internal/proxy/mitm.go:217`, `internal/proxy/wscapture.go:254` |
 | SSE / ndjson response tap | upstream response bodies | `internal/proxy/stream.go:40` |
-| CLI flags and passthrough agent argv | `msc <agent> [args...]` | `cmd/msc/flags.go:76`, `internal/agents/agents.go:520` |
+| CLI flags and passthrough agent argv | `msc <agent> [args...]` | `cmd/msc/flags.go:76`, `internal/agents/agents.go:407` |
 | `msc` subcommands (`ca`, `status`, `list`, `help`, `version`, `completion`) | local process, stdout | `cmd/msc/main.go:119`, `cmd/msc/commands.go:319`, `cmdCA` at `cmd/msc/commands.go:60` |
-| Environment variables | `MUNINN_MCP_URL`, `MUNINN_TOKEN`, `MUNINN_TOKEN_FILE`, `MSC_VAULT`, `MSC_UPSTREAM_<AGENT>`, `GEMINI_API_KEY` (upstream-selector), `MSC_WS_DEBUG`, `OPENAI_API_KEY`, `SSL_CERT_FILE`, `SHELL` | `internal/config/config.go:62`, `:205`, `:186`, `:238`, `internal/agents/agents.go:215`, `:226`, `internal/proxy/wscapture.go:26`, `cmd/msc/main.go:328`, `:150`, `internal/agents/agents.go:428` |
-| Config files read from disk | `~/.muninn/mcp.token`, `~/.config/muninn-sidecar/mitm/{ca-key.pem,ca-cert.pem,ca-bundle.pem}` | `internal/config/config.go:30`, `internal/mitm/ca.go:80`, `internal/agents/agents.go:353` |
+| Environment variables | `MUNINN_MCP_URL`, `MUNINN_TOKEN`, `MUNINN_TOKEN_FILE`, `MSC_VAULT`, `MSC_UPSTREAM_<AGENT>`, `GEMINI_API_KEY` (upstream-selector), `MSC_WS_DEBUG`, `OPENAI_API_KEY`, `SSL_CERT_FILE`, `SHELL` | `internal/config/config.go:62`, `:205`, `:186`, `:238`, `internal/agents/agents.go:216`, `:39`, `internal/proxy/wscapture.go:26`, `cmd/msc/main.go:328`, `:150`, `internal/agents/agents.go:333` |
+| Config files read from disk | `~/.muninn/mcp.token`, `~/.config/muninn-sidecar/mitm/{ca-key.pem,ca-cert.pem,ca-bundle.pem}` | `internal/config/config.go:30`, `internal/mitm/ca.go:80`, `internal/agents/cabundle.go:11` |
 | Outbound JSON-RPC client to MuninnDB | `MUNINN_MCP_URL`, default `http://127.0.0.1:8750/mcp` | `internal/config/config.go:21`, `internal/mcpclient/client.go:67` |
 | Outbound HTTPS to the LLM provider | resolved upstream, TLS 1.3 floor | `internal/proxy/proxy.go:209` |
 | Optional grounding judge (HTTP URL or local CLI) | `--ground-url`, `--ground-cmd` | `internal/grounding/grounding.go:307`, `:269` |
-| Launched child process | agent binary resolved via `PATH` | `internal/agents/agents.go:520` (MITM launch at `:486`) |
+| Launched child process | agent binary resolved via `PATH` | `internal/agents/agents.go:407` (MITM launch at `:416`) |
 | Scheduled jobs | none | — |
 
 Eval/bench/qa surface. Same trust posture as `msc`, different reach: each
@@ -128,9 +128,9 @@ does not apply to them.
    data-not-instructions notice (`internal/apiformat/apiformat.go:40`,
    written at `internal/inject/format.go:170`).
 5. **msc → child agent process.** The child inherits the full parent environment
-   (`internal/agents/agents.go:315`) and gains, under `--mitm`, trust of msc's
+   (`internal/agents/agents.go:282`) and gains, under `--mitm`, trust of msc's
    CA plus proxy env vars that redirect its whole HTTPS traffic
-   (`internal/agents/agents.go:486`).
+   (`internal/agents/agents.go:416`).
 6. **Local disk → msc.** The MITM CA key and the MuninnDB token file are read
    from fixed paths in the user's home.
 7. **CLI flag → subprocess.** `--ground-cmd` is split on whitespace and executed
@@ -261,7 +261,7 @@ response (`cmd/msc-qa/models.go:52`) bounds memory, not trust.
 | TLS 1.3 floor to the real upstream, normal certificate verification; TLS 1.2 floor with normal verification on the MITM forward leg | msc never forges trust toward the provider, and never trusts a bad upstream | `internal/proxy/proxy.go:209`, `:334` |
 | TLS 1.3 floor for HTTPS MuninnDB; `--mcp-url` scheme and host validated at startup | downgrade, undialable config | `internal/mcpclient/client.go:74`, `internal/config/config.go:152`, `cmd/msc/main.go:195` |
 | CA key `0600` in a `0700` directory, `chmod` forced on rewrite, permission re-check on every load | CA theft by another local user | `internal/mitm/ca.go:81`, `:140`, `:147`, `:101` |
-| Combined system-roots + CA bundle for the vars that replace the trust store | breaking TLS to blind-tunneled hosts | `internal/agents/agents.go:453` |
+| Combined system-roots + CA bundle for the vars that replace the trust store | breaking TLS to blind-tunneled hosts | `internal/agents/cabundle.go:96` |
 | Secret and PII redaction before storage, on by default, `--no-redact` warns loudly | credential persistence | `internal/redact/redact.go:63`, `internal/store/muninn.go:207`, `cmd/msc/main.go:232` |
 | Redaction always on the inject side, even with `--no-redact` | re-transmitting a secret stored by another client | `internal/inject/format.go:185` |
 | Anti-recursion filters strip injected markers, `muninn_*` tool traffic, system reminders | a memory of a memory | `internal/proxy/filter.go:43`, `:86` |

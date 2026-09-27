@@ -323,6 +323,42 @@ func classifyResponse(status int, body []byte) ([]byte, error) {
 // read a refusal as success.
 const ToolErrorCode = -32000
 
+// ContentTexts returns the text of every text-typed content block in a
+// successful JSON-RPC result, in the order the server sent them. A tool's
+// payload is carried as text inside a content block rather than as the result
+// value itself, so decoding that block is the first step of reading any
+// response body. The blocks are returned whole rather than the first one alone:
+// a server may prepend a human-readable summary block, so a caller parsing a
+// payload out of a block may have to look past one it cannot read. An error
+// means the body is not a JSON-RPC result with content blocks at all, which is
+// a broken response rather than an empty one.
+func ContentTexts(body []byte) ([]string, error) {
+	// A body that is JSON but not a JSON-RPC response decodes into the struct
+	// below as an empty result, so without this it would read as a reply with
+	// nothing in it. CheckEnvelope is what tells the two apart.
+	if err := CheckEnvelope(body); err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("response is not a JSON-RPC object: %w (body: %s)", err, bodySummary(body))
+	}
+	var texts []string
+	for _, c := range resp.Result.Content {
+		if c.Type == "text" {
+			texts = append(texts, c.Text)
+		}
+	}
+	return texts, nil
+}
+
 // CheckEnvelope reports whether a 2xx body is the JSON-RPC response object the
 // protocol requires. A server answering 200 with truncated JSON, an HTML error
 // page from an intermediary, or an empty body yields no confirmation that the

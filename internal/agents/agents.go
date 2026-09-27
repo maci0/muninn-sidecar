@@ -1,17 +1,18 @@
 // Package agents defines the supported coding agents and their API
 // interception configuration.
+//
+// The registry (the Agent type and its table) and the environment each agent is
+// launched with live in agents.go. The CA-bundle filesystem work that backs
+// TLS-MITM trust is in cabundle.go, and tracking the running child process is
+// in child.go.
 package agents
 
 import (
-	"encoding/pem"
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 )
 
 // ReservedCommands are command names that cannot be used as agent names.
@@ -350,11 +351,6 @@ func (a Agent) MITMOverrides(proxyURL, upstream, caCertPath, caBundlePath string
 	return overrides
 }
 
-// CABundlePath is where writeCombinedCABundle puts the system-roots+CA bundle.
-func CABundlePath(caCertPath string) string {
-	return filepath.Join(filepath.Dir(caCertPath), "ca-bundle.pem")
-}
-
 // BuildMITMEnv constructs the child environment for TLS-MITM mode. Instead of
 // overriding the agent's API base-URL env var, it points the standard proxy
 // variables (HTTPS_PROXY/HTTP_PROXY/ALL_PROXY) at msc and makes the child trust
@@ -412,118 +408,6 @@ func (a Agent) Exec(proxyURL, upstream string, args []string) error {
 	return a.runArgv(a.BuildEnv(proxyURL, upstream), a.buildArgs(proxyURL, args))
 }
 
-// systemRootPaths are well-known CA bundle locations, probed in order.
-// crypto/x509 keeps its equivalent list unexported, so it is mirrored here.
-var systemRootPaths = []string{
-	"/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu/Arch
-	"/etc/pki/tls/certs/ca-bundle.crt",   // Fedora/RHEL
-	"/etc/ssl/ca-bundle.pem",             // OpenSUSE
-	"/etc/ssl/cert.pem",                  // Alpine/OpenBSD (macOS: present, but no certificates in it)
-}
-
-// systemRootsPEM returns the system root CA bundle, honoring an SSL_CERT_FILE
-// already set by the user before probing the well-known locations. Returns nil
-// if no bundle is found.
-func systemRootsPEM() []byte {
-	candidates := systemRootPaths
-	if v := os.Getenv("SSL_CERT_FILE"); v != "" {
-		candidates = append([]string{v}, candidates...)
-	}
-	return firstPEMRoots(candidates)
-}
-
-// firstPEMRoots returns the contents of the first candidate that is a readable
-// PEM bundle, or nil when none is.
-func firstPEMRoots(candidates []string) []byte {
-	for _, p := range candidates {
-		// An empty file is not a bundle: writing msc's CA after nothing would
-		// leave the trust-store-replacing variables pointing at msc's CA alone,
-		// which is what combining with system roots exists to prevent.
-		b, err := os.ReadFile(p)
-		if err != nil || len(b) == 0 {
-			continue
-		}
-		// A readable file is not a bundle. macOS's /etc/ssl/cert.pem exists but
-		// holds only a pointer to the keychain, with no certificates in it;
-		// accepting it would write a ca-bundle.pem holding nothing but msc's own
-		// CA and point SSL_CERT_FILE at it, replacing the child's entire root
-		// store with one certificate. Skip a candidate with no CERTIFICATE block
-		// and keep probing, so a real bundle later in the list still wins.
-		if !hasPEMCertificate(b) {
-			continue
-		}
-		return b
-	}
-	return nil
-}
-
-// hasPEMCertificate reports whether b contains at least one PEM CERTIFICATE
-// block. It reads the block headers only; parsing the certificates themselves
-// would reject a bundle carrying one expired or malformed root, which is the
-// child's business to report, not a reason to drop every root with it.
-func hasPEMCertificate(b []byte) bool {
-	for len(b) > 0 {
-		var block *pem.Block
-		block, b = pem.Decode(b)
-		if block == nil {
-			return false
-		}
-		if block.Type == "CERTIFICATE" {
-			return true
-		}
-	}
-	return false
-}
-
-// HasSystemCABundle reports whether a system PEM root bundle was found to
-// combine msc's CA with. False where the trusted roots live in an OS store
-// rather than a PEM file (Windows, and macOS, whose /etc/ssl/cert.pem holds no
-// certificates), and on a system with no bundle installed at all. The answer
-// decides whether writeCombinedCABundle writes one
-// and whether MITMOverrides sets the trust-store-replacing variables: ExecMITM
-// leaves those variables unset when it has no system roots, so a dry-run
-// preview asks here instead of writing a bundle. It is the same probe
-// writeCombinedCABundle makes, so the preview and the real launch cannot
-// disagree about it.
-func HasSystemCABundle() bool {
-	return systemRootsPEM() != nil
-}
-
-// writeCombinedCABundle writes the system root CAs followed by msc's CA into
-// ca-bundle.pem beside caCertPath and returns the bundle's path. The bundle is
-// for env vars that REPLACE the default trust store (SSL_CERT_FILE,
-// REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE): pointing them at msc's CA alone would
-// break TLS to every host msc blind-tunnels under --mitm-host scoping. With no
-// system bundle to combine (Windows), there is nothing to write, so the empty
-// path is returned and callers leave those variables unset.
-func writeCombinedCABundle(caCertPath string) (string, error) {
-	return writeCABundle(caCertPath, systemRootsPEM())
-}
-
-// writeCABundle is writeCombinedCABundle with the system roots already probed,
-// so the no-roots branch is reachable without depending on what the host has
-// installed.
-func writeCABundle(caCertPath string, roots []byte) (string, error) {
-	if len(roots) == 0 {
-		return "", nil
-	}
-	ca, err := os.ReadFile(caCertPath)
-	if err != nil {
-		return "", fmt.Errorf("read CA cert: %w", err)
-	}
-	bundle := make([]byte, 0, len(roots)+1+len(ca))
-	bundle = append(bundle, roots...)
-	if len(bundle) > 0 && bundle[len(bundle)-1] != '\n' {
-		bundle = append(bundle, '\n')
-	}
-	bundle = append(bundle, ca...)
-	bundlePath := CABundlePath(caCertPath)
-	if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
-		return "", fmt.Errorf("write CA bundle: %w", err)
-	}
-	return bundlePath, nil
-}
-
 // ExecMITM runs the agent in TLS-MITM mode: the child trusts msc's CA (via
 // caCertPath) and routes HTTPS through msc as a CONNECT proxy, rather than
 // having its API base-URL env var overridden. ProxyArgs are intentionally NOT
@@ -536,51 +420,6 @@ func (a Agent) ExecMITM(proxyURL, upstream, caCertPath string, args []string) er
 	}
 	argv := append(append([]string{}, a.WaitArgs...), args...)
 	return a.runArgv(a.BuildMITMEnv(proxyURL, upstream, caCertPath, caBundlePath), argv)
-}
-
-// childMu guards child, the process most recently started by Exec/ExecMITM.
-var (
-	childMu sync.Mutex
-	child   *os.Process
-)
-
-// Child returns the agent process Exec or ExecMITM most recently started, or
-// nil when none is running. It lets a caller signal the agent directly, which
-// is the only option on platforms with no /proc to enumerate processes through.
-func Child() *os.Process {
-	childMu.Lock()
-	defer childMu.Unlock()
-	return child
-}
-
-func setChild(p *os.Process) {
-	childMu.Lock()
-	child = p
-	childMu.Unlock()
-}
-
-// runArgv looks up the agent binary and executes it with the given environment
-// and already-assembled argv, inheriting stdin/stdout/stderr. The running
-// child is published via Child() until it is reaped.
-func (a Agent) runArgv(env []string, argv []string) error {
-	binary, err := exec.LookPath(a.Command)
-	if err != nil {
-		return fmt.Errorf("agent %q not found in PATH: %w", a.Command, err)
-	}
-	cmd := exec.Command(binary, argv...)
-	cmd.Env = env
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start agent %q: %w", a.Command, err)
-	}
-	setChild(cmd.Process)
-	defer setChild(nil)
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("agent %q exited with an error: %w", a.Command, err)
-	}
-	return nil
 }
 
 // ListSorted returns all registered agent names in sorted order.

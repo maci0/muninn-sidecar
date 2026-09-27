@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 )
 
 // fetchWhereLeftOff calls MuninnDB's muninn_where_left_off tool to get
@@ -43,32 +44,20 @@ func (inj *Injector) fetchGuide(ctx context.Context) string {
 	return parseGuide(respBody)
 }
 
-// mcpResponse is the JSON-RPC envelope every MuninnDB tool replies in. The
-// tool's own payload is carried as text inside a content block, not as the
-// result value itself.
-type mcpResponse struct {
-	Result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"result"`
-}
-
-// parseMCPTextContent extracts the text from the first text-typed content block
-// in a JSON-RPC response. A body that does not parse is a broken response, not
-// an empty one, so the cause is logged (never the body: it carries memory
-// content) before returning "" — otherwise a corrupt reply is indistinguishable
-// from a server with no session context.
+// parseMCPTextContent extracts the text from the first non-empty text-typed
+// content block in a JSON-RPC response. A body that does not parse is a broken
+// response, not an empty one, so the cause is logged (never the body: it
+// carries memory content) before returning "" — otherwise a corrupt reply is
+// indistinguishable from a server with no session context.
 func parseMCPTextContent(body []byte) string {
-	var rpcResp mcpResponse
-	if err := json.Unmarshal(body, &rpcResp); err != nil {
+	texts, err := mcpclient.ContentTexts(body)
+	if err != nil {
 		slog.Warn("inject: MCP response is not valid JSON; treating as empty", "err", err, "bytes", len(body))
 		return ""
 	}
-	for _, c := range rpcResp.Result.Content {
-		if c.Type == "text" && c.Text != "" {
-			return c.Text
+	for _, t := range texts {
+		if t != "" {
+			return t
 		}
 	}
 	return ""
@@ -208,9 +197,8 @@ func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error)
 // JSON-RPC protocol errors are handled by mcpclient.Client.Call before
 // this function is called, so this function only receives success responses.
 func parseRecallResponse(body []byte) ([]memory, error) {
-	var rpcResp mcpResponse
-
-	if err := json.Unmarshal(body, &rpcResp); err != nil {
+	blocks, err := mcpclient.ContentTexts(body)
+	if err != nil {
 		return nil, fmt.Errorf("parse JSON-RPC response: %w", err)
 	}
 
@@ -219,20 +207,16 @@ func parseRecallResponse(body []byte) ([]memory, error) {
 	// block, so a block that does not parse is skipped rather than fatal: one
 	// unparsable block would otherwise abandon the memories in the next one.
 	var firstErr error
-	for _, content := range rpcResp.Result.Content {
-		if content.Type != "text" {
-			continue
-		}
-
+	for _, text := range blocks {
 		// Try object format: {"memories": [...]} or {"results": [...]}.
 		var recallResult struct {
 			Memories []memory `json:"memories"`
 			Results  []memory `json:"results"`
 		}
-		if err := json.Unmarshal([]byte(content.Text), &recallResult); err != nil {
+		if err := json.Unmarshal([]byte(text), &recallResult); err != nil {
 			// Try parsing as a direct array.
 			var direct []memory
-			if err2 := json.Unmarshal([]byte(content.Text), &direct); err2 != nil {
+			if err2 := json.Unmarshal([]byte(text), &direct); err2 != nil {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("parse recall result (struct: %v, array: %w)", err, err2)
 				}

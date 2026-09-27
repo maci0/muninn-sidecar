@@ -97,7 +97,10 @@ cmd/msc-qa/              Downstream answer-quality eval across models (none/inje
   stats.go               Per-arm aggregation and paired bootstrap CIs
   report.go              -md results blocks, run provenance, dataset digest
 internal/
-  agents/agents.go        Agent registry (claude, codex, grok, qwen, agy, ...)
+  agents/
+    agents.go             Agent registry (claude, codex, grok, qwen, agy, ...) + launch env
+    cabundle.go           System-root probing + combined system-roots+CA bundle for TLS-MITM trust
+    child.go              Tracking the running child process for direct signalling
   config/config.go        MuninnDB connection resolution (flag > env > default) + URL validation
   clirun/clirun.go       Bounded child-CLI runner for judges/rewriters (capped stdout, process-group timeout)
   clock/                  The project's only clock (Clock/SystemClock/Fake), injected into every timed path
@@ -116,7 +119,7 @@ internal/
     eval_live.go          Live end-to-end evaluation against a real MuninnDB
     eval_window.go        Session-window decay study (decayFactor/decayFloor)
   grounding/grounding.go  Answer-grounding rerank (OpenAI-compatible model / CLI judge)
-  mcpclient/client.go     Shared JSON-RPC 2.0 client for MuninnDB
+  mcpclient/client.go     Shared JSON-RPC 2.0 client + result content-block decoder for MuninnDB
   querysplit/querysplit.go  Entity-span sub-queries for multi-recall (bench + qa harnesses)
   mitm/
     ca.go                 Local CA: generate/persist + mint cached per-host leaf certs

@@ -112,25 +112,15 @@ func recallSubqueries(ctx context.Context, c *mcpclient.Client, vault string, su
 }
 
 func parseRecall(body []byte) ([]recalledMemory, error) {
-	var rpc struct {
-		Result struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(body, &rpc); err != nil {
+	blocks, err := mcpclient.ContentTexts(body)
+	if err != nil {
 		return nil, err
 	}
-	for _, ct := range rpc.Result.Content {
-		if ct.Type != "text" {
-			continue
-		}
+	for _, text := range blocks {
 		var inner struct {
 			Memories []recalledMemory `json:"memories"`
 		}
-		if err := json.Unmarshal([]byte(ct.Text), &inner); err != nil {
+		if err := json.Unmarshal([]byte(text), &inner); err != nil {
 			return nil, err
 		}
 		return inner.Memories, nil

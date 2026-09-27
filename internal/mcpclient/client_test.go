@@ -200,8 +200,54 @@ func TestCallResultIsNotAnError(t *testing.T) {
 	}
 }
 
-// Two writes of the same memory derive the same dedup key, so a redelivered or
-// re-seeded write collapses onto the stored one instead of adding a second.
+// TestContentTextsReturnsEveryTextBlock: a tool's payload rides in a text
+// content block, and a server may put a human-readable summary in front of it.
+// Returning only the first block would hand every caller a payload it cannot
+// read, so all of them come back in order and non-text blocks are left out.
+func TestContentTextsReturnsEveryTextBlock(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[
+		{"type":"text","text":"Recalled 2 memories."},
+		{"type":"image","data":"..."},
+		{"type":"text","text":"{\"memories\":[]}"}
+	]}}`)
+	got, err := ContentTexts(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Recalled 2 memories.", `{"memories":[]}`}
+	if len(got) != len(want) {
+		t.Fatalf("ContentTexts = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ContentTexts[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// A body that is not a JSON-RPC result is a broken response, not one with no
+// content: reporting the two the same way makes a corrupt reply
+// indistinguishable from a server that had nothing to say.
+func TestContentTextsRejectsNonJSONRPCBodies(t *testing.T) {
+	for _, body := range []string{"", "<html>502</html>", "null", `{"unrelated":true}`} {
+		if _, err := ContentTexts([]byte(body)); err == nil {
+			t.Errorf("ContentTexts(%q) = nil error, want an error", body)
+		}
+	}
+}
+
+// A well-formed result with no content blocks is a real answer with nothing in
+// it, which is not an error.
+func TestContentTextsEmptyResultIsNotAnError(t *testing.T) {
+	got, err := ContentTexts([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ContentTexts = %q, want none", got)
+	}
+}
+
 // TestCheckEnvelopeRejectsUnconfirmedWrites: a 2xx that is not a JSON-RPC
 // response object confirms nothing was stored. A caller that discards the body
 // and reports success on it loses a whole batch silently.

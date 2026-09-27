@@ -83,20 +83,11 @@ func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query s
 // that decodes and carries no memories is a genuine empty result and returns
 // nil with no error.
 func parseRecallPayload(resp []byte, minScore float64) ([]cand, error) {
-	var rpc struct {
-		Result struct {
-			Content []struct {
-				Type, Text string
-			} `json:"content"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(resp, &rpc); err != nil {
+	blocks, err := mcpclient.ContentTexts(resp)
+	if err != nil {
 		return nil, fmt.Errorf("parse recall envelope (%d bytes): %w", len(resp), err)
 	}
-	for _, c := range rpc.Result.Content {
-		if c.Type != "text" {
-			continue
-		}
+	for _, text := range blocks {
 		var inner struct {
 			Memories []struct {
 				Concept     string  `json:"concept"`
@@ -105,8 +96,8 @@ func parseRecallPayload(resp []byte, minScore float64) ([]cand, error) {
 				Score       float64 `json:"score"`
 			} `json:"memories"`
 		}
-		if err := json.Unmarshal([]byte(c.Text), &inner); err != nil {
-			return nil, fmt.Errorf("parse recall payload (%d bytes): %w", len(c.Text), err)
+		if err := json.Unmarshal([]byte(text), &inner); err != nil {
+			return nil, fmt.Errorf("parse recall payload (%d bytes): %w", len(text), err)
 		}
 		var parts []cand
 		for _, m := range inner.Memories {
