@@ -35,6 +35,13 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
   decode stops, and the `MSC_WS_DEBUG` message lines, were the only lines on
   the request path without one, so a frame dump could not be tied to the turn
   it belonged to.
+- **A blind-tunnel dial failure no longer panics the proxy.** `writeStatus` read
+  the correlation ID out of a `context.Context`, but `blindTunnel` called it with
+  a nil one: an agent opening a CONNECT to an unreachable host that went away
+  before the 502 was written took the whole sidecar down on a nil dereference,
+  in the one tunnel path where the log line naming the failure is all the
+  operator gets. `writeStatus` now takes the ID, which both call sites already
+  held.
 
 ### Security
 

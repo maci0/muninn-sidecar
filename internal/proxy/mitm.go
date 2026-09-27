@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -268,7 +267,7 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	backend, err := tls.DialWithDialer(&net.Dialer{Timeout: tunnelDialTimeout}, "tcp", target, cfg)
 	if err != nil {
 		slog.Debug("mitm: upgrade backend dial failed", reqid.Field, requestID(req.Context()), "target", target, "err", err)
-		writeStatus(clientConn, req.Context(), target, "502 Bad Gateway")
+		writeStatus(clientConn, requestID(req.Context()), target, "502 Bad Gateway")
 		return
 	}
 	defer backend.Close()
@@ -310,7 +309,7 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target, id string) {
 	upstream, err := net.DialTimeout("tcp", target, tunnelDialTimeout)
 	if err != nil {
 		slog.Debug("mitm: blind-tunnel dial failed", reqid.Field, id, "target", target, "err", err)
-		writeStatus(clientConn, nil, target, "502 Bad Gateway")
+		writeStatus(clientConn, id, target, "502 Bad Gateway")
 		return
 	}
 	defer upstream.Close()
@@ -349,10 +348,15 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target, id string) {
 // http.ResponseWriter. A failed write means the client is already gone; it is
 // still worth a trace, since the agent sees only a closed socket and the log
 // is the only record of why the tunnel was refused.
-func writeStatus(clientConn net.Conn, ctx context.Context, target, status string) {
+//
+// The correlation ID is passed rather than a context: blindTunnel reports its
+// dial failure before it holds a request context, and reading a value out of a
+// nil context panics — the trace would take the process down instead of naming
+// the tunnel that failed.
+func writeStatus(clientConn net.Conn, id, target, status string) {
 	if _, err := fmt.Fprintf(clientConn, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", status); err != nil {
 		slog.Debug("mitm: could not report tunnel failure to client",
-			reqid.Field, requestID(ctx), "target", target, "status", status, "err", err)
+			reqid.Field, id, "target", target, "status", status, "err", err)
 	}
 }
 

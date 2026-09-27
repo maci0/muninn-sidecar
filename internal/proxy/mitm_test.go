@@ -1000,3 +1000,47 @@ func TestTunnelLogLinesCarryRequestID(t *testing.T) {
 	}
 	t.Fatalf("blind-tunnel dial failure was not logged: %s", logs.String())
 }
+
+// TestBlindTunnelStatusOnDeadClient covers the tunnel path's other log line: the
+// dial fails, the client has already gone, and reporting the 502 to it fails
+// too. That second failure is the only path in the tunnel code that logs from a
+// place holding no request context, and it used to read the correlation ID out
+// of a nil context — a panic, in the one case where a log line is all the
+// operator gets. Closing the client end makes the status write fail
+// deterministically, so the line is reached without waiting on a real peer.
+func TestBlindTunnelStatusOnDeadClient(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	clientConn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientConn.Close() // the agent is gone before the tunnel could be established
+
+	(&Proxy{}).blindTunnel(clientConn, "127.0.0.1:1", "req-99")
+
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if !strings.Contains(line, "could not report tunnel failure to client") {
+			continue
+		}
+		var entry struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line is not valid JSON: %v (%s)", err, line)
+		}
+		if entry.RequestID != "req-99" {
+			t.Errorf("tunnel status line lost the CONNECT's request_id: %s", line)
+		}
+		return
+	}
+	t.Fatalf("tunnel status failure was not logged: %s", logs.String())
+}
