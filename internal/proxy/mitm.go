@@ -328,7 +328,7 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target, id string) {
 		// A copy error here is the normal end of one direction (a peer closing
 		// mid-stream); log it so a tunnel that dies for any other reason leaves
 		// a trace instead of ending silently.
-		if err := copyTunnel(dst, src, src, target, id); err != nil {
+		if err := copyTunnel(dst, src, target, id); err != nil {
 			slog.Debug("mitm: tunnel copy ended with an error", reqid.Field, id, "target", target, "err", err)
 		}
 		// Unblock the peer copy: a half-close lets the other direction drain.
@@ -364,7 +364,7 @@ func writeStatus(clientConn net.Conn, id, target, status string) {
 // the write side before every chunk. A deadline error is returned like any other
 // copy error; the caller logs it and closes its half. id is the correlation ID of
 // the CONNECT that opened the tunnel.
-func copyTunnel(dst net.Conn, src net.Conn, r io.Reader, target, id string) error {
+func copyTunnel(dst, src net.Conn, target, id string) error {
 	buf := make([]byte, 32*1024)
 	for {
 		if err := src.SetReadDeadline(time.Now().Add(tunnelIdleTimeout)); err != nil {

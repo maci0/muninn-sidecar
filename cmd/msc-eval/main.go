@@ -31,10 +31,8 @@ import (
 
 	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/inject"
+	"github.com/maci0/muninn-sidecar/internal/report"
 )
-
-// ellipsis marks a value trunc shortened to fit its report column.
-const ellipsis = "…"
 
 func main() {
 	if err := run(); err != nil {
@@ -231,7 +229,7 @@ func printOfflineReport(results []inject.EvalResult, agg inject.Metrics) {
 	for _, r := range results {
 		m := r.Metrics
 		fmt.Printf("%-32s %5.2f %5.2f %5.2f %5.2f %5s %4d/%-3d %6.0f%%\n",
-			trunc(r.Scenario, 32), m.Precision, m.Recall, m.F1, m.NDCG, gateMark(r), m.NumInjected, m.NumRelevant, m.WastedRatio*100)
+			report.Trunc(r.Scenario, 32), m.Precision, m.Recall, m.F1, m.NDCG, gateMark(r), m.NumInjected, m.NumRelevant, m.WastedRatio*100)
 	}
 	fmt.Println(strings.Repeat("-", 84))
 	fmt.Printf("%-32s %5.2f %5.2f %5.2f %5.2f %4.0f%% %4d/%-3d %6.0f%%\n",
@@ -291,28 +289,13 @@ func printLiveReport(results []inject.LiveResult) {
 	var sum float64
 	for _, r := range results {
 		fmt.Printf("%-28s %8d %8d %6d %6d %7.0f%%\n",
-			trunc(r.Scenario, 28), r.Recalled, len(r.Expected), r.Hits, r.Extra, r.HitRate*100)
+			report.Trunc(r.Scenario, 28), r.Recalled, len(r.Expected), r.Hits, r.Extra, r.HitRate*100)
 		sum += r.HitRate
 	}
 	if len(results) > 0 {
 		fmt.Println(strings.Repeat("-", 70))
 		fmt.Printf("%-28s %8s %8s %6s %6s %7.0f%%\n", "MEAN", "", "", "", "", sum/float64(len(results))*100)
 	}
-}
-
-// trunc clips s to at most n characters, replacing the last one with an
-// ellipsis. The budget is characters, counted as runes: a byte count would cut
-// a multi-byte character in half, leaving a replacement character at the end of
-// a non-ASCII scenario name.
-func trunc(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	if n <= 1 {
-		return ellipsis
-	}
-	return string(r[:n-1]) + ellipsis
 }
 
 // --- MuninnDB config resolution (shared with the other msc binaries) ---

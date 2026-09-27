@@ -123,24 +123,6 @@ func replaceMDBlock(content, marker, block string) string {
 	return b.String()
 }
 
-// ellipsis marks a value trunc shortened to fit its report column.
-const ellipsis = "…"
-
-// trunc clips s to at most n characters, replacing the last one with an
-// ellipsis. The budget is characters, counted as runes: a byte count would cut
-// a multi-byte character in half, leaving a replacement character at the end of
-// a non-ASCII model label.
-func trunc(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	if n <= 1 {
-		return ellipsis
-	}
-	return string(r[:n-1]) + ellipsis
-}
-
 // fileSHA256 returns the hex SHA-256 of a file's contents.
 func fileSHA256(path string) (string, error) {
 	data, err := os.ReadFile(path)

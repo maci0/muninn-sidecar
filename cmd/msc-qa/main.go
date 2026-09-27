@@ -37,6 +37,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
+	"github.com/maci0/muninn-sidecar/internal/report"
 )
 
 func main() {
@@ -198,7 +199,7 @@ func run() error {
 	var recallFails int
 	var firstRecallErr error
 	for i, q := range questions {
-		cands, err := recallStructuredErr(ctx, mcp, *vault, q.Question, 0, *multiRecall)
+		cands, err := recallStructured(ctx, mcp, *vault, q.Question, 0, *multiRecall)
 		if err != nil {
 			recallFails++
 			if firstRecallErr == nil {
@@ -340,7 +341,7 @@ func run() error {
 			note = "   UNRELIABLE (an arm lost >10% of calls)"
 		}
 		row := fmt.Sprintf("%-26s  %4.2f/%4.2f   %4.2f/%4.2f   %4.2f/%4.2f",
-			trunc(r.label(), 26), agg[0].em(), agg[0].f1(), agg[1].em(), agg[1].f1(), agg[2].em(), agg[2].f1())
+			report.Trunc(r.label(), 26), agg[0].em(), agg[0].f1(), agg[1].em(), agg[1].f1(), agg[2].em(), agg[2].f1())
 		if grd != nil {
 			row += fmt.Sprintf("   %4.2f/%4.2f", agg[3].em(), agg[3].f1())
 		}

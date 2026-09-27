@@ -14,20 +14,6 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/inject"
 )
 
-func TestTrunc(t *testing.T) {
-	if trunc("abcdef", 4) != "abc…" || trunc("ab", 5) != "ab" {
-		t.Errorf("trunc")
-	}
-	// A scenario name is external text: a byte budget cuts a multi-byte
-	// character in half and the report line ends in a replacement character.
-	if got := trunc("日本語のシナリオ", 4); got != "日本語…" {
-		t.Errorf("trunc(CJK) = %q, want %q", got, "日本語…")
-	}
-	if got := trunc("a😀b", 2); got != "a…" {
-		t.Errorf("trunc(emoji) = %q, want %q", got, "a…")
-	}
-}
-
 func TestGateMark(t *testing.T) {
 	if gateMark(inject.EvalResult{DidInject: true, ShouldInject: true}) != "ok" {
 		t.Error("ok")

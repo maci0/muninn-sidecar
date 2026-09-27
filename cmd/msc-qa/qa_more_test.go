@@ -24,14 +24,6 @@ func TestSmallHelpers(t *testing.T) {
 	if got := splitCSV(" a , b ,, c "); len(got) != 3 || got[0] != "a" || got[2] != "c" {
 		t.Errorf("splitCSV %v", got)
 	}
-	if trunc("abcdef", 4) != "abc…" || trunc("ab", 4) != "ab" {
-		t.Errorf("trunc")
-	}
-	// A model label is external text: a byte budget cuts a multi-byte
-	// character in half and the row ends in a replacement character.
-	if got := trunc("日本語モデル", 4); got != "日本語…" {
-		t.Errorf("trunc(CJK) = %q, want %q", got, "日本語…")
-	}
 	if safe(1, 0) != 0 || safe(2, 4) != 0.5 {
 		t.Errorf("safe")
 	}
@@ -343,7 +335,7 @@ func TestRecallErrorIsReported(t *testing.T) {
 func TestRecallErrorReachesCaller(t *testing.T) {
 	cl := mcpclient.New("http://127.0.0.1:1/mcp", "", time.Second)
 	defer cl.Close()
-	cands, err := recallStructuredErr(context.Background(), cl, "v", "q", 0.6, false)
+	cands, err := recallStructured(context.Background(), cl, "v", "q", 0.6, false)
 	if err == nil {
 		t.Fatalf("expected a transport error, got %d candidates", len(cands))
 	}
