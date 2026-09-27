@@ -135,9 +135,12 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	} else if healthErr == nil {
 		muninnStatus = "(reachable)"
 	} else {
-		muninnStatus = fmt.Sprintf("(unreachable: %v)", healthErr)
+		muninnStatus = "(unreachable)"
 	}
 	fmt.Fprintf(os.Stdout, "MuninnDB: %s %s\n", redact.URL(mcpURL), muninnStatus)
+	if healthErr != nil && !o.force {
+		fmt.Fprintf(os.Stdout, "          %v\n", healthErr)
+	}
 	if !o.noInject {
 		calib := "auto-calibrated"
 		if o.noAutoCalibrate {

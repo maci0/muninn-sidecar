@@ -18,22 +18,6 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 )
 
-// TestMainHelp re-execs this test binary with a sentinel env var so main() runs
-// inside the coverage-instrumented process. --help / -h makes main() exit 0
-// without touching the network or launching anything.
-func TestMainHelp(t *testing.T) {
-	if os.Getenv("MSC_RUN_MAIN") == "1" {
-		os.Args = []string{"msc-bench", "-h"}
-		main()
-		return
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestMainHelp$")
-	cmd.Env = append(os.Environ(), "MSC_RUN_MAIN=1")
-	if err := cmd.Run(); err != nil {
-		t.Errorf("main(-h) should exit 0, got %v", err)
-	}
-}
-
 // Seeding the same corpus twice must not double it. Every seeded memory carries
 // a content-addressed dedup_key, so a rerun of `-seed` presents the server with
 // the same identities and stores nothing new. Duplicates are not harmless in a

@@ -140,8 +140,9 @@ The commands above are the exception: their flags may follow the name, so
 `msc` exits `0` on success, `1` when MuninnDB is unreachable, `2` on a usage
 error, and `127` when the agent binary is not in `PATH`. When the agent itself
 exits, its code is propagated (`128+N` if a signal killed it). `msc-eval`,
-`msc-bench`, and `msc-qa` use the same `0`/`1`/`2` split: `2` for a flag value
-they reject, `1` for a failure while running.
+`msc-bench`, and `msc-qa` use the same `0`/`1`/`2` split: `-h` prints help on
+stdout and exits 0, a bad flag, an unexpected argument, or a rejected flag
+value exits 2 on stderr, and a failure while running exits 1.
 
 ```bash
 msc claude || echo "agent run failed with $?"

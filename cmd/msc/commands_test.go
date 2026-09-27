@@ -283,6 +283,22 @@ func TestPrintDryRunJSONReportsUnreachable(t *testing.T) {
 	}
 }
 
+// Text dry-run uses the same health error status does. The parenthetical is
+// the state, and the error (which itself says "unreachable") is the next line.
+func TestPrintDryRunTextUnreachableNamesItOnce(t *testing.T) {
+	agent := agents.Agent{Command: "claude", EnvKey: "ANTHROPIC_BASE_URL"}
+	err := errors.New("unreachable at http://127.0.0.1:1/mcp: dial refused")
+	out := captureStdout(t, func() {
+		printDryRun(&opts{}, "claude", agent, "https://x", "http://127.0.0.1:1/mcp", "v", err, "")
+	})
+	if strings.Contains(out, "unreachable: unreachable") {
+		t.Errorf("dry-run repeats the state:\n%s", out)
+	}
+	if !strings.Contains(out, "(unreachable)\n") || !strings.Contains(out, "dial refused") {
+		t.Errorf("dry-run must name the state and the probe error:\n%s", out)
+	}
+}
+
 func TestRunCA(t *testing.T) {
 	// Pin a throwaway config home so the CA is created under it.
 	tmp := t.TempDir()
@@ -447,6 +463,25 @@ func TestCmdStatusJSONUnreachable(t *testing.T) {
 	}
 	if got.Memories != nil {
 		t.Errorf("no stats were fetched, memories must be absent, got %s", got.Memories)
+	}
+}
+
+// The health error already begins with "unreachable". Folding it into the
+// parenthetical prints the word twice, which is what an operator reads.
+func TestCmdStatusTextUnreachableNamesItOnce(t *testing.T) {
+	t.Setenv("MUNINN_MCP_URL", "http://127.0.0.1:1/mcp")
+	t.Setenv("MUNINN_TOKEN", "x")
+
+	var rc int
+	out := captureStdout(t, func() { rc = cmdStatus(&opts{}) })
+	if rc != 1 {
+		t.Errorf("unreachable status rc = %d, want 1", rc)
+	}
+	if strings.Contains(out, "unreachable: unreachable") {
+		t.Errorf("status repeats the state:\n%s", out)
+	}
+	if !strings.Contains(out, "(unreachable)\n") || !strings.Contains(out, "unreachable at ") {
+		t.Errorf("status must name the state and still carry the probe error:\n%s", out)
 	}
 }
 

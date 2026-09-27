@@ -223,7 +223,10 @@ func cmdStatus(o *opts) int {
 	if err == nil {
 		fmt.Printf("MuninnDB: %s (reachable)\n", redact.URL(mcpURL))
 	} else {
-		fmt.Printf("MuninnDB: %s (unreachable: %v)\n", redact.URL(mcpURL), err)
+		// The health error already starts with "unreachable", so folding it
+		// into the parenthetical prints the word twice.
+		fmt.Printf("MuninnDB: %s (unreachable)\n", redact.URL(mcpURL))
+		fmt.Printf("          %v\n", err)
 	}
 	fmt.Printf("Vault:    %s\n", vault)
 	if haveStats {

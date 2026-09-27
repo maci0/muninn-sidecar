@@ -23,8 +23,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -65,7 +67,7 @@ func run() error {
 		settle     = flag.Duration("settle", 750*time.Millisecond, "delay after seeding before probing (live mode)")
 		timeout    = flag.Duration("timeout", 5*time.Second, "per-MCP-call timeout (live mode)")
 	)
-	flag.Parse()
+	parseFlags()
 
 	if *compare && (*studyN <= 0 || *studyFolds < 2 || *studyFolds > *studyN) {
 		return config.Usagef("-study-n must be > 0 and 2 <= -study-folds <= -study-n")
@@ -298,4 +300,44 @@ func printLiveReport(results []inject.LiveResult) {
 	}
 }
 
-// --- MuninnDB config resolution (shared with the other msc binaries) ---
+// parseFlags sends -h to stdout and exits 0. A bad flag or an unexpected
+// argument goes to stderr and exits 2, without the usage text.
+func parseFlags() {
+	flag.CommandLine.Init("msc-eval", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(os.Stderr)
+	flag.CommandLine.Usage = func() {}
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			usage(os.Stdout)
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "Run 'msc-eval -h' for usage.")
+		os.Exit(2)
+	}
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "msc-eval: unexpected argument %q\n", flag.Arg(0))
+		fmt.Fprintln(os.Stderr, "Run 'msc-eval -h' for usage.")
+		os.Exit(2)
+	}
+}
+
+func usage(w io.Writer) {
+	flag.CommandLine.SetOutput(w)
+	fmt.Fprint(w, `msc-eval - offline and live evaluation of the memory-injection selection pipeline
+
+Usage: msc-eval [flags]
+
+Examples:
+  msc-eval                          # offline report on the built-in corpus
+  msc-eval -sweep                   # + MinScore when+what sweep
+  msc-eval -compare                 # + cross-validated method study (multi-seed)
+  msc-eval -compare -study-seed 7   # + method study on one generator seed
+  msc-eval -file scenarios.json     # offline report on a custom corpus
+  msc-eval -json                    # machine-readable output
+  msc-eval -live -live-file live.json -vault msc-eval
+
+Flags:
+`)
+	flag.PrintDefaults()
+	flag.CommandLine.SetOutput(os.Stderr)
+}

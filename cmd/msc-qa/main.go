@@ -25,8 +25,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -78,7 +80,7 @@ func run() error {
 		injectFmt   = flag.String("inject-format", "bare", "injected context presentation: bare | labeled | scored (scored = live proxy format)")
 		answerHintF = flag.String("answer-hint", "", "constrain answers to a fixed label set (e.g. \"SUPPORTS, REFUTES\") for classification regimes like FEVER; empty = extractive span")
 	)
-	flag.Parse()
+	parseFlags()
 	// The flag default is already the resolved endpoint, but an explicitly
 	// written `-mcp-url=` leaves the flag empty, and the flag package does not
 	// fall back to its default for that. Resolve again so an empty value means
@@ -376,4 +378,43 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// parseFlags sends -h to stdout and exits 0. A bad flag or an unexpected
+// argument goes to stderr and exits 2, without the usage text.
+func parseFlags() {
+	flag.CommandLine.Init("msc-qa", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(os.Stderr)
+	flag.CommandLine.Usage = func() {}
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			usage(os.Stdout)
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "Run 'msc-qa -h' for usage.")
+		os.Exit(2)
+	}
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "msc-qa: unexpected argument %q\n", flag.Arg(0))
+		fmt.Fprintln(os.Stderr, "Run 'msc-qa -h' for usage.")
+		os.Exit(2)
+	}
+}
+
+func usage(w io.Writer) {
+	flag.CommandLine.SetOutput(w)
+	fmt.Fprint(w, `msc-qa - measures the downstream usefulness of memory injection
+
+Usage: msc-qa [flags]
+
+Examples:
+  msc-qa -vault msc-squad -model-url http://localhost:1234/v1 -model gpt-4o-mini -n 100
+  msc-qa -json                      # machine-readable arms and scores
+  msc-qa -md docs/model-eval.md     # append one results row per model
+  msc-qa -model-cmd "claude -p"     # score a CLI reader instead of an endpoint
+
+Flags:
+`)
+	flag.PrintDefaults()
+	flag.CommandLine.SetOutput(os.Stderr)
 }

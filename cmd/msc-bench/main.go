@@ -26,8 +26,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +91,7 @@ func run() error {
 		rngSeed    = flag.Int64("rng", 1, "deterministic dataset seed")
 		asJSON     = flag.Bool("json", false, "emit machine-readable JSON")
 	)
-	flag.Parse()
+	parseFlags()
 	// The flag default is already the resolved endpoint, but an explicitly
 	// written `-mcp-url=` leaves the flag empty, and the flag package does not
 	// fall back to its default for that. Resolve again so an empty value means
@@ -239,4 +241,43 @@ func run() error {
 		reportGroundedGate(g.Label(), gp, ga)
 	}
 	return nil
+}
+
+// parseFlags sends -h to stdout and exits 0. A bad flag or an unexpected
+// argument goes to stderr and exits 2, without the usage text.
+func parseFlags() {
+	flag.CommandLine.Init("msc-bench", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(os.Stderr)
+	flag.CommandLine.Usage = func() {}
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			usage(os.Stdout)
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "Run 'msc-bench -h' for usage.")
+		os.Exit(2)
+	}
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "msc-bench: unexpected argument %q\n", flag.Arg(0))
+		fmt.Fprintln(os.Stderr, "Run 'msc-bench -h' for usage.")
+		os.Exit(2)
+	}
+}
+
+func usage(w io.Writer) {
+	flag.CommandLine.SetOutput(w)
+	fmt.Fprint(w, `msc-bench - benchmarks memory retrieval and the when/what-to-inject decision
+
+Usage: msc-bench [flags]
+
+Examples:
+  msc-bench -seed -probe            # seed the corpus then run probes
+  msc-bench -probe                  # re-probe an already-seeded vault
+  msc-bench -n 300 -absent 100      # corpus + absent-probe sizing
+  msc-bench -json                   # machine-readable report
+
+Flags:
+`)
+	flag.PrintDefaults()
+	flag.CommandLine.SetOutput(os.Stderr)
 }

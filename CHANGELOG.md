@@ -258,6 +258,16 @@ minor bump is safe.
 
 ### Fixed
 
+- **Tool help goes to stdout, and a usage error stays on stderr.** `msc-eval`,
+  `msc-qa`, and `msc-bench` printed `-h` on stderr, so `msc-bench -h | less`
+  came up empty, and a mistyped flag or a stray argument buried its one-line
+  error in a full usage dump. Help is now stdout with exit 0. A bad flag or an
+  unexpected argument is stderr with exit 2, and stdout is left empty.
+- **An unreachable MuninnDB is named once.** `msc status` and `msc --dry-run`
+  printed `(unreachable: unreachable at ...)`, because the health check's error
+  already starts with "unreachable". The state stays in the parenthetical, and
+  the probe error is the next line.
+
 - **The inject token budget is now charged for the block that is written.**
   Three separate miscounts let a turn carry more context than `--inject-budget`
   allows. The per-entry framing constant was a byte short of what the formatter
