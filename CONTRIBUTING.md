@@ -192,13 +192,19 @@ agent's connection (see `internal/proxy/mitm.go`).
 An entry belongs under `[Unreleased]` when the change lands, not when the release
 is cut: a shipped feature (the observability work, `request_id` logging,
 `--log-json`, `/__msc/health`) accumulated commit after commit with no entry at
-all. Group by impact, `Added` / `Fixed` / `Changed`, and write what a user sees
-change, not which function changed.
+all. Group by impact, and write what a user sees change, not which function
+changed.
 
-Each impact group appears once per release, in that order, and no two entries
-describe the same fix: the `[Unreleased]` block had six impact headings and
-five duplicate entries (the `-seed` dedup key and the CRLF report marker were
-each written up twice) before this was enforced.
+The impact groups run `Added`, `Changed`, `Removed`, `Fixed`, `Security`,
+`Validated`, each at most once per release, and no two entries in a release
+state the same fix. Both rules are what `make check-release` enforces, so a
+release that breaks them is a failed build rather than a changelog a reader has
+to reassemble. The `[Unreleased]` block had eight impact headings and ten
+entries written up twice (the `-seed` dedup key and the CRLF report marker
+among them) before the check covered them. The gate compares the bold title of
+an entry with any `Breaking:` marker stripped, so one fix written up once with
+the marker and once without it counts once; two entries describing one fix under
+different titles it cannot see, so merge those by hand.
 
 A change is breaking when an existing invocation stops working or changes what
 it produces: an exit code, an environment variable's meaning, config that used
@@ -209,15 +215,21 @@ with `**Breaking:**` so a reader does not have to infer it from the bump.
 
 The project is pre-1.0, so a minor bump may carry breaking CLI or output
 changes; open those entries with `**Breaking:**` rather than assuming SemVer
-protects the reader. One commit does all four steps, so the tag, the version,
-and the notes cannot drift apart:
+protects the reader. A patch bump carries none: a change that breaks an
+existing invocation makes the release a minor one. 0.4.1 was cut as a patch and
+removed the `reasonix` agent, so a reader upgrading from 0.4.0 got a smaller
+bump than the change deserved; the tag is published and the entry carries the
+marker, which is the only correction a published release can take. One commit
+does all four steps, so the tag, the version, and the notes cannot drift apart:
 
 1. Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD` in `CHANGELOG.md`,
    leaving an empty `## [Unreleased]` above it.
 2. Add `[X.Y.Z]: .../releases/tag/vX.Y.Z` to the link list at the bottom.
 3. Run `make check-release TAG=vX.Y.Z`. It fails when the tag has no changelog
-   section or link, when a released section has no link (or the reverse), or
-   when the sections are out of version order.
+   section or link, when a released section has no link (or the reverse), when
+   the sections are out of version order, when a section repeats an impact
+   group or runs them out of order, and when two entries in a section state the
+   same fix.
 4. Tag that commit `vX.Y.Z` on `main`. The tag is the release, and a release
    published without matching notes cannot be corrected afterwards.
 

@@ -73,6 +73,62 @@ head -1 "$changelog" | grep -q '^# Changelog$' ||
 grep -q '^## \[Unreleased\]' "$changelog" ||
 	fail "$(basename "$changelog") has no '## [Unreleased]' section"
 
+# Each section carries one heading per impact group, the headings run in the
+# order a reader scans them in, and no two entries in a section state the same
+# fix. The [Unreleased] block had eight headings and ten duplicated entries
+# before this was checked, all of which a tag would have shipped as that
+# release's notes: a reader scanning for the fixes found the same fix twice
+# and the groups in an order that put additions last.
+# `Breaking:` is stripped from the key so the same fix written up once with the
+# marker and once without it is still one entry, and the survivor has to be the
+# one carrying the marker.
+while IFS= read -r problem; do
+	[ -n "$problem" ] && fail "$problem"
+done < <(awk '
+	BEGIN {
+		n = split("Added Changed Removed Fixed Security Validated", order, " ")
+		for (i = 1; i <= n; i++) rank[order[i]] = i
+	}
+	/^## \[/ {
+		section = $0
+		sub(/^## /, "", section)
+		rank_seen = 0
+		delete group_seen
+		delete entry_seen
+		next
+	}
+	/^### / {
+		group = substr($0, 5)
+		if (!(group in rank)) {
+			print section ": unknown impact group " group
+			status = 1
+			next
+		}
+		if (group in group_seen) {
+			print section ": a second " group " group; each impact group appears once"
+			status = 1
+		}
+		group_seen[group] = 1
+		if (rank[group] < rank_seen) {
+			print section ": " group " runs after a group below it; the order is " order[1] ", " order[2] ", " order[3] ", " order[4] ", " order[5] ", " order[6]
+			status = 1
+		}
+		if (rank[group] > rank_seen) rank_seen = rank[group]
+		next
+	}
+	/^- \*\*/ {
+		title = $0
+		sub(/^- \*\*(Breaking: )?/, "", title)
+		sub(/\*\*.*$/, "", title)
+		if (title in entry_seen) {
+			print section ": two entries state the same fix (" title ")"
+			status = 1
+		}
+		entry_seen[title] = 1
+	}
+	END { exit status }
+' "$changelog")
+
 if [ -z "$tag" ]; then
 	# An untagged tree has no version to check against, so the file-level
 	# invariants above are the whole answer. Say so rather than exiting

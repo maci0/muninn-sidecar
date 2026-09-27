@@ -14,7 +14,8 @@ import (
 
 // A changelog that satisfies every rule: heading first, an empty
 // [Unreleased] above the newest released section, sections in descending
-// order, and a link per version.
+// order, a link per version, and one impact group per section in the order a
+// reader scans them.
 const validChangelog = `# Changelog
 
 ## [Unreleased]
@@ -23,13 +24,13 @@ const validChangelog = `# Changelog
 
 ### Fixed
 
-- something
+- **the widget no longer leaks.** one line
 
 ## [0.4.4] — 2026-06-02
 
 ### Fixed
 
-- something older
+- **an older fix.** one line
 
 [unreleased]: https://example.test/compare/v0.4.4...HEAD
 [0.5.0]: https://example.test/releases/tag/v0.5.0
@@ -122,6 +123,31 @@ func TestGateReportsEachViolation(t *testing.T) {
 			tag:  "latest",
 			want: "is not a vMAJOR.MINOR.PATCH tag",
 		},
+		{
+			name: "impact group repeated",
+			body: strings.Replace(validChangelog,
+				"## [0.4.4] — 2026-06-02", "## [0.4.4] — 2026-06-02\n\n### Fixed", 1),
+			want: "a second Fixed group",
+		},
+		{
+			name: "impact groups out of order",
+			body: strings.Replace(validChangelog,
+				"## [0.4.4] — 2026-06-02\n\n### Fixed",
+				"## [0.4.4] — 2026-06-02\n\n### Security\n\n- **a hole was closed.** one line\n\n### Fixed", 1),
+			want: "Fixed runs after a group below it",
+		},
+		{
+			name: "unknown impact group",
+			body: strings.Replace(validChangelog, "### Fixed", "### Deferred", 1),
+			want: "unknown impact group Deferred",
+		},
+		{
+			name: "one fix written up twice",
+			body: strings.Replace(validChangelog,
+				"- **the widget no longer leaks.** one line\n",
+				"- **the widget no longer leaks.** one line\n\n- **Breaking: the widget no longer leaks.** and again\n", 1),
+			want: "two entries state the same fix (the widget no longer leaks.)",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,8 +188,9 @@ func TestGateAcceptsTwoDigitMinorAboveNine(t *testing.T) {
 }
 
 // The repository's own changelog must satisfy the gate it ships, or the rule
-// is decorative: this is the check that would have caught the duplicate
-// entries and misordered sections the file had.
+// is decorative: the [Unreleased] block carried eight impact headings and ten
+// entries written up twice until the gate checked for them, and a gate the
+// changelog itself fails is a gate nobody runs.
 func TestRepositoryChangelogPasses(t *testing.T) {
 	cmd := exec.Command("bash", "check-release-notes.sh", "v0.4.4")
 	if out, err := cmd.CombinedOutput(); err != nil {
