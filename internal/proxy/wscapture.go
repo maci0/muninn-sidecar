@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/reqid"
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
 
@@ -47,11 +48,15 @@ const wsMaxRespText = 16 << 10
 // accumulate the deltas and, on completion, pair the turn's text with the last
 // request and store it; the store handles extraction, redaction, and dedup.
 type wsExchange struct {
-	p        *Proxy
-	target   string
-	mu       sync.Mutex
-	lastReq  []byte          // most recent response.create payload (the request)
-	respText strings.Builder // assistant text accumulated from output_text deltas (s->c goroutine only)
+	p      *Proxy
+	target string
+	// requestID is the correlation ID of the upgrade request that opened the
+	// tunnel. The tap sees every message on that one connection, so this is the
+	// only link from a line it logs (or an exchange it stores) back to the turn.
+	requestID string
+	mu        sync.Mutex
+	lastReq   []byte          // most recent response.create payload (the request)
+	respText  strings.Builder // assistant text accumulated from output_text deltas (s->c goroutine only)
 }
 
 // onClient handles client→server messages: remember the latest request.
@@ -113,12 +118,13 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 		})
 		e.p.store.Store(&store.CapturedExchange{
 			Agent:      e.p.agentName,
+			RequestID:  e.requestID,
 			Path:       "/backend-api/codex/responses",
 			ReqBody:    req,
 			StatusCode: 200,
 			RespBody:   respBody,
 		})
-		slog.Debug("ws capture: stored exchange", "target", e.target, "resp_bytes", len(text))
+		slog.Debug("ws capture: stored exchange", reqid.Field, e.requestID, "target", e.target, "resp_bytes", len(text))
 	}
 }
 
@@ -182,7 +188,7 @@ func (c *chanReader) Read(p []byte) (int, error) {
 // stall or break the agent's connection. tap may be nil (forward only). target
 // labels the connection for the abandonment log so an operator can tell which
 // upstream stopped being captured.
-func spliceCopyTap(dst io.Writer, src io.Reader, tap chan []byte, target string) {
+func spliceCopyTap(dst io.Writer, src io.Reader, tap chan []byte, target, id string) {
 	buf := make([]byte, 32*1024)
 	tapping := tap != nil
 	for {
@@ -201,7 +207,7 @@ func spliceCopyTap(dst io.Writer, src io.Reader, tap chan []byte, target string)
 					// Surface the silent capture loss: without this an operator
 					// seeing empty WebSocket captures (e.g. codex ChatGPT mode)
 					// has no signal that the tap was dropped under load.
-					slog.Warn("ws capture: parser fell behind, abandoning capture for connection", "target", target)
+					slog.Warn("ws capture: parser fell behind, abandoning capture for connection", reqid.Field, id, "target", target)
 					close(tap)
 					tapping = false
 				}
@@ -246,25 +252,25 @@ func runWSParser(dir string, ch <-chan []byte, deflate bool, onMessage func(dir 
 // and, when a store is configured, taps both directions to decode text messages.
 // The backend's 101 handshake is read+forwarded first so framing starts cleanly
 // and permessage-deflate negotiation is detected.
-func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, backend net.Conn, target string) {
+func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, backend net.Conn, target, id string) {
 	backendBuf := bufio.NewReader(backend)
 	if err := backend.SetReadDeadline(time.Now().Add(p.upgradeHandshakeTimeout)); err != nil {
-		slog.Debug("ws capture: could not set backend handshake deadline", "target", target, "err", err)
+		slog.Debug("ws capture: could not set backend handshake deadline", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	hdr, err := readHeaderBlock(backendBuf)
 	if err != nil {
-		slog.Debug("ws capture: no backend upgrade response", "target", target, "err", err)
+		slog.Debug("ws capture: no backend upgrade response", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	if _, err := client.Write(hdr); err != nil {
-		slog.Debug("ws capture: could not forward upgrade response to client", "target", target, "err", err)
+		slog.Debug("ws capture: could not forward upgrade response to client", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	// The handshake is done; the splice below is a long-lived tunnel whose reads
 	// are bounded only by the peers, so the deadline must not leak into it.
 	if err := backend.SetReadDeadline(time.Time{}); err != nil {
-		slog.Debug("ws capture: could not clear backend handshake deadline", "target", target, "err", err)
+		slog.Debug("ws capture: could not clear backend handshake deadline", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	deflate := bytes.Contains(bytes.ToLower(hdr), []byte("permessage-deflate"))
@@ -273,10 +279,10 @@ func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, back
 	if p.store != nil {
 		c2s = make(chan []byte, 256)
 		s2c = make(chan []byte, 256)
-		ex := &wsExchange{p: p, target: target}
+		ex := &wsExchange{p: p, target: target, requestID: id}
 		go runWSParser("c->s", c2s, deflate, ex.onClient)
 		go runWSParser("s->c", s2c, deflate, ex.onServer)
-		slog.Debug("ws capture: tapping upgraded tunnel", "target", target, "deflate", deflate)
+		slog.Debug("ws capture: tapping upgraded tunnel", reqid.Field, id, "target", target, "deflate", deflate)
 	}
 
 	// Wait for both directions: returning on the first would close both conns
@@ -284,7 +290,7 @@ func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, back
 	// half-close lets the peer direction drain, so this cannot deadlock.
 	done := make(chan struct{}, 2)
 	splice := func(dst net.Conn, src io.Reader, tap chan []byte) {
-		spliceCopyTap(dst, src, tap, target)
+		spliceCopyTap(dst, src, tap, target, id)
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
 		}

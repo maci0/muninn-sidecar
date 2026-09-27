@@ -18,6 +18,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/redact"
+	"github.com/maci0/muninn-sidecar/internal/reqid"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -295,7 +296,8 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys) // map order is per-run random; keep the log replayable
-			slog.DebugContext(ctx, "inject: unknown request format, skipping", "keys", keys)
+			slog.DebugContext(ctx, "inject: unknown request format, skipping",
+				reqid.Field, reqid.From(ctx), "keys", keys)
 		}
 		return body, 0 // unknown format, pass through
 	}
@@ -312,7 +314,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 		query = apiformat.StripSystemReminders(apiformat.ExtractRecentContext(doc, format, 3))
 	}
 	if query == "" {
-		slog.Debug("inject: no user query found", "format", format)
+		slog.Debug("inject: no user query found", reqid.Field, reqid.From(ctx), "format", format)
 		return body, 0 // no message to search with
 	}
 
@@ -327,7 +329,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	// identifier as different intents.
 	query = redact.Secrets(query)
 
-	slog.Debug("inject: recalling", "format", format, "query_len", len(query))
+	slog.Debug("inject: recalling", reqid.Field, reqid.From(ctx), "format", format, "query_len", len(query))
 
 	// 2000 runes balances recall quality against MCP call overhead; longer
 	// queries provide diminishing returns for semantic search.
@@ -362,7 +364,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	case sameIntent && !windowEmpty:
 		// Continuation of the same intent with memories on hand: reuse the
 		// window instead of re-querying (the recall-trigger / "when to ask").
-		slog.Debug("inject: same intent, reusing session window (recall skipped)")
+		slog.Debug("inject: same intent, reusing session window (recall skipped)", reqid.Field, reqid.From(ctx))
 		if inj.stats != nil {
 			inj.stats.RecallsSkipped.Add(1)
 		}
@@ -370,7 +372,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	case negCached:
 		// Negative cache: this intent already recalled nothing useful and the
 		// window is empty — skip the redundant recall and inject nothing.
-		slog.Debug("inject: same intent previously empty (negative cache), recall skipped")
+		slog.Debug("inject: same intent previously empty (negative cache), recall skipped", reqid.Field, reqid.From(ctx))
 		if inj.stats != nil {
 			inj.stats.RecallsSkipped.Add(1)
 		}
@@ -385,13 +387,14 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 			inj.stats.Recalls.Add(1)
 		}
 		if err != nil {
-			slog.Warn("inject: recall failed, passing through", "vault", inj.vault, "err", err)
+			slog.Warn("inject: recall failed, passing through",
+				reqid.Field, reqid.From(ctx), "vault", inj.vault, "query_len", len(query), "err", err)
 			if inj.stats != nil {
 				inj.stats.InjectionErrors.Add(1)
 			}
 			return body, 0 // graceful fallback
 		}
-		slog.Debug("inject: recall returned", "count", len(memories))
+		slog.Debug("inject: recall returned", reqid.Field, reqid.From(ctx), "count", len(memories))
 
 		inj.observeCalibration(memories) // self-tune the gate to this vault's scores
 		// Read the gate after the calibration, not before the recall: the
@@ -440,7 +443,8 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 		// The gate passed more memories than the budget fits, so the lowest-scored
 		// were silently dropped. Surface it: a large-memory vault may need a higher
 		// --inject-budget to avoid losing answer-bearing context.
-		slog.Debug("inject: budget truncated gated memories", "dropped", droppedByBudget, "kept", len(merged)-droppedByBudget, "budget", inj.budget)
+		slog.Debug("inject: budget truncated gated memories",
+			reqid.Field, reqid.From(ctx), "dropped", droppedByBudget, "kept", len(merged)-droppedByBudget, "budget", inj.budget)
 		if inj.stats != nil {
 			inj.stats.BudgetTruncated.Add(int64(droppedByBudget))
 		}
@@ -460,7 +464,8 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	// Inject into the document.
 	enriched, err := InjectContext(doc, format, block)
 	if err != nil {
-		slog.Warn("inject context failed after format validation", "vault", inj.vault, "format", format, "err", err)
+		slog.Warn("inject context failed after format validation",
+			reqid.Field, reqid.From(ctx), "vault", inj.vault, "format", format, "err", err)
 		if inj.stats != nil {
 			inj.stats.InjectionErrors.Add(1)
 		}
@@ -534,7 +539,7 @@ func (inj *Injector) groundMemories(ctx context.Context, query string, mems []me
 		inj.mu.Unlock()
 	}
 	dropped := len(droppedIDs)
-	slog.Debug("inject: grounding rerank", "judged", n, "dropped", dropped, "kept", len(kept), "judge", inj.grounder.Label())
+	slog.Debug("inject: grounding rerank", reqid.Field, reqid.From(ctx), "judged", n, "dropped", dropped, "kept", len(kept), "judge", inj.grounder.Label())
 	if inj.stats != nil {
 		inj.stats.GroundingRuns.Add(1)
 		if dropped > 0 {

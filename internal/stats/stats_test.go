@@ -432,3 +432,32 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestSummaryReportsRequestRate(t *testing.T) {
+	// Captures alone cannot distinguish a working proxy from one the agent has
+	// stopped calling: both show a session that saved nothing and errored
+	// nothing. The request count is the other half of the rate.
+	s := &Stats{}
+	s.Requests.Store(12)
+	s.Captured.Store(3)
+	s.Flushed.Store(3)
+
+	got := s.Summary()
+	if !strings.Contains(got, "12 requests") {
+		t.Errorf("summary does not report the request count: %q", got)
+	}
+	if !strings.Contains(got, "3 saved") {
+		t.Errorf("summary lost the saved count: %q", got)
+	}
+}
+
+func TestSummaryReportsIdleSession(t *testing.T) {
+	// Requests but no captures still has to print: that is the session where
+	// capture is broken, and silence would hide it.
+	s := &Stats{}
+	s.Requests.Store(4)
+
+	if got := s.Summary(); !strings.Contains(got, "4 requests") {
+		t.Errorf("idle session produced no summary line: %q", got)
+	}
+}

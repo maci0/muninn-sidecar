@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/maci0/muninn-sidecar/internal/reqid"
 )
 
 // tunnelDialTimeout bounds the upstream dial for both the splice-upgrade and
@@ -124,6 +126,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// One CONNECT can carry many requests over a keep-alive tunnel, and these
+		// are new requests built by the tunnel's own http.Server, so they arrive
+		// with the outer tunnel's context and nothing else. Mint per request, the
+		// same way the plain path does in ServeHTTP, so a log line from inside a
+		// tunnel can be tied to its turn like any other.
+		req = req.WithContext(withRequestID(req.Context(), nextRequestID()))
+
+		if p.stats != nil {
+			p.stats.Requests.Add(1)
+		}
+
 		// Protocol upgrades (e.g. codex ChatGPT-mode streams responses over a
 		// WebSocket) can't be routed through the capturing reverse-proxy — it
 		// errors on the 101. Splice those raw to the backend so the agent works;
@@ -189,7 +202,7 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	}
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
-		slog.Debug("mitm: upgrade hijack failed", "target", target, "err", err)
+		slog.Debug("mitm: upgrade hijack failed", reqid.Field, requestID(req.Context()), "target", target, "err", err)
 		return
 	}
 	defer clientConn.Close()
@@ -200,7 +213,7 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	// its hijacked connection indefinitely (mirrors blindTunnel's DialTimeout).
 	backend, err := tls.DialWithDialer(&net.Dialer{Timeout: tunnelDialTimeout}, "tcp", target, cfg)
 	if err != nil {
-		slog.Debug("mitm: upgrade backend dial failed", "target", target, "err", err)
+		slog.Debug("mitm: upgrade backend dial failed", reqid.Field, requestID(req.Context()), "target", target, "err", err)
 		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		return
 	}
@@ -209,10 +222,10 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	// Forward the original upgrade request verbatim (origin-form URI + all
 	// headers, incl. Upgrade/Connection/Sec-WebSocket-*).
 	if err := req.Write(backend); err != nil {
-		slog.Debug("mitm: upgrade request write failed", "target", target, "err", err)
+		slog.Debug("mitm: upgrade request write failed", reqid.Field, requestID(req.Context()), "target", target, "err", err)
 		return
 	}
-	slog.Debug("mitm: splicing upgrade", "target", target, "proto", req.Header.Get("Upgrade"))
+	slog.Debug("mitm: splicing upgrade", reqid.Field, requestID(req.Context()), "target", target, "proto", req.Header.Get("Upgrade"))
 	if p.stats != nil {
 		p.stats.Upgraded.Add(1)
 	}
@@ -220,7 +233,7 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	// Forward both directions verbatim; tap a best-effort copy to decode the
 	// WebSocket-framed exchange (forwarding is never blocked by capture).
 	// clientBuf may hold bytes already read past the upgrade request.
-	p.spliceWithCapture(clientConn, clientBuf.Reader, backend, target)
+	p.spliceWithCapture(clientConn, clientBuf.Reader, backend, target, requestID(req.Context()))
 }
 
 // shouldInterceptHost reports whether a CONNECT target host should be

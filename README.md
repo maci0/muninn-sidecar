@@ -248,12 +248,14 @@ When the agent misbehaves, three things answer the usual questions: did the turn
 
 ```console
 $ curl -s http://127.0.0.1:41287/__msc/health
-{"status":"ok","agent":"claude","upstream":"https://api.anthropic.com","uptime_s":214,"stats":{"captured":9,"saved":9,"dropped":0,"save_errors":0,"upstream_errors":1,"proxy_errors":0,"injections":6,"injection_errors":0,"recalls":7,"latency_samples":9,"latency_mean_ms":4310,"latency_max_ms":18720}}
+{"status":"ok","degraded":false,"agent":"claude","upstream":"https://api.anthropic.com","uptime_s":214,"store_queue":{"depth":0,"capacity":256,"saturated":false},"stats":{"requests":11,"captured":9,"saved":9,"dropped":0,"save_errors":0,"upstream_errors":1,"proxy_errors":0,"injections":6,"injection_errors":0,"recalls":7,"latency_samples":2,"latency_mean_ms":11515,"latency_max_ms":18720}}
 ```
 
-It is a liveness endpoint: it does not probe MuninnDB, so a MuninnDB outage shows up as climbing `save_errors` rather than as a failing probe. Reachability is checked once at startup, and `msc` refuses to launch without `--force`.
+`status` answers liveness and `degraded` answers health, separately, because a sidecar that is up but no longer saving memories should not be restarted: it keeps proxying, and killing it would take the agent's API path down with it. When `degraded` is true, `degraded_reasons` names what is failing (proxy transport errors, delivery errors to MuninnDB, dropped captures, a full store queue) and `store_queue` gives the depth that causes drops. An upstream 4xx/5xx is the provider's answer, forwarded to the agent unchanged, and does not count as degraded. The endpoint does not probe MuninnDB, so an outage shows up as climbing `save_errors` rather than as a failing probe; reachability is checked once at startup, and `msc` refuses to launch without `--force`.
 
-**The logs.** Text on stderr by default, JSON with `--log-json`. The default level is WARN, so a healthy session is quiet; `--debug` adds per-request detail. Every request gets a `request_id` (`req-1`, `req-2`, …) carried in the request context, never in a header, and every log line on the request path carries it, so the lines belonging to one turn can be picked out when a session interleaves several:
+`requests` counts everything the agent sent, so `requests / uptime_s` is the request rate; `captured` counts only the exchanges that reached the store, which is what makes a session that is answering but no longer capturing visible.
+
+**The logs.** Text on stderr by default, JSON with `--log-json`. The default level is WARN, so a healthy session is quiet; `--debug` adds per-request detail. Every request gets a `request_id` (`req-1`, `req-2`, …) carried in the request context, never in a header, and every log line on the request path carries it, including the store's background worker, so the lines belonging to one turn can be picked out when a session interleaves several:
 
 ```console
 $ msc --debug claude

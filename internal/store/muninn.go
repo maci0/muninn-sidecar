@@ -18,6 +18,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/clock"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/redact"
+	"github.com/maci0/muninn-sidecar/internal/reqid"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -40,6 +41,9 @@ type formattedMemory struct {
 	concept string
 	content string
 	tags    []string
+	// requestID is the correlation ID of the turn this memory came from, kept
+	// so a failed flush can name the turns whose memories were not written.
+	requestID string
 }
 
 // MuninnStore delivers captured API exchanges to MuninnDB via MCP JSON-RPC.
@@ -95,8 +99,13 @@ type Preparer func(*CapturedExchange)
 // token-count fields are derived from them and filled in by the Preparer
 // (nil Preparer leaves them at zero).
 type CapturedExchange struct {
-	Agent      string          `json:"agent"` // which coding agent (claude, codex, etc.)
-	Path       string          `json:"path"`  // request path (e.g. /v1/messages)
+	Agent string `json:"agent"` // which coding agent (claude, codex, etc.)
+	// RequestID is the correlation ID minted at ingress (see internal/reqid).
+	// The worker logs about exchanges long after the request that produced them
+	// returned, interleaved with other turns' exchanges, so without this a
+	// store warning cannot be traced back to the turn that caused it.
+	RequestID  string          `json:"-"`
+	Path       string          `json:"path"` // request path (e.g. /v1/messages)
 	ReqBody    json.RawMessage `json:"req_body,omitempty"`
 	StatusCode int             `json:"status_code"`
 	RespBody   json.RawMessage `json:"resp_body,omitempty"`
@@ -198,7 +207,8 @@ func (s *MuninnStore) Store(ex *CapturedExchange) {
 	// in the narrow window between Drain() and full shutdown.
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Warn("muninn store: dropped exchange after drain", "path", ex.Path)
+			slog.Warn("muninn store: dropped exchange after drain",
+				reqid.Field, ex.RequestID, "path", ex.Path)
 			if s.stats != nil {
 				s.stats.Dropped.Add(1)
 			}
@@ -213,7 +223,7 @@ func (s *MuninnStore) Store(ex *CapturedExchange) {
 		}
 		if n := s.dropped.Add(1); n == 1 || n%dropLogEvery == 0 {
 			slog.Warn("muninn store queue full, dropping exchanges",
-				"path", ex.Path, "dropped_total", n)
+				reqid.Field, ex.RequestID, "path", ex.Path, "dropped_total", n)
 		}
 	}
 }
@@ -232,6 +242,15 @@ func (s *MuninnStore) Drain() {
 	})
 	<-s.done
 	s.flushCancel() // release the context once the worker has exited
+}
+
+// QueueDepth reports how many captured exchanges are waiting for the worker
+// and the queue's capacity. The queue is the back-pressure the store applies
+// when MuninnDB is slow or unreachable: at capacity, Store drops the incoming
+// exchange, so a depth pinned at the cap is the leading indicator that
+// memories are being lost.
+func (s *MuninnStore) QueueDepth() (depth, capacity int) {
+	return len(s.queue), cap(s.queue)
 }
 
 // HealthCheck pings the MuninnDB MCP health endpoint for this store's
@@ -356,7 +375,7 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 
 	// Skip system-generated noise (context continuations, summary tasks).
 	if isNoiseContent(userMsg) {
-		slog.Debug("skipping noise content", "path", ex.Path)
+		slog.Debug("skipping noise content", reqid.Field, ex.RequestID, "path", ex.Path)
 		if s.stats != nil {
 			s.stats.Skipped.Add(1)
 		}
@@ -366,7 +385,7 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	// Skip empty captures: if both user and assistant are empty after
 	// stripping, this exchange has no meaningful conversation content.
 	if userMsg == "" && assistantMsg == "" {
-		slog.Debug("skipping empty exchange", "path", ex.Path)
+		slog.Debug("skipping empty exchange", reqid.Field, ex.RequestID, "path", ex.Path)
 		if s.stats != nil {
 			s.stats.Skipped.Add(1)
 		}
@@ -410,7 +429,7 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 				// Log the dedup hash, not the concept text: the concept is derived
 				// from captured conversation content and would leak into logs
 				// (bypassing the redaction applied above) if emitted verbatim.
-				slog.Debug("dedup: skipping duplicate concept", "hash", hash)
+				slog.Debug("dedup: skipping duplicate concept", reqid.Field, ex.RequestID, "hash", hash)
 				if s.stats != nil {
 					s.stats.Deduped.Add(1)
 				}
@@ -424,9 +443,10 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	ring[*ringIdx][hash] = struct{}{}
 
 	return &formattedMemory{
-		concept: concept,
-		content: content,
-		tags:    buildTags(ex),
+		concept:   concept,
+		content:   content,
+		tags:      buildTags(ex),
+		requestID: ex.RequestID,
 	}
 }
 
@@ -481,8 +501,11 @@ func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 		// Deliberately omit concept/content here: this is a default-visible
 		// Error log and the concept is captured conversation text. Redaction
 		// scrubs secrets/emails but not every form of personal data, so keep
-		// it out of logs entirely. vault + batch_size are enough to triage.
-		slog.Error("failed to flush exchanges to MuninnDB", "vault", s.vault, "batch_size", n, "err", err)
+		// it out of logs entirely. vault, batch_size, and the turns' correlation
+		// IDs are enough to triage and to find the request logs for the lost
+		// memories.
+		slog.Error("failed to flush exchanges to MuninnDB",
+			"vault", s.vault, "batch_size", n, reqid.Field, batchRequestIDs(batch), "err", err)
 		if s.stats != nil {
 			s.stats.FlushErrors.Add(n)
 		}
@@ -492,6 +515,31 @@ func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 			s.stats.Flushed.Add(n)
 		}
 	}
+}
+
+// maxFlushLogIDs caps the correlation IDs a failed-flush line names. A batch
+// holds up to maxBatchSize exchanges; naming all of them would bury the error
+// under a list, and the drop count plus the session's captured/latency numbers
+// say how much was lost without it.
+const maxFlushLogIDs = 3
+
+// batchRequestIDs renders the correlation IDs of the turns in a failed batch,
+// comma-separated and capped at maxFlushLogIDs. Returns "unknown" for a batch
+// of exchanges that carry no ID, so the field is never silently empty.
+func batchRequestIDs(batch []formattedMemory) string {
+	ids := make([]string, 0, min(len(batch), maxFlushLogIDs))
+	for _, fm := range batch {
+		if len(ids) == maxFlushLogIDs {
+			ids = append(ids, "...")
+			break
+		}
+		id := fm.requestID
+		if id == "" {
+			id = "unknown"
+		}
+		ids = append(ids, id)
+	}
+	return strings.Join(ids, ",")
 }
 
 // maxAttempts is the number of attempts for transient MuninnDB failures.

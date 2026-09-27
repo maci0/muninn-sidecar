@@ -24,6 +24,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/mitm"
+	"github.com/maci0/muninn-sidecar/internal/reqid"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
@@ -62,10 +63,12 @@ const maxNonStreamBodySize = 50 << 20 // 50 MiB
 // reserved prefix no agent API uses, and it is served before the capture
 // pipeline so it is never forwarded upstream or stored as a memory.
 //
-// Liveness only: it does not probe MuninnDB, so a MuninnDB outage degrades the
-// counters reported here rather than failing the endpoint. Reachability is
-// checked once at startup (msc refuses to launch without --force) and its
-// failures show up as save errors in the snapshot.
+// The status code is liveness only: the endpoint does not probe MuninnDB, so a
+// MuninnDB outage cannot fail it, and a sidecar that is up but not saving
+// memories is better diagnosed than restarted. What it cannot answer in the
+// status code it answers in the body — "degraded" with the reasons (see
+// serveStatus). Reachability is checked once at startup (msc refuses to launch
+// without --force) and later failures show up as save errors in the snapshot.
 const StatusPath = "/__msc/health"
 
 // Proxy is a transparent reverse proxy that sits between a coding agent and
@@ -309,6 +312,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Everything the agent sends past this point counts as a request, including
+	// the CONNECT that opens a tunnel: it is one more thing the agent asked for,
+	// and the requests decrypted inside the tunnel are counted there instead.
+	if p.stats != nil {
+		p.stats.Requests.Add(1)
+	}
+
 	// MITM mode: an agent that routes via HTTPS_PROXY opens a tunnel with CONNECT.
 	// Terminate TLS and intercept the decrypted traffic (the same pipeline).
 	if r.Method == http.MethodConnect && p.ca != nil {
@@ -328,23 +338,39 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // counters, so an operator can tell a working sidecar from a silently failing
 // one without reading logs. Non-GET methods fall through to the proxy, so a
 // captured agent API path is never shadowed.
+//
+// The response separates liveness ("status" is "ok" whenever the handler runs,
+// so the process can be restarted correctly) from health ("degraded", with the
+// reasons). A sidecar that is up but not saving memories still answers 200 —
+// restarting it would not help, and a load balancer that killed it would take
+// the agent's API path down with it — so the failure is reported in the body
+// instead of the status code.
 func (p *Proxy) serveStatus(w http.ResponseWriter) {
 	var snap stats.Snapshot
 	if p.stats != nil {
 		snap = p.stats.Snapshot()
 	}
+	queue := p.storeQueue()
+
 	body := struct {
 		Status   string         `json:"status"`
+		Degraded bool           `json:"degraded"`
+		Reasons  []string       `json:"degraded_reasons,omitempty"`
 		Agent    string         `json:"agent"`
 		Upstream string         `json:"upstream"`
 		UptimeS  int64          `json:"uptime_s"`
+		StoreQ   storeQueue     `json:"store_queue"`
 		Stats    stats.Snapshot `json:"stats"`
 	}{
 		Status:   "ok",
 		Agent:    p.agentName,
 		Upstream: redactURL(p.upstream),
+		StoreQ:   queue,
 		Stats:    snap,
 	}
+	body.Reasons = degradedReasons(snap, queue)
+	body.Degraded = len(body.Reasons) > 0
+
 	if !p.started.IsZero() {
 		body.UptimeS = int64(p.since(p.started).Seconds())
 	}
@@ -356,6 +382,52 @@ func (p *Proxy) serveStatus(w http.ResponseWriter) {
 		// or operator gets, and a status endpoint is not worth a log line per hit.
 		slog.Debug("status encoding failed", "err", err)
 	}
+}
+
+// storeQueue is the live capture-queue depth reported by the status endpoint.
+type storeQueue struct {
+	Depth     int  `json:"depth"`     // exchanges waiting for the store worker
+	Capacity  int  `json:"capacity"`  // the queue's fixed capacity
+	Saturated bool `json:"saturated"` // depth has reached capacity: new captures are dropped
+}
+
+// queueReporter is the optional Storer capability that reports its queue depth.
+// Asserted rather than required of Storer so a Storer that keeps no queue (a
+// test double, or a store with no worker) still serves the status endpoint.
+type queueReporter interface{ QueueDepth() (depth, capacity int) }
+
+// storeQueue reports the storer queue's depth, or zeros when the storer has no
+// queue to report.
+func (p *Proxy) storeQueue() storeQueue {
+	q, ok := p.store.(queueReporter)
+	if !ok {
+		return storeQueue{}
+	}
+	depth, capacity := q.QueueDepth()
+	return storeQueue{Depth: depth, Capacity: capacity, Saturated: capacity > 0 && depth >= capacity}
+}
+
+// degradedReasons names what is stopping the sidecar from doing its job. Only
+// failures on msc's own side of the pipeline count: an upstream 4xx/5xx is the
+// LLM provider's answer, forwarded to the agent unchanged, and a rate-limited
+// turn is not a degraded sidecar. Proxy errors (the agent got a 502) and save
+// errors (memories are being lost) are, as is a saturated queue, which drops
+// the next capture outright.
+func degradedReasons(snap stats.Snapshot, q storeQueue) []string {
+	var reasons []string
+	if snap.ProxyErrors > 0 {
+		reasons = append(reasons, "proxy transport errors: the agent is receiving 502 responses")
+	}
+	if snap.SaveErrors > 0 {
+		reasons = append(reasons, "delivery errors: captured exchanges are not reaching MuninnDB")
+	}
+	if snap.Dropped > 0 {
+		reasons = append(reasons, "dropped captures: the store queue overflowed")
+	}
+	if q.Saturated {
+		reasons = append(reasons, "store queue is full: new captures are being dropped")
+	}
+	return reasons
 }
 
 // instrument applies the capture/inject pipeline shared by the plain reverse-proxy
@@ -627,6 +699,7 @@ func buildExchange(clock Clock, ctx *captureCtx, statusCode int, respBody json.R
 	clock = clockOrSystem(clock)
 	return &store.CapturedExchange{
 		Agent:      ctx.agent,
+		RequestID:  ctx.id,
 		Path:       ctx.path,
 		ReqBody:    ctx.reqBody,
 		StatusCode: statusCode,
@@ -668,7 +741,8 @@ func (p *Proxy) prepareExchange(ex *store.CapturedExchange) {
 		// metadata; only flag genuinely malformed JSON. The validity check is
 		// only reached when there is no decoded document, so it never re-scans a
 		// body that was just parsed.
-		slog.Debug("unparseable response body for token extraction", "path", ex.Path)
+		slog.Debug("unparseable response body for token extraction",
+			reqid.Field, ex.RequestID, "path", ex.Path, "agent", ex.Agent, "status", ex.StatusCode)
 	}
 
 	// Extracted as the capture pipeline sees them; the store strips system

@@ -2374,6 +2374,40 @@ func TestRequestIDCorrelatesLogs(t *testing.T) {
 	}
 }
 
+func TestCaptureResponseCarriesRequestIDToStore(t *testing.T) {
+	// The store's worker runs long after the request returned, so the only way
+	// a warning it logs ("queue full", "failed to flush") can be traced back to
+	// the turn that caused it is the correlation ID minted at ingress.
+	rec := &recordStore{}
+	p := &Proxy{store: rec, stats: &stats.Stats{}}
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req = req.WithContext(withRequestID(req.Context(), "req-abc"))
+	req = req.WithContext(withCapture(req.Context(), &captureCtx{
+		id:    "req-abc",
+		start: time.Now(),
+		path:  req.URL.Path,
+		agent: "claude",
+	}))
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"hi"}]}`)),
+		Request:    req,
+	}
+
+	if err := p.captureResponse(resp); err != nil {
+		t.Fatalf("captureResponse: %v", err)
+	}
+	got := rec.all()
+	if len(got) != 1 {
+		t.Fatalf("stored %d exchanges, want 1", len(got))
+	}
+	if got[0].RequestID != "req-abc" {
+		t.Errorf("RequestID = %q, want the ingress correlation ID %q", got[0].RequestID, "req-abc")
+	}
+}
+
 func TestCaptureResponseRecordsLatency(t *testing.T) {
 	// Non-streaming: the full response is in hand when the sample is taken, so
 	// the session summary can report how slow the agent's turns got.
@@ -2470,15 +2504,22 @@ func TestStatusEndpointReportsSessionState(t *testing.T) {
 	}
 
 	var body struct {
-		Status string `json:"status"`
-		Agent  string `json:"agent"`
-		Stats  stats.Snapshot
+		Status   string     `json:"status"`
+		Degraded bool       `json:"degraded"`
+		Agent    string     `json:"agent"`
+		StoreQ   storeQueue `json:"store_queue"`
+		Stats    stats.Snapshot
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if body.Status != "ok" || body.Agent != "claude" {
 		t.Errorf("unexpected body: %+v", body)
+	}
+	// An upstream error is the provider's answer, forwarded to the agent
+	// unchanged. The sidecar itself is fine, so it must not read as degraded.
+	if body.Degraded {
+		t.Errorf("upstream error reported the sidecar as degraded: %+v", body)
 	}
 	if body.Stats.Saved != 3 || body.Stats.UpstreamError != 1 {
 		t.Errorf("counters not reported: %+v", body.Stats)
@@ -2488,5 +2529,117 @@ func TestStatusEndpointReportsSessionState(t *testing.T) {
 	}
 	if n := len(rec.all()); n != 0 {
 		t.Errorf("status request must not be captured, got %d exchanges", n)
+	}
+}
+
+// queueStore is a Storer that also reports a fixed queue depth, standing in for
+// the real store's back-pressure buffer.
+type queueStore struct {
+	recordStore
+	depth, capacity int
+}
+
+func (q *queueStore) QueueDepth() (int, int) { return q.depth, q.capacity }
+
+func TestStatusEndpointReportsDegradedSidecar(t *testing.T) {
+	// Losing memories is not a crash: msc keeps proxying, so the status code
+	// stays 200 (restarting would not help) and the body has to say so, naming
+	// the failures. Without this an operator sees "ok" while every capture since
+	// MuninnDB went down is being thrown away.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	st := &stats.Stats{}
+	st.FlushErrors.Store(4)
+	st.ProxyErrors.Store(2)
+	st.Dropped.Store(1)
+	store := &queueStore{depth: 256, capacity: 256}
+
+	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: upstream.URL, AgentName: "codex", Store: store, Stats: st})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	resp, err := http.Get("http://" + addr + StatusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (liveness, not health)", resp.StatusCode)
+	}
+
+	var body struct {
+		Status   string     `json:"status"`
+		Degraded bool       `json:"degraded"`
+		Reasons  []string   `json:"degraded_reasons"`
+		StoreQ   storeQueue `json:"store_queue"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Status != "ok" {
+		t.Errorf("status = %q, want the liveness answer %q", body.Status, "ok")
+	}
+	if !body.Degraded {
+		t.Fatal("degraded = false, want true with the failing stages named")
+	}
+	if len(body.Reasons) != 4 {
+		t.Errorf("degraded_reasons = %v, want one line per failing stage", body.Reasons)
+	}
+	if !body.StoreQ.Saturated || body.StoreQ.Depth != 256 || body.StoreQ.Capacity != 256 {
+		t.Errorf("store_queue = %+v, want a saturated 256/256 queue", body.StoreQ)
+	}
+}
+
+func TestRequestsCounterExcludesStatusEndpoint(t *testing.T) {
+	// The request count is the rate numerator an operator reads against uptime.
+	// Counting the operator's own status polls would make an idle session look
+	// busy, and the one probe that runs when nothing else does would be the
+	// only thing keeping the count moving.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer upstream.Close()
+
+	st := &stats.Stats{}
+	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: upstream.URL, AgentName: "claude", Store: &recordStore{}, Stats: st})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	post := func() {
+		resp, err := http.Post("http://"+addr+"/v1/messages", "application/json", strings.NewReader(`{"model":"m"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	post()
+	post()
+	if got := st.Requests.Load(); got != 2 {
+		t.Fatalf("Requests = %d after two posts, want 2", got)
+	}
+
+	resp, err := http.Get("http://" + addr + StatusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := st.Requests.Load(); got != 2 {
+		t.Errorf("Requests = %d after a status poll, want it unchanged at 2", got)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -1399,7 +1400,7 @@ func TestWritePayloadSingle(t *testing.T) {
 	}
 	// dedup_key is content-addressed: identical (vault, concept, content) must
 	// reproduce it, so a retry lands on the same memory.
-	if want := dedupKey(vault, c.Args["concept"].(string), c.Args["content"].(string)); c.Args["dedup_key"] != want {
+	if want := mcpclient.DedupKey(vault, c.Args["concept"].(string), c.Args["content"].(string)); c.Args["dedup_key"] != want {
 		t.Errorf("dedup_key = %v, want %q", c.Args["dedup_key"], want)
 	}
 	// A batch payload here would be silently misrouted by the server.
@@ -1465,7 +1466,7 @@ func TestWritePayloadBatch(t *testing.T) {
 			t.Errorf("memories[%d] has an empty dedup_key", i)
 			continue
 		}
-		if want := dedupKey(vault, m["concept"].(string), m["content"].(string)); dk != want {
+		if want := mcpclient.DedupKey(vault, m["concept"].(string), m["content"].(string)); dk != want {
 			t.Errorf("memories[%d].dedup_key = %q, want %q", i, dk, want)
 		}
 		if seen[dk] {
@@ -1479,5 +1480,61 @@ func TestWritePayloadBatch(t *testing.T) {
 		if _, ok := c.Args[key]; ok {
 			t.Errorf("batch envelope carries a top-level %q", key)
 		}
+	}
+}
+
+func TestStoreQueueFullWarningCarriesRequestID(t *testing.T) {
+	// The drop happens on the request path, interleaved with other turns, so the
+	// warning must name the turn whose memory was thrown away; without it the
+	// only lead is the total, which says how many, never which.
+	st := &stats.Stats{}
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	s := &MuninnStore{queue: make(chan *CapturedExchange), stats: st}
+	s.Store(&CapturedExchange{RequestID: "req-7", Path: "/v1/messages"})
+
+	if !strings.Contains(logs.String(), "request_id=req-7") {
+		t.Errorf("queue-full warning does not name the dropped turn:\n%s", logs.String())
+	}
+}
+
+func TestQueueDepthReportsBackpressure(t *testing.T) {
+	// The queue is where captures pile up when MuninnDB is slow; at capacity
+	// the next capture is dropped, so the status endpoint needs to see it.
+	s := New("", "", "", nil)
+	s.queue <- &CapturedExchange{Path: "/v1/messages"}
+
+	depth, capacity := s.QueueDepth()
+	if depth != 1 || capacity != 256 {
+		t.Errorf("QueueDepth() = (%d, %d), want (1, 256)", depth, capacity)
+	}
+	s.Drain()
+}
+
+func TestBatchRequestIDsNamesTheLostTurns(t *testing.T) {
+	// A failed flush line is the only record that a turn's memories were not
+	// written. Name the turns, cap the list so the error stays readable, and
+	// say "unknown" rather than emit an empty field when nothing carries an ID.
+	tests := []struct {
+		name  string
+		batch []formattedMemory
+		want  string
+	}{
+		{"single", []formattedMemory{{requestID: "req-1"}}, "req-1"},
+		{"batch", []formattedMemory{{requestID: "req-1"}, {requestID: "req-2"}}, "req-1,req-2"},
+		{"capped", []formattedMemory{
+			{requestID: "req-1"}, {requestID: "req-2"}, {requestID: "req-3"}, {requestID: "req-4"},
+		}, "req-1,req-2,req-3,..."},
+		{"missing", []formattedMemory{{}, {requestID: "req-2"}}, "unknown,req-2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := batchRequestIDs(tc.batch); got != tc.want {
+				t.Errorf("batchRequestIDs() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

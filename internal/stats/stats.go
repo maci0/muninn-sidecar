@@ -12,6 +12,12 @@ import (
 
 // Stats tracks session-level counters for proxy and store activity.
 type Stats struct {
+	// Requests counts every request the proxy accepted, captured or not. It is
+	// the rate numerator for the whole session: Captured only counts exchanges
+	// that reached the store, so a proxy that is answering but no longer
+	// capturing (paths changed, store disabled) and a proxy the agent has
+	// stopped calling look identical without it.
+	Requests    atomic.Int64 // requests accepted by the proxy (status endpoint excluded)
 	Captured    atomic.Int64 // total exchanges entering Store() (includes those later dropped, deduped, skipped, or failed to flush)
 	Dropped     atomic.Int64 // exchanges dropped (queue full)
 	Deduped     atomic.Int64 // exchanges skipped (duplicate concept)
@@ -87,6 +93,7 @@ func (s *Stats) Latency() (n, meanMs, maxMs int64) {
 // endpoint and anything else that needs the numbers outside Summary's
 // human-readable rendering.
 type Snapshot struct {
+	Requests      int64 `json:"requests"`
 	Captured      int64 `json:"captured"`
 	Saved         int64 `json:"saved"`
 	Dropped       int64 `json:"dropped"`
@@ -105,6 +112,7 @@ type Snapshot struct {
 func (s *Stats) Snapshot() Snapshot {
 	n, mean, max := s.Latency()
 	return Snapshot{
+		Requests:      s.Requests.Load(),
 		Captured:      s.Captured.Load(),
 		Saved:         s.Flushed.Load(),
 		Dropped:       s.Dropped.Load(),
@@ -193,6 +201,7 @@ type ModelCount struct {
 // Summary returns a human-readable session summary. Returns empty string
 // if no exchanges were captured or dropped and no injections happened.
 func (s *Stats) Summary() string {
+	requests := s.Requests.Load()
 	captured := s.Captured.Load()
 	dropped := s.Dropped.Load()
 	deduped := s.Deduped.Load()
@@ -207,15 +216,18 @@ func (s *Stats) Summary() string {
 	upstreamErrors := s.UpstreamErrors.Load()
 	proxyErrors := s.ProxyErrors.Load()
 
-	if captured == 0 && dropped == 0 && injections == 0 && upgraded == 0 &&
+	if requests == 0 && captured == 0 && dropped == 0 && injections == 0 && upgraded == 0 &&
 		upstreamErrors == 0 && proxyErrors == 0 {
 		return ""
 	}
 
 	var sb strings.Builder
 
-	// Line 1: exchange counts.
-	sb.WriteString(fmt.Sprintf("session: %d saved", flushed))
+	// Line 1: request and exchange counts. Requests come first because they are
+	// the denominator the rest of the line is read against: "12 requests, 3
+	// saved" says whether captures are keeping up, and a session whose agent
+	// stopped calling shows a falling request count even when nothing errored.
+	sb.WriteString(fmt.Sprintf("session: %d requests, %d saved", requests, flushed))
 	if deduped > 0 {
 		sb.WriteString(fmt.Sprintf(", %d deduped", deduped))
 	}

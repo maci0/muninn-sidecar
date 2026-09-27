@@ -36,7 +36,7 @@ func (r *recordStore) all() []*store.CapturedExchange {
 
 func TestWSExchangeCapture(t *testing.T) {
 	rec := &recordStore{}
-	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}, target: "chatgpt.com:443"}
+	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}, target: "chatgpt.com:443", requestID: "req-9"}
 
 	// Request (Responses-format) then streamed answer deltas, then completion.
 	ex.onClient("c->s", []byte(`{"type":"response.create","model":"gpt-5","input":[{"type":"message","role":"user","content":"what is 2+2"}]}`))
@@ -56,6 +56,12 @@ func TestWSExchangeCapture(t *testing.T) {
 	}
 	if got[0].Agent != "codex" || got[0].StatusCode != 200 {
 		t.Errorf("unexpected exchange metadata: %+v", got[0])
+	}
+	// A WebSocket turn is stored long after its upgrade request returned, with
+	// every message on the connection funneled through one tap, so the upgrade's
+	// correlation ID is the only thing tying this exchange to a log line.
+	if got[0].RequestID != "req-9" {
+		t.Errorf("RequestID = %q, want the upgrade request's ID %q", got[0].RequestID, "req-9")
 	}
 }
 
@@ -159,7 +165,7 @@ func TestSpliceCopyTap(t *testing.T) {
 	t.Run("forwards and taps", func(t *testing.T) {
 		var dst bytes.Buffer
 		tap := make(chan []byte, 8)
-		spliceCopyTap(&dst, strings.NewReader("hello world"), tap, "test")
+		spliceCopyTap(&dst, strings.NewReader("hello world"), tap, "test", "req-test")
 		if dst.String() != "hello world" {
 			t.Errorf("forwarded %q, want %q", dst.String(), "hello world")
 		}
@@ -174,7 +180,7 @@ func TestSpliceCopyTap(t *testing.T) {
 
 	t.Run("nil tap forwards only", func(t *testing.T) {
 		var dst bytes.Buffer
-		spliceCopyTap(&dst, strings.NewReader("data"), nil, "test")
+		spliceCopyTap(&dst, strings.NewReader("data"), nil, "test", "req-test")
 		if dst.String() != "data" {
 			t.Errorf("forwarded %q, want %q", dst.String(), "data")
 		}
@@ -183,7 +189,7 @@ func TestSpliceCopyTap(t *testing.T) {
 	t.Run("backpressure abandons tap, keeps forwarding", func(t *testing.T) {
 		var dst bytes.Buffer
 		tap := make(chan []byte) // unbuffered, never drained → first send hits default
-		spliceCopyTap(&dst, strings.NewReader("keep forwarding"), tap, "test")
+		spliceCopyTap(&dst, strings.NewReader("keep forwarding"), tap, "test", "req-test")
 		if dst.String() != "keep forwarding" {
 			t.Errorf("forwarding must continue after tap abandon, got %q", dst.String())
 		}
@@ -194,7 +200,7 @@ func TestSpliceCopyTap(t *testing.T) {
 
 	t.Run("write error closes tap and returns", func(t *testing.T) {
 		tap := make(chan []byte, 1)
-		spliceCopyTap(errWriter{}, strings.NewReader("x"), tap, "test")
+		spliceCopyTap(errWriter{}, strings.NewReader("x"), tap, "test", "req-test")
 		if _, ok := <-tap; ok {
 			t.Error("tap should be closed after write error")
 		}
@@ -461,7 +467,7 @@ func TestSpliceWithCaptureBackendHandshakeTimeout(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		p.spliceWithCapture(client, bufio.NewReader(client), backend, "silent:443")
+		p.spliceWithCapture(client, bufio.NewReader(client), backend, "silent:443", "req-test")
 	}()
 
 	select {

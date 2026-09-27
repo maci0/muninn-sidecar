@@ -7,6 +7,31 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Changed
 
+- **A failing sidecar says so, and a log line names its turn.** Three
+  observability gaps on the request path:
+  - The `request_id` stopped at the end of the HTTP request. The store's
+    background worker, which sees every exchange in a session through one
+    goroutine long after the turn returned, logged "queue full" and "failed to
+    flush" with no way back to the turn that lost its memory, and the injector's
+    recall failures never carried one at all. The ID is now minted in
+    `internal/reqid`, travels on the `CapturedExchange`, and appears on the
+    store, inject, MITM, and WebSocket-tap lines. A failed flush names the turns
+    whose memories were not written.
+  - Requests arriving inside a MITM tunnel are built by the tunnel's own
+    `http.Server` and so arrived with no ID; they mint one per request now, and
+    the codex WebSocket tap keeps the upgrade's ID for the exchanges it decodes
+    off that one connection.
+  - `GET /__msc/health` answered `"status":"ok"` while captures were being
+    dropped and memories were never written. The status code stays liveness
+    (restarting does not help, and the sidecar is still the agent's only route
+    to the API), and the body now carries `degraded` with `degraded_reasons`
+    naming the failing stage, plus the store queue's live depth and
+    saturation, the signal that predicts the next drop. An upstream 4xx/5xx
+    does not count: the provider refused, the sidecar worked.
+  - `requests` counts everything the agent sent, so `requests / uptime_s` is the
+    request rate; `captured` counts only what reached the store, so a session
+    that is answering but no longer capturing is now distinguishable from one the
+    agent has stopped calling.
 - **Captured bodies are decoded once.** A captured request carries the whole
   conversation and can reach tens of MiB, and the store worker decoded it four
   times over: once to filter injected context and tool traffic, twice more to
