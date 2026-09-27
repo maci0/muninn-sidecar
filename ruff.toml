@@ -1,0 +1,38 @@
+# Linter + formatter config for the one Python helper in scripts/.
+# The Go tree is covered by gofmt/go vet/staticcheck (see ci.yml); this file
+# keeps the same posture for the Python side: correctness rules on, style
+# opinions off, and every ignore below carrying the reason it exists.
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = [
+    "F",    # pyflakes: unused/undefined names, shadowed imports
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "I",    # import order
+    "UP",   # pyupgrade: modern syntax for the pinned target
+    "B",    # flake8-bugbear: mutable defaults, shadowed loop vars, ...
+    "SIM",  # flake8-simplify
+    "C4",   # comprehensions
+    "RET",  # return flow
+    "PIE",  # misc lints
+    "PT",   # pytest style
+    "PL",   # pylint
+    "RUF",  # ruff-specific, incl. RUF100 (dead noqa)
+    "S",    # bandit: assert/eval/weak-hash/subprocess misuse
+    "BLE",  # blind except
+]
+ignore = [
+    # Dataset converters carry their thresholds inline (page counts, minimum
+    # answer length): they are read next to the filter that uses them, and
+    # naming all of them would bury the conversion logic.
+    "PLR2004",
+]
+
+[lint.per-file-ignores]
+# Bulk dataset dumps (100s of MB) are written to /tmp, never into the repo.
+"scripts/fetch_hf_datasets.py" = ["S108"]
+
+[format]
+quote-style = "double"

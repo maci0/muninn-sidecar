@@ -1,0 +1,11 @@
+extends: default
+
+rules:
+  # GitHub Actions workflows conventionally omit the `---` document start.
+  document-start: disable
+  # Workflow YAML leans on long `run:` bodies and comment lines.
+  line-length:
+    max: 120
+  # `on:` is the correct key for a workflow trigger, not a truthy typo.
+  truthy:
+    allowed-values: ["true", "false", "on"]

@@ -47,7 +47,7 @@ make test-fast PKG=./internal/inject       # same, without -race
 One command runs everything the CI `test` job runs, in the same order:
 
 ```sh
-make check   # tidy-check, fmt-check, go vet, staticcheck, go test -race, build
+make check   # tidy-check, fmt-check, lint (go vet + staticcheck + shellcheck + ruff + yamllint), go test -race, build
 ```
 
 The other two CI jobs are separate because they are slow or need the network:
@@ -70,7 +70,11 @@ supply-chain property. `make vuln` (and CI) then mainly guards stdlib CVEs.
   round-trip, UTF-8 validity, bounds).
 - **`-race` clean.** Shared state uses `sync`/`sync/atomic`; the store worker is
   single-goroutine by design.
-- **gofmt + `go vet` + staticcheck clean.** No new warnings.
+- **gofmt + `go vet` + staticcheck clean.** No new warnings. The non-Go files
+  are held to the same bar: `ruff` (`ruff.toml`) for `scripts/*.py`, `shellcheck`
+  for `test-live.sh`, `yamllint` (`.yamllint.yml`) for the workflow YAML. CI runs
+  all of them; `make lint` runs whichever are installed locally and names the
+  ones it skipped.
 - **Keep behavior verified, not assumed.** When a change depends on an external
   contract (a MuninnDB tool's response, an agent's env var), verify it against a
   live instance and add a regression guard.

@@ -19,21 +19,33 @@ span. Datasets span distinct regimes — extractive QA, science QA, fact
 verification, scientific retrieval, instruction-following — so retrieval
 difficulty and the per-vault gate vary (see docs/model-eval.md, docs/experiments.md).
 """
+
 import json
 import sys
 import urllib.request
+from collections.abc import Callable
+from typing import Any
+
+# One datasets-server row / one SQuAD article. The field set is per-dataset and
+# per-converter, so the payload is genuinely dynamic JSON.
+Row = dict[str, Any]
+Article = dict[str, Any]
+
+DEFAULT_PAGES = 5
 
 
-def _fetch(ds, cfg, split, pages):
+def _fetch(ds: str, cfg: str, split: str, pages: int) -> list[Row]:
     """Page through the HF datasets-server rows API (100 rows/call)."""
-    rows = []
+    rows: list[Row] = []
     for off in range(0, pages * 100, 100):
-        url = (f"https://datasets-server.huggingface.co/rows?dataset={ds}"
-               f"&config={cfg}&split={split}&offset={off}&length=100")
+        url = (
+            f"https://datasets-server.huggingface.co/rows?dataset={ds}"
+            f"&config={cfg}&split={split}&offset={off}&length=100"
+        )
         try:
             with urllib.request.urlopen(url, timeout=30) as r:
                 batch = json.load(r).get("rows", [])
-        except Exception as e:  # noqa: BLE001 — best-effort fetch
+        except Exception as e:  # noqa: BLE001  # best-effort fetch, a short page is still usable
             sys.stderr.write(f"warn: {ds} offset {off}: {str(e)[:80]}\n")
             break
         if not batch:
@@ -42,14 +54,21 @@ def _fetch(ds, cfg, split, pages):
     return rows
 
 
-def _article(i, prefix, context, question, answer):
-    return {"title": f"{prefix}-{i}",
-            "paragraphs": [{"context": context,
-                            "qas": [{"question": question, "is_impossible": False,
-                                     "answers": [{"text": answer}]}]}]}
+def _article(i: int, prefix: str, context: str, question: str, answer: str) -> Article:
+    return {
+        "title": f"{prefix}-{i}",
+        "paragraphs": [
+            {
+                "context": context,
+                "qas": [
+                    {"question": question, "is_impossible": False, "answers": [{"text": answer}]}
+                ],
+            }
+        ],
+    }
 
 
-def conv_sciq(pages):
+def conv_sciq(pages: int) -> list[Article]:
     """allenai/sciq — science exam questions with a `support` passage."""
     out = []
     for i, r in enumerate(_fetch("allenai/sciq", "default", "validation", pages)):
@@ -60,7 +79,7 @@ def conv_sciq(pages):
     return out
 
 
-def conv_fever(pages):
+def conv_fever(pages: int) -> list[Article]:
     """copenlu/fever_gold_evidence — claim verification; evidence is the memory."""
     out = []
     for i, r in enumerate(_fetch("copenlu/fever_gold_evidence", "default", "train", pages)):
@@ -74,7 +93,7 @@ def conv_fever(pages):
     return out
 
 
-def conv_scifact(pages):
+def conv_scifact(pages: int) -> list[Article]:
     """BeIR/scifact-generated-queries — scientific abstract retrieval."""
     out = []
     for i, r in enumerate(_fetch("BeIR/scifact-generated-queries", "default", "train", pages)):
@@ -87,7 +106,7 @@ def conv_scifact(pages):
     return out
 
 
-def conv_dolly(pages):
+def conv_dolly(pages: int) -> list[Article]:
     """databricks-dolly-15k closed_qa — instruction + context + response."""
     out = []
     for i, r in enumerate(_fetch("databricks/databricks-dolly-15k", "default", "train", pages)):
@@ -102,7 +121,7 @@ def conv_dolly(pages):
     return out
 
 
-def conv_wikiqa(pages):
+def conv_wikiqa(pages: int) -> list[Article]:
     """microsoft/wiki_qa — keep answer sentences labeled relevant (label==1)."""
     out = []
     for i, r in enumerate(_fetch("microsoft/wiki_qa", "default", "validation", pages)):
@@ -116,7 +135,7 @@ def conv_wikiqa(pages):
     return out
 
 
-def conv_narrativeqa(pages):
+def conv_narrativeqa(pages: int) -> list[Article]:
     """deepmind/narrativeqa — long-narrative QA in the *summary* setting (the
     full text is ~75k words; the human summary is the seedable context). One
     article per document (summaries repeat across a book's questions)."""
@@ -140,7 +159,7 @@ def conv_narrativeqa(pages):
     return out
 
 
-def conv_medical(pages):
+def conv_medical(pages: int) -> list[Article]:
     """lavita/medical-qa-datasets — medical-domain QA; keep doctor-answer items
     (input = patient question, output = answer)."""
     out = []
@@ -156,7 +175,7 @@ def conv_medical(pages):
     return out
 
 
-def conv_code(pages):
+def conv_code(pages: int) -> list[Article]:
     """Nan-Do/code-search-net-python — NL→code retrieval: the function source is
     the memory, its summary/docstring is the query, the function name is the gold
     answer ("which function implements X?"). The product-relevant regime — a
@@ -176,7 +195,7 @@ def conv_code(pages):
     return out
 
 
-def conv_quora(pages):
+def conv_quora(pages: int) -> list[Article]:
     """toughdata/quora-question-answer-dataset — informal community Q&A. Tests
     recall on colloquial/informal text, a different register from the clean
     Wikipedia/scientific prose of the other vaults. Answer is the memory, question
@@ -191,11 +210,12 @@ def conv_quora(pages):
     return out
 
 
-def _conv_xquad(lang):
+def _conv_xquad(lang: str) -> Callable[[int], list[Article]]:
     """google/xquad — SQuAD-format extractive QA in `lang`. Tests whether recall
     holds for non-English / non-Latin vaults (the embedding model's multilingual
     reach). Each example is its own article."""
-    def conv(pages):
+
+    def conv(pages: int) -> list[Article]:
         out = []
         for i, r in enumerate(_fetch("google/xquad", f"xquad.{lang}", "validation", pages)):
             ctx = (r.get("context") or "").strip()
@@ -206,6 +226,7 @@ def _conv_xquad(lang):
                 continue
             out.append(_article(i, f"xquad-{lang}", ctx, q, texts[0]))
         return out
+
     return conv
 
 
@@ -224,17 +245,24 @@ CONVERTERS = {
 }
 
 
-def main(argv):
+def _output_path(name: str, argv: list[str]) -> str:
+    """An explicit [out.json] wins; otherwise every dataset goes to /tmp."""
+    if argv[1] != "all" and len(argv) > 2 and not argv[2].startswith("--"):
+        return argv[2]
+    return f"/tmp/{name}.json"
+
+
+def main(argv: list[str]) -> int:
     if len(argv) < 2 or argv[1] not in (*CONVERTERS, "all"):
         sys.stderr.write(f"usage: {argv[0]} <{'|'.join(CONVERTERS)}|all> [out.json] [--pages N]\n")
         return 2
-    pages = 5
+    pages = DEFAULT_PAGES
     if "--pages" in argv:
         pages = int(argv[argv.index("--pages") + 1])
     names = list(CONVERTERS) if argv[1] == "all" else [argv[1]]
     for name in names:
         data = CONVERTERS[name](pages)
-        out = argv[2] if len(argv) > 2 and not argv[2].startswith("--") and argv[1] != "all" else f"/tmp/{name}.json"
+        out = _output_path(name, argv)
         with open(out, "w") as f:
             json.dump({"data": data}, f)
         print(f"{name}: {len(data)} examples -> {out}")

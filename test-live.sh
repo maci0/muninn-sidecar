@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 # Clear env vars from parent msc/claude session to avoid nested detection.
 unset MSC_UPSTREAM ANTHROPIC_BASE_URL CLAUDECODE 2>/dev/null || true
@@ -29,6 +29,7 @@ mcp_call() {
         -d "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"$tool\",\"arguments\":$args},\"id\":1}"
 }
 
+# shellcheck disable=SC2329  # invoked indirectly, via the trap below
 cleanup() {
     echo ""
     echo "=== Cleanup: deleting test vault memories ==="

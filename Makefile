@@ -25,7 +25,7 @@ help:
 	@echo '  make test-fast    same without -race, for a quicker loop'
 	@echo '  make fmt          gofmt -w over the tree'
 	@echo '  make fmt-check    fail on unformatted files (what CI does)'
-	@echo '  make lint         go vet + staticcheck (staticcheck required, like CI)'
+	@echo '  make lint         go vet + staticcheck (both required, like CI) + shellcheck, ruff, yamllint where installed'
 	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
 	@echo '  make cover        race + coverage report'
 	@echo '  make fuzz         brief campaign over every fuzz target (FUZZTIME=60s for longer)'
@@ -115,11 +115,18 @@ fuzz:
 
 # CI runs staticcheck and fails the build, so a missing local copy must fail
 # here too: skipping it silently reports green and turns into a red CI run.
+# The non-Go linters are optional, so they skip when missing. Gate presence with
+# `if` and run the tool in a separate statement: `command -v X && X ... || echo
+# skip` also fires the skip on the tool's non-zero exit, so a real finding would
+# print "not installed" and the target would still succeed.
 lint:
 	go vet ./...
 	@command -v staticcheck >/dev/null 2>&1 || { \
 	  echo "staticcheck is required (CI runs it): go install $(STATICCHECK_PKG)" >&2; exit 1; }
 	staticcheck ./...
+	@if command -v shellcheck >/dev/null 2>&1; then shellcheck test-live.sh; else echo "shellcheck not installed, skipping"; fi
+	@if command -v ruff >/dev/null 2>&1; then ruff check scripts/ && ruff format --check scripts/; else echo "ruff not installed, skipping"; fi
+	@if command -v yamllint >/dev/null 2>&1; then yamllint .; else echo "yamllint not installed, skipping"; fi
 
 # Scan reachable code against the Go vulnerability DB (CI runs this too).
 vuln:
@@ -129,6 +136,7 @@ vuln:
 
 fmt:
 	gofmt -l -w .
+	@if command -v ruff >/dev/null 2>&1; then ruff format scripts/; else echo "ruff not installed, skipping"; fi
 
 fmt-check:
 	@unformatted="$$(gofmt -l .)"; \
