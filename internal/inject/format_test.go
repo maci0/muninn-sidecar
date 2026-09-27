@@ -3,6 +3,7 @@ package inject
 import (
 	"encoding/json"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -463,6 +464,48 @@ func TestFormatContextBlockClipsMultibyteToBudget(t *testing.T) {
 				t.Errorf("block is %d bytes, budget is %d", len(block), budgetBytes)
 			}
 		})
+	}
+}
+
+// TestFormatContextBlockAccountsForScoreWidth pins the per-entry overhead at
+// the width the score actually prints at. The gate falls back to MuninnDB's
+// composite score when a recall carries no vector_score, and that score
+// legitimately exceeds 1.0 or is negative, so the "relevance: X.XX" field is
+// wider than the 4 bytes an in-range cosine needs. Counting it as 4 packs the
+// emitted block past the budget by the difference on every such entry.
+func TestFormatContextBlockAccountsForScoreWidth(t *testing.T) {
+	const budget = 64
+	budgetBytes := budget * charPerToken
+	// Wide enough that one entry of each nearly fills the budget, so the second
+	// is admitted only if its own entry is measured correctly.
+	content := strings.Repeat("x", 300)
+
+	for _, score := range []float64{0.9, 12.5, -0.2, 1234.56} {
+		t.Run(strconv.FormatFloat(score, 'f', 2, 64), func(t *testing.T) {
+			mems := []memory{
+				{ID: "1", Concept: "c", Content: content, Score: score},
+				{ID: "2", Concept: "c", Content: content, Score: score},
+			}
+			block, tokens, _ := formatContextBlock(mems, budget)
+			if len(block) > budgetBytes {
+				t.Errorf("block is %d bytes, budget is %d (score %v)", len(block), budgetBytes, score)
+			}
+			if tokens > budget {
+				t.Errorf("token estimate %d exceeds budget %d (score %v)", tokens, budget, score)
+			}
+		})
+	}
+}
+
+// TestFormatContextBlockReportsBytesWritten pins the reported token count to
+// the block actually written, whatever width the score renders at.
+func TestFormatContextBlockReportsBytesWritten(t *testing.T) {
+	for _, score := range []float64{0.9, 12.5, -0.2} {
+		mems := []memory{{ID: "1", Concept: "concept", Content: "a body", Score: score}}
+		block, tokens, _ := formatContextBlock(mems, 2048)
+		if want := len(block) / charPerToken; tokens != want {
+			t.Errorf("score %v: reported %d tokens for a %d-byte block, want %d", score, tokens, len(block), want)
+		}
 	}
 }
 

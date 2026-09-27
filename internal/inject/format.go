@@ -16,10 +16,26 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
+// entryFraming is the fixed part of one context-block entry's format:
+// "[" + "] (relevance: " + ")\n\n". The score sits between the label and the
+// closing bracket and is measured by entryOverhead.
+const entryFraming = len("[] (relevance: ") + len(")\n\n")
+
+// entryOverhead is the framing cost of one entry at a given score: entryFraming
+// plus the width the score actually prints at. The width is measured, not
+// assumed at 4 bytes: a score in [0,1] renders as "0.60", but the gate also
+// reads the composite fallback score when MuninnDB returns no vector_score, and
+// that one legitimately exceeds 1.0 ("12.50", five bytes) or is negative
+// ("-0.20", five). Assuming 4 there undercounts every such entry, so a turn
+// built from composite scores packs past the budget it was given and the
+// reported token count is short of the bytes written.
+func entryOverhead(score float64) int {
+	return entryFraming + len(strconv.FormatFloat(score, 'f', 2, 64))
+}
+
 // entryBytes estimates how many bytes a memory contributes to a context block
 // without allocating an intermediate string. Format is
-// "[" + concept + "] (relevance: X.XX)\n" + content + "\n\n"; the fixed overhead
-// is 23 bytes since the "%.2f" score is always 4 bytes for values in [0,1].
+// "[" + concept + "] (relevance: X.XX)\n" + content + "\n\n".
 //
 // The unit is bytes, not characters: charPerToken is a bytes-per-token
 // heuristic, and tokenizers charge by encoded length, so a CJK or emoji memory
@@ -27,7 +43,7 @@ import (
 // entryChars keeps the "chars" in the names and in charPerToken from claiming
 // a precision the measurement does not have.
 func entryBytes(m memory) int {
-	return neutralizedLen(m.Concept) + neutralizedLen(m.Content) + 23
+	return neutralizedLen(m.Concept) + neutralizedLen(m.Content) + entryOverhead(m.Score)
 }
 
 // neutralizedLen is the byte length NeutralizeMarkers would produce for s:
@@ -121,7 +137,7 @@ func withinBudget(memories []memory, budget int) []memory {
 				break
 			}
 			// First memory and it alone blows the budget: keep it, clipped.
-			room := budgetBytes - totalBytes - neutralizedLen(m.Concept) - 23
+			room := budgetBytes - totalBytes - neutralizedLen(m.Concept) - entryOverhead(m.Score)
 			if room < minOversizedMemoryBytes {
 				room = minOversizedMemoryBytes
 			}
@@ -130,7 +146,7 @@ func withinBudget(memories []memory, budget int) []memory {
 			// pass shortens the content, so this converges.
 			for {
 				m.Content = truncateToBytes(m.Content, room)
-				entry := neutralizedLen(m.Concept) + neutralizedLen(m.Content) + 23
+				entry := neutralizedLen(m.Concept) + neutralizedLen(m.Content) + entryOverhead(m.Score)
 				if totalBytes+entry <= budgetBytes {
 					break
 				}
@@ -191,7 +207,7 @@ func formatContextBlock(memories []memory, budget int) (string, int, int) {
 		sb.WriteString(")\n")
 		sb.WriteString(content)
 		sb.WriteString("\n\n")
-		totalBytes += len(concept) + len(content) + 23
+		totalBytes += len(concept) + len(content) + entryOverhead(m.Score)
 	}
 
 	sb.WriteString(apiformat.ContextSuffix)
