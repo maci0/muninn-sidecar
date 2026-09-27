@@ -210,8 +210,7 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	}
 	defer clientConn.Close()
 
-	cfg := p.mitmTransport.TLSClientConfig.Clone()
-	cfg.ServerName = stripPort(target)
+	cfg := p.mitmTLSDialConfig(target)
 	// Bound the dial so a black-hole upgrade target can't hang this goroutine and
 	// its hijacked connection indefinitely (mirrors blindTunnel's DialTimeout).
 	backend, err := tls.DialWithDialer(&net.Dialer{Timeout: tunnelDialTimeout}, "tcp", target, cfg)

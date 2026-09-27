@@ -19,6 +19,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
@@ -108,6 +109,15 @@ type Proxy struct {
 	handshakeTimeout        time.Duration // CONNECT tunnel: client-side TLS handshake
 	upgradeHandshakeTimeout time.Duration // spliced upgrade: backend's reply
 	writeIdleTimeout        time.Duration // gap between response writes after which the agent's conn is cut
+
+	// mitmRoots holds the pool the MITM forward leg verifies real upstreams
+	// with, guarded because SetMITMRoots can be called while the proxy serves
+	// and every upstream dial reads it. It is applied through the transport's
+	// DialTLSContext rather than by mutating the transport's TLSClientConfig:
+	// http.Transport clones that config on every dial from its own goroutines,
+	// so writing RootCAs into it would race with those clones.
+	mitmRootsMu sync.RWMutex
+	mitmRoots   *x509.CertPool
 }
 
 // Config holds the parameters for creating a Proxy.
@@ -204,11 +214,14 @@ func New(cfg Config) (*Proxy, error) {
 	// Separate transport for MITM forwarding to arbitrary real hosts. TLS1.2 floor
 	// (some upstreams still require it) with normal cert verification of the real
 	// server — msc only forges the agent-facing side, never trusts a bad upstream.
+	// The TLS handshake is driven by dialMITMTLS (not by the transport's own
+	// TLSClientConfig) so the verification roots can be swapped at runtime
+	// without racing the transport's per-dial clone.
 	p.mitmTransport = &http.Transport{
 		DialContext:           dialer.DialContext,
+		DialTLSContext:        p.dialMITMTLS,
 		TLSHandshakeTimeout:   30 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Minute,
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   100,
 		IdleConnTimeout:       90 * time.Second,
@@ -270,11 +283,47 @@ func (p *Proxy) since(t time.Time) time.Duration { return clockOrSystem(p.clock)
 // custom pool for environments with a private upstream CA (e.g. a corporate
 // egress proxy) or for tests that forward to a self-signed server. No-op when
 // MITM is disabled (no CA configured).
+//
+// Safe to call while the proxy is serving: the pool is read under a lock by
+// every forward-leg handshake, and connections already established keep the
+// roots they were verified with.
 func (p *Proxy) SetMITMRoots(pool *x509.CertPool) {
 	if p.mitmTransport == nil {
 		return
 	}
-	p.mitmTransport.TLSClientConfig.RootCAs = pool
+	p.mitmRootsMu.Lock()
+	p.mitmRoots = pool
+	p.mitmRootsMu.Unlock()
+}
+
+// mitmRootCAs returns the current root pool for the MITM forward leg, or nil
+// when the system trust store applies.
+func (p *Proxy) mitmRootCAs() *x509.CertPool {
+	p.mitmRootsMu.RLock()
+	defer p.mitmRootsMu.RUnlock()
+	return p.mitmRoots
+}
+
+// dialMITMTLS is the MITM forward leg's TLS handshake: a normal client dial
+// (full cert verification of the real server, TLS1.2 floor) that reads the
+// current root pool under the lock. It replaces the transport's own TLS setup
+// so a SetMITMRoots call after Start cannot race the transport cloning its
+// TLSClientConfig on another goroutine.
+func (p *Proxy) dialMITMTLS(ctx context.Context, network, addr string) (net.Conn, error) {
+	return tls.DialWithDialer(&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}, network, addr, p.mitmTLSDialConfig(addr))
+}
+
+// mitmTLSDialConfig builds the client TLS config for a forward-leg connection to
+// target: TLS1.2 floor (some upstreams still require it) and normal verification
+// of the real server — msc only forges the agent-facing side, never trusts a bad
+// upstream. The root pool is read under the lock; connections already
+// established keep the roots they were verified with.
+func (p *Proxy) mitmTLSDialConfig(target string) *tls.Config {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: stripPort(target)}
+	if roots := p.mitmRootCAs(); roots != nil {
+		cfg.RootCAs = roots
+	}
+	return cfg
 }
 
 // Start begins listening. Returns the resolved listen address (with actual

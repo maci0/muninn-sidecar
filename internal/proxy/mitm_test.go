@@ -607,8 +607,12 @@ func TestSetMITMRoots(t *testing.T) {
 	}
 	pool := x509.NewCertPool()
 	p.SetMITMRoots(pool)
-	if p.mitmTransport.TLSClientConfig.RootCAs != pool {
-		t.Error("SetMITMRoots did not apply the pool to the MITM transport")
+	if p.mitmRootCAs() != pool {
+		t.Error("SetMITMRoots did not apply the pool to the MITM forward leg")
+	}
+	// The pool must reach the handshake itself, not just the stored field.
+	if got := p.mitmTLSDialConfig("api.example.com:443").RootCAs; got != pool {
+		t.Error("forward-leg TLS config did not carry the configured roots")
 	}
 
 	// Guard: a zero-value Proxy (no transport) is a safe no-op, not a panic.
@@ -720,4 +724,145 @@ func TestMITMConnectHandshakeTimeout(t *testing.T) {
 	if _, err := io.ReadAll(raw); err != nil {
 		t.Fatalf("reading the abandoned tunnel: %v", err)
 	}
+}
+
+// TestSetMITMRootsConcurrentWithDialing pins the root pool as guarded shared
+// state. SetMITMRoots is public and documented as usable while the proxy serves,
+// and every forward-leg handshake reads the pool; storing it by writing the
+// transport's TLSClientConfig instead raced both the transport's per-dial clone
+// and the upgrade splice's Clone. Two goroutines hammer the writer and the
+// handshake-side reader for a fixed number of rounds, so under -race the overlap
+// is dense enough to be caught rather than sampled. Without the lock the reader
+// can also observe a pool from the other side of a swap mid-handshake.
+func TestSetMITMRootsConcurrentWithDialing(t *testing.T) {
+	ca := mustCA(t)
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0",
+		Upstream:   "https://unused.invalid",
+		AgentName:  "claude",
+		Store:      st,
+		CA:         ca,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolA, poolB := x509.NewCertPool(), x509.NewCertPool()
+
+	const rounds = 20000
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range rounds {
+			p.SetMITMRoots(poolA)
+			p.SetMITMRoots(poolB)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range rounds {
+			if roots := p.mitmTLSDialConfig("api.example.com:443").RootCAs; roots != nil && roots != poolA && roots != poolB {
+				t.Errorf("handshake read a pool that was never installed")
+				return
+			}
+		}
+	}()
+	wg.Wait()
+}
+
+// TestSetMITMRootsDuringForwarding drives real forward-leg traffic from several
+// goroutines while the root pool is swapped underneath. Both pools trust the
+// self-signed test upstream, so every handshake must still verify: a swap must
+// neither fail a request in flight nor leave a stale pool installed.
+func TestSetMITMRootsDuringForwarding(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "upstream-ok")
+	}))
+	defer upstream.Close()
+
+	ca := mustCA(t)
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0",
+		Upstream:   "https://unused.invalid",
+		AgentName:  "claude",
+		Store:      st,
+		CA:         ca,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two pools that both verify the self-signed test upstream, so a swap
+	// mid-flight cannot turn into a failed handshake.
+	poolA, poolB := x509.NewCertPool(), x509.NewCertPool()
+	poolA.AddCert(upstream.Certificate())
+	poolB.AddCert(upstream.Certificate())
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(ca.CertPEM()) {
+		t.Fatal("could not add msc CA to client pool")
+	}
+	p.SetMITMRoots(poolA)
+
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	proxyURL, _ := url.Parse("http://" + addr)
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: caPool},
+		},
+		Timeout: 10 * time.Second,
+	}
+
+	stop := make(chan struct{})
+	errs := make(chan error, 64)
+	var wg, swapperWG sync.WaitGroup
+	swapperWG.Add(1)
+	go func() {
+		defer swapperWG.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				p.SetMITMRoots(poolA)
+				p.SetMITMRoots(poolB)
+			}
+		}
+	}()
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 10 {
+				// Close idle connections so the next request re-dials and
+				// actually reads the pool instead of reusing a pooled conn.
+				p.mitmTransport.CloseIdleConnections()
+				resp, err := client.Get(upstream.URL + "/v1/messages")
+				if err != nil {
+					errs <- err
+					return
+				}
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if string(body) != "upstream-ok" {
+					errs <- fmt.Errorf("body = %q", body)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	swapperWG.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("forward leg failed while roots were being swapped: %v", err)
+	}
+	st.Drain()
 }

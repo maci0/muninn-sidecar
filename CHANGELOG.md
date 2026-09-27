@@ -130,6 +130,14 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   re-seeding a corpus accumulated a second copy of every memory and the recall
   that follows measured the run's own history. The store and the live eval
   already derived one; the bench now does too.
+- **The MITM root pool is no longer written into a live transport.**
+  `SetMITMRoots` stored the pool by assigning `RootCAs` on the MITM transport's
+  `TLSClientConfig`, which `http.Transport` clones on every dial from its own
+  goroutines and the upgrade splice clones per request: a pool swapped while the
+  proxy was serving raced those clones. The pool is now held under a lock and
+  applied through the transport's `DialTLSContext`, so it can be swapped at any
+  time; `TestSetMITMRootsConcurrentWithDialing` fails under `-race` without the
+  lock.
 - **Non-ASCII text no longer breaks at a character boundary.** The `msc-eval`
   and `msc-qa` report tables clipped a scenario name or model label by byte, so
   a multi-byte character (CJK, emoji) was cut in half and the row ended in a
