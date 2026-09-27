@@ -28,7 +28,7 @@ BUILDFLAGS = -trimpath -buildvcs=false
 CGO = CGO_ENABLED=0
 
 .PHONY: help doctor tools tools-staticcheck tools-govulncheck check build build-all build-matrix install \
-	test test-short test-fast cover lint lint-go lint-available check-race check-release vet vuln fmt \
+	test test-short test-fast cover lint lint-go lint-non-go lint-available check-race check-release vet vuln fmt \
 	fmt-check tidy tidy-check clean eval eval-models fuzz bench versions
 
 # Packages/tests for the `test` target. PKG=./internal/redact narrows the
@@ -65,16 +65,18 @@ help:
 	@echo '  make tools-staticcheck   just the staticcheck install (what the CI test job runs)'
 	@echo '  make tools-govulncheck   just the govulncheck install (what the CI vuln job runs)'
 	@echo '  make check        everything CI runs locally: tidy-check fmt-check lint-available lint test build-all check-release'
+	@echo '                   (the matrix, repro, fuzz and vuln jobs have their own targets, listed below)'
 	@echo '  make check-release  the changelog matches the tag: sections in version order, every version linked, (with TAG=vX.Y.Z) the tagged version documented'
 	@echo '  make test         go test -race -count=1 $(PKG)   (override PKG=... or RUN='"'"'^TestFoo$$'"'"')'
 	@echo '  make test-short   test with -short: the few wall-clock-dependent tests skip, ~half the run'
 	@echo '  make test-fast    same without -race, for a quicker loop'
 	@echo '  make fmt          gofmt -w over the tree'
 	@echo '  make fmt-check    fail on unformatted files (what CI does)'
-	@echo '  make lint         go vet + staticcheck (both required, like CI) + shellcheck, ruff, yamllint where installed'
+	@echo '  make lint         go vet + staticcheck (both required, like CI) + shellcheck, ruff, yamllint (all required)'
 	@echo '  make versions     the ruff/yamllint pins CI runs (eval it to reproduce the CI lint job)'
 	@echo '  make build-matrix compile for every GOOS/GOARCH the CI build job covers'
 	@echo '  make lint-go      go vet + staticcheck only, the pair CI runs'
+	@echo '  make lint-non-go  shellcheck + ruff + yamllint only, the three CI runs'
 	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
 	@echo '  make cover        race + coverage report'
 	@echo '  make fuzz         brief campaign over every fuzz target (FUZZTIME=60s for longer)'
@@ -131,7 +133,7 @@ doctor:
 	 done; \
 	 for t in shellcheck ruff yamllint; do \
 	   command -v $$t >/dev/null 2>&1 || { \
-	     echo "$$t: missing; 'make check' and CI run it — pipx install $$t (shellcheck comes from your package manager)" >&2; \
+	     echo "$$t: missing; 'make check' and CI run it — uv tool install $$t (shellcheck comes from your package manager)" >&2; \
 	     status=1; }; \
 	 done; \
 	 if [ "$$status" -eq 0 ]; then echo "doctor: done"; \
@@ -292,37 +294,44 @@ fuzz:
 	fi; \
 	echo "all $$ran fuzz targets clean"
 
-# The non-Go linters are required, for the same reason staticcheck is: a
-# missing copy that skips silently reports a green `make check` and turns into a
-# red CI run. Gate presence with `command -v` and fail in a separate statement:
-# `command -v X && X ... || echo skip` also fires the skip on the tool's own
-# non-zero exit, so a real finding would print "not installed" and the target
-# would still succeed. CI runs the same three, so the local and remote rule sets
-# are the same set. Their version pins are RUFF_VERSION/YAMLLINT_VERSION above:
-# CI runs those exactly, while a locally installed copy may be older or newer,
-# so each is compared against its pin and any drift is reported rather than
-# discovered as a finding after the push.
-lint: lint-go
-	@command -v shellcheck >/dev/null 2>&1 || { \
-	  echo "shellcheck is required (CI runs it): https://www.shellcheck.net/#install" >&2; exit 1; }
-	shellcheck test-live.sh scripts/*.sh
-	@command -v ruff >/dev/null 2>&1 || { \
-	  echo "ruff is required (CI runs it): pipx install ruff" >&2; exit 1; }
-	@have=$$(ruff --version | awk '{print $$2}'); \
-	 [ "$$have" = "$(RUFF_VERSION)" ] || echo "ruff $$have installed, CI pins $(RUFF_VERSION); a newer copy can report findings CI will not" >&2
-	ruff check scripts/
-	ruff format --check scripts/
-	@command -v yamllint >/dev/null 2>&1 || { \
-	  echo "yamllint is required (CI runs it): pipx install yamllint" >&2; exit 1; }
-	@have=$$(yamllint --version | awk '{print $$2}'); \
-	 [ "$$have" = "$(YAMLLINT_VERSION)" ] || echo "yamllint $$have installed, CI pins $(YAMLLINT_VERSION); a newer copy can report findings CI will not" >&2
-	yamllint .
+# The non-Go linters, one invocation each. This target is the only place they
+# are spelled out: the CI `lint` job calls it too, with RUFF and YAMLLINT
+# pointed at the pinned ephemeral runners (pipx, nothing installed onto the
+# runner), so the rule set a contributor checks is the one CI enforces instead
+# of a second copy of these four commands drifting in ci.yml. The pins live in
+# ci.yml's env, which is what it passes down.
+SHELLCHECK ?= shellcheck
+RUFF        ?= ruff
+YAMLLINT    ?= yamllint
 
-# `make lint` treats the non-Go linters as optional, so a contributor without
-# them still gets the Go checks. That leniency is wrong for `make check`, which
-# advertises itself as the CI mirror: CI installs all three and fails the run on
-# a finding, so a skip here is a green local run and a red push. This gate
-# reports the missing tools by name instead of letting the skip pass silently.
+# Each linter is required, for the same reason staticcheck is: a missing copy
+# that skips silently reports a green `make check` and turns into a red CI run.
+# The presence gate checks the executable the variable names, not the bare tool
+# name, so it also holds for CI's `pipx run ruff@<version>`, whose executable is
+# pipx. Gate and run sit in separate statements: `command -v X && X ... || echo
+# skip` also fires the skip on the tool's own non-zero exit, so a real finding
+# would print "not installed" and the target would still succeed.
+empty :=
+space := $(empty) $(empty)
+exe = $(firstword $(subst $(space),,$(strip $(1))))
+
+lint-non-go:
+	@command -v $(call exe,$(SHELLCHECK)) >/dev/null 2>&1 || { \
+	  echo "shellcheck is required (CI runs it): https://www.shellcheck.net/#install" >&2; exit 1; }
+	$(SHELLCHECK) test-live.sh
+	@command -v $(call exe,$(RUFF)) >/dev/null 2>&1 || { \
+	  echo "ruff is required (CI runs it): uv tool install ruff" >&2; exit 1; }
+	$(RUFF) check scripts/
+	$(RUFF) format --check scripts/
+	@command -v $(call exe,$(YAMLLINT)) >/dev/null 2>&1 || { \
+	  echo "yamllint is required (CI runs it): uv tool install yamllint" >&2; exit 1; }
+	$(YAMLLINT) .
+
+lint: lint-go lint-non-go
+
+# `make lint` already refuses to run without these three, so this gate is the
+# one that names every missing tool in a single message, which is what
+# `make check` runs first.
 lint-available:
 	@missing=; \
 	for t in shellcheck ruff yamllint; do \
@@ -330,7 +339,7 @@ lint-available:
 	done; \
 	if [ -n "$$missing" ]; then \
 	  echo "CI runs these linters and fails the run without them; not on PATH:$$missing" >&2; \
-	  echo "pipx install ruff yamllint   (or pipx run ruff@0.16.4 ... as CI does)" >&2; \
+	  echo "uv tool install ruff yamllint" >&2; \
 	  echo "shellcheck comes from your package manager (Debian/Ubuntu, brew, dnf)" >&2; \
 	  exit 1; \
 	fi

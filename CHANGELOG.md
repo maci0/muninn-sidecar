@@ -105,6 +105,12 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
 
 ### Changed
 
+- **CI and `make lint` run the same linter invocations.** The `Lint` job kept
+  its own copy of the four non-Go linter commands while the Makefile kept a
+  second one, so the two could check different rules without either change
+  looking wrong. The commands now live in the `lint-non-go` target, and CI
+  calls that target with the pinned ephemeral ruff and yamllint passed in as
+  make variables.
 - **A failing sidecar says so, and a log line names its turn.** Three
   observability gaps on the request path:
   - The `request_id` stopped at the end of the HTTP request. The store's

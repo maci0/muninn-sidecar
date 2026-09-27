@@ -22,13 +22,13 @@ quality bar so a change lands cleanly.
   GOVULNCHECK_VERSION=latest` if you need to match a specific linter release;
   `make tools-staticcheck` and `make tools-govulncheck` install just one of
   them, which is what each CI job does.
-- **shellcheck, ruff and yamllint**, for `make check`. `make lint` skips any it
-  cannot find, but CI installs all three and fails on a finding, so the
-  advertised local mirror of that job (`make check`) refuses to run without
-  them. `pipx install ruff yamllint`; shellcheck comes from your package
-  manager. CI runs ruff and yamllint at the versions in the Makefile
-  (`make -s versions`); `make lint` reports your installed version when it
-  differs, because a newer local copy can report findings CI will not.
+- **shellcheck, ruff and yamllint**, for `make check`. `make lint` refuses to run
+  without them, for the same reason staticcheck is required: a linter that
+  skips silently reports green and turns into a red CI run. `uv tool install
+  ruff yamllint`; shellcheck comes from your package manager. CI runs the same
+  `make lint-non-go` target with ruff and yamllint pinned to the versions in
+  `ci.yml`, so a different local ruff version is the one thing that can turn a
+  green run red.
 
 ```sh
 make doctor   # checks every one of the above against this machine
@@ -104,9 +104,9 @@ One command runs everything the CI `test` job runs, in the same order:
 make check   # tidy-check, fmt-check, lint-available, lint (go vet + staticcheck + shellcheck + ruff + yamllint), go test -race, build-all
 ```
 
-`lint-available` is the CI parity gate: the non-Go linters are optional for a
-bare `make lint`, but `make check` names any that are missing and stops, so a
-green local run cannot become a red CI run.
+`lint-available` is the CI parity gate: it names every non-Go linter missing
+from the machine in one message and stops, before `lint` starts and reports
+them one at a time.
 
 The remaining CI jobs are separate: the cross-platform `build` matrix (windows
 and darwin, both arches) and the two slow or networked ones. The matrix is
@@ -139,10 +139,10 @@ supply-chain property. `make vuln` (and CI) then mainly guards stdlib CVEs.
   single-goroutine by design.
 - **gofmt + `go vet` + staticcheck clean.** No new warnings. The non-Go files
   are held to the same bar: `ruff` (`ruff.toml`) for `scripts/*.py`, `shellcheck`
-  for `test-live.sh`, `yamllint` (`.yamllint.yml`) for the workflow YAML. CI runs
-  all of them; a bare `make lint` runs whichever are installed locally and names
-  the ones it skipped, while `make check` requires all three (see
-  `lint-available`).
+  for `test-live.sh`, `yamllint` (`.yamllint.yml`) for the workflow YAML. All of
+  them are required, locally and in CI, and CI runs the same `make lint-non-go`
+  target with the two Python linters pinned to the versions in `ci.yml`, so a
+  different local ruff version is the one thing that can turn a green run red.
 - **Keep behavior verified, not assumed.** When a change depends on an external
   contract (a MuninnDB tool's response, an agent's env var), verify it against a
   live instance and add a regression guard.
