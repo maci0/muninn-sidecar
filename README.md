@@ -56,10 +56,10 @@ make build
 
 ### Platforms
 
-`msc` builds for Linux, macOS, and Windows on amd64 and arm64, and CI builds
-and vets each of them. The test suite runs only on Linux, so the other targets
-are compile-verified, not exercised end to end. Two behaviors differ by platform
-and are handled rather than assumed:
+`msc` builds for Linux and macOS on amd64 and arm64, plus Windows on amd64,
+and CI builds and vets each of them. The test suite runs only on Linux, so the
+other targets are compile-verified, not exercised end to end. Two behaviors
+differ by platform and are handled rather than assumed:
 
 - **Signal forwarding to the agent.** msc walks `/proc` to find the agent and
   skip a Ctrl+C the terminal already delivered. Without `/proc` (macOS, Windows)
@@ -255,7 +255,7 @@ A 4xx/5xx from the provider is a warn (the provider refused) and counts as an up
 | `MUNINN_TOKEN` | MuninnDB bearer token (default: reads `~/.muninn/mcp.token`) |
 | `MSC_VAULT` | MuninnDB vault name (default: current directory name, fallback: `sidecar`) |
 | `OPENAI_API_KEY` | Bearer token for the answer-grounding judge when `--ground-url` targets an OpenAI-compatible endpoint that requires auth (optional; unneeded for unauthenticated local endpoints like ollama) |
-| `MSC_WS_DEBUG` | When set, log the envelope `type` and size of every decoded WebSocket message under `--mitm` (not the content) — to map a new agent's WebSocket protocol for capture |
+| `MSC_WS_DEBUG` | When set (with `--debug`, since the probe logs at INFO), log the envelope `type` and size of every decoded WebSocket message under `--mitm` (not the content) — to map a new agent's WebSocket protocol for capture |
 
 Command-line flags take precedence over environment variables, which take precedence over defaults. `MUNINN_MCP_URL` is validated at startup: a value without an `http`/`https` scheme or without a host is rejected before anything is launched, naming the offending value instead of failing later inside the connectivity check. All four binaries (`msc`, `msc-eval`, `msc-bench`, `msc-qa`) resolve these variables through the same `internal/config` package, so a default or env var name cannot drift between them.
 

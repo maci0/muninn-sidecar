@@ -23,6 +23,8 @@ recover it — the embedding pools all tokens, so distractor context dilutes the
 signal regardless of position. **Decision (shipped):** the proxy now queries with
 the **latest user turn only** (`ExtractUserQuery`), not the last-3-turns concat.
 Continuity across turns is already provided by the session window, not the query.
+(Fallback: a body with no extractable single user turn uses the last 3 turns of
+context instead, then the query is redacted and truncated to 2000 runes.)
 
 ## A2 — Lexical rerank
 
@@ -300,6 +302,9 @@ auto-calibration (§F) rather than a fixed threshold:
 | msc-xquad-de | google/xquad (German) | multilingual QA (Latin) | 0.51 | 0.725 | 0.95 |
 | msc-xquad-zh | google/xquad (Chinese) | multilingual QA (CJK) | 0.18 | 0.775 | 0.85 |
 | msc-quora | toughdata/quora-qa | informal community Q&A | 0.40 | 0.65 | 0.96 |
+
+The script also ships a `wikiqa` converter (microsoft/wiki_qa, answer-sentence
+retrieval) that has not been seeded or probed here, so it has no row.
 
 Findings: (1) retrieval difficulty is regime-dependent — instruction+context with
 distinct contexts is trivial (R@1 1.0), while claim/abstract retrieval is hard
@@ -624,13 +629,19 @@ MuninnDB. The when-to-ask trigger removes most of these calls in tool-use chains
 (reuse instead of re-query). Stats (`msc status`) expose recalls queried vs
 reused and injected vs suppressed.
 
-## G19 — Multi-hop (HotpotQA) — BUILT, dataset fetch blocked
+## G19 — Multi-hop (HotpotQA) — BUILT, single-shot recall falls short
 
 **Harness:** `msc-bench -corpus hotpot` seeds supporting paragraphs and probes
 with multi-hop questions — the fair test for whether `deep` recall (graph
-traversal) beats `semantic` when answering needs two linked facts. **Not run:**
-the public HotpotQA mirror (`curtis.ml.cmu.edu`) was unreachable in this
-environment. Repro: download `hotpot_dev_distractor_v1.json`, then
+traversal) beats `semantic` when answering needs two linked facts. The original
+HotpotQA mirror (`curtis.ml.cmu.edu`) was unreachable, so the corpus is seeded
+from the HuggingFace datasets-server instead. **Result:** single-shot `semantic`
+recall surfaces the gold paragraph only ~R@1 0.05 (see [Datasets](#datasets)) —
+a multi-hop question matches neither supporting paragraph on its own, and one
+recall call cannot decompose it. The `deep` vs `semantic` arm has not been run
+here; it needs the same two-hop question set, so treat deep-mode multi-hop as
+untested rather than rejected. Repro: point `-squad-file` at a HotpotQA distractor
+JSON, then
 `go run ./cmd/msc-bench -seed -probe -corpus hotpot -squad-file hotpot.json -vault msc-hotpot -mode deep`
 (compare to `-mode semantic`).
 

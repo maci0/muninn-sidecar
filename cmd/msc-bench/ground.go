@@ -7,10 +7,12 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 )
 
-// applyGrounding filters each result's recalled candidates (top-k by cosine) to
-// those the grounder accepts, in place. A probe whose every candidate is rejected
-// ends up with an empty Recalled set, so the gate suppresses it — which is the
-// whole point for same-topic hard negatives. Returns the number of model calls.
+// applyGrounding filters each result's recalled candidates to the top-k by
+// cosine, then to those the grounder accepts, in place: everything past topK is
+// dropped along with the rejected candidates, so the gate runs on the judged set
+// only. A probe whose every candidate is rejected ends up with an empty Recalled
+// set, so the gate suppresses it — which is the whole point for same-topic hard
+// negatives. Returns the number of model calls.
 // The grounding judge itself lives in internal/grounding (shared with the live
 // injector and msc-qa); this is the bench-specific glue over recalledMemory.
 func applyGrounding(ctx context.Context, g grounding.Grounder, results []probeResult, topK int) int {

@@ -6,7 +6,10 @@ each model (OpenAI-compatible endpoint; here local ollama) in three arms:
 
 - **none** — question only (baseline)
 - **injected** — question + the recalled memory, injected as a `<retrieved-context>`
-  **system message exactly as the proxy does** (`injectOpenAIContext` format)
+  system message. The envelope matches the proxy's (`injectOpenAIContext`); the
+  entries themselves are bare content by default, which is what the rows below
+  were measured with — pass `-inject-format scored` for the proxy's per-entry
+  `[concept] (relevance: X.XX)` rendering.
 - **distractor** — question + a deliberately irrelevant memory (false-inject harm)
 
 Scored with SQuAD exact-match (EM) and token-F1, max over gold answers. Recall

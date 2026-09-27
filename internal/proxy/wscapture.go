@@ -36,6 +36,9 @@ func wsMessageType(msg []byte) string {
 	return env.Type
 }
 
+// wsMaxRespText caps the assistant text accumulated for one decoded turn.
+const wsMaxRespText = 16 << 10
+
 // wsExchange pairs codex's WebSocket messages into captured exchanges. codex
 // frames the OpenAI Responses API over a WebSocket: the client sends
 // `{"type":"response.create", ...input...}` (a Responses-format request, which
@@ -43,10 +46,6 @@ func wsMessageType(msg []byte) string {
 // `response.output_text.delta` events terminated by `response.completed`. We
 // accumulate the deltas and, on completion, pair the turn's text with the last
 // request and store it; the store handles extraction, redaction, and dedup.
-//
-// wsMaxRespText caps accumulated assistant text per turn.
-const wsMaxRespText = 16 << 10
-
 type wsExchange struct {
 	p        *Proxy
 	target   string

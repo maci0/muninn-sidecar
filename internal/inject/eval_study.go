@@ -3,7 +3,7 @@
 // methods on a larger synthetic dataset using k-fold cross-validation, so each
 // method's hyperparameters are tuned on training folds and scored on held-out
 // test folds. This guards against overfitting a threshold to the same data used
-// to pick it — the flaw in tuning AbsFloor on the small hand-authored corpus.
+// to pick it — the flaw in tuning a threshold on the small hand-authored corpus.
 //
 // The dataset is synthetic but principled: relevant and noise memories are drawn
 // from overlapping score distributions (so no threshold can separate them

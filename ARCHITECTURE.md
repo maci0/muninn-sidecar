@@ -69,15 +69,20 @@ flowchart LR
 cmd/msc/                 CLI entry point, flag parsing, agent lifecycle
   main.go                Entry point, agent launch, signal handling
   flags.go               Flag parsing, config resolution
-  commands.go            list, status, version commands
+  commands.go            list, status, ca, version, usage
   completion.go          Shell completion scripts (bash, zsh, fish)
+  signal_unix.go         /proc-based signal forwarding to the child agent
+  signal_other.go        Direct child signalling where /proc is unavailable
   util.go                Logging helpers, typo suggestions
 cmd/msc-eval/            Injection-quality evaluation CLI (offline + live)
   main.go                Scenario loading, report tables, MinScore sweep, method study
 cmd/msc-bench/           Real-MuninnDB retrieval + when-to-inject benchmark
-  main.go                Seed labeled corpus, probe, sweep score vs vector_score
+  main.go                Seed labeled corpus, probe, sweep score vs vector_score, article-level retrieval
   dataset.go             Shared item/probe records, word banks, namespace check, default corpus
   facts.go               Distinct-subject corpus + unrelated absent probes
+  squad.go hotpot.go     SQuAD (plain + same-article hard negatives) and HotpotQA corpora
+  agentmem.go            Agent-memory fact corpus + NL→code probes
+  ground.go rewrite.go   Grounded-rerank and LLM query-rewrite experiment arms
 cmd/msc-qa/              Downstream answer-quality eval across models (none/injected/distractor arms)
   main.go                Dataset loading, model/CLI readers, arms
   score.go               SQuAD EM/token-F1 scoring
@@ -168,7 +173,7 @@ The winner is a **single absolute confidence threshold**. `selectForInjection` k
 
    **Contradiction resolution**: when MuninnDB's `annotate:true` flags two recalled memories as contradicting (`conflicts_with`), injecting both would feed the agent mutually-exclusive facts ("deploys to AWS" + "never AWS, only GCP"). `resolveConflicts` keeps only the superseding side (non-stale, then newer) and drops the other — across concepts, not just within one. This uses MuninnDB's contradiction graph, which the agent populates as it corrects itself.
 
-The greedy token-budget packer then runs over the survivors. Note the interaction with decay: a memory injected at score 0.9 keeps being injected while its decayed score stays ≥ 0.5 (≈2 turns of non-recall), then drops out as stale even though it remains in the window (above the 0.2 eviction floor) and can be revived by a fresh recall.
+The greedy token-budget packer then runs over the survivors. Note the interaction with decay: a memory injected at score 0.9 stays above the default 0.6 gate for one further turn of non-recall (0.9 → 0.63 → 0.44), then drops out as stale even though it remains in the window (above the 0.2 eviction floor) and can be revived by a fresh recall.
 
 ### Choosing the Method
 
@@ -194,7 +199,7 @@ The dataset is synthetic but principled; its score distributions are calibrated 
 
 Selection above decides *what* to inject from recall results; two earlier decisions govern the recall itself, both tuned on the real-MuninnDB benchmark:
 
-- **When to ask.** Recall costs an MCP round-trip on the request hot path, and a coding agent resends the *same* user message every round of a tool-use chain (with new tool results appended). Firing a fresh recall each time is wasted latency. The injector hashes the recall query (FNV-1a over the last user turns, system-reminders stripped) and, when it is unchanged *and* the session window still holds memories, **reuses the window instead of recalling** — a continuation neither re-queries nor advances decay. The turn counter therefore tracks distinct *intents*, not raw requests. First turn and an empty window always recall. This is a hash compare in `Enrich`, fully in-flight and transparent to the agent.
+- **When to ask.** Recall costs an MCP round-trip on the request hot path, and a coding agent resends the *same* user message every round of a tool-use chain (with new tool results appended). Firing a fresh recall each time is wasted latency. The injector hashes the recall query (FNV-1a over the latest user turn, redacted and truncated) and, when it is unchanged *and* the session window still holds memories, **reuses the window instead of recalling** — a continuation neither re-queries nor advances decay. The turn counter therefore tracks distinct *intents*, not raw requests. A repeated intent whose window is empty is also skipped (negative cache: it already recalled nothing, so re-asking cannot produce anything); a *new* intent with an empty window always recalls. This is a hash compare in `Enrich`, fully in-flight and transparent to the agent.
 - **How to ask.** MuninnDB exposes recall presets. The benchmark compared all four on a labeled SQuAD corpus: `semantic` (pure high-precision vector search) gave the best retrieval (R@1 0.21, MRR 0.234), beating `balanced`, `deep` (4-hop graph traversal adds noise), and `recent` (recency-biased, worst). The injector requests `semantic` (`RecallMode`, default).
 
 ### Validating on Real MuninnDB

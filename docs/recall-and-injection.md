@@ -99,11 +99,13 @@ contradiction, near-duplicate) plus an optional answer-grounding rerank.
 
 ### 0. What to query with
 
-The recall query is the **latest user turn alone** (system-reminders stripped).
-A benchmark (`docs/experiments.md` §A1) found that concatenating prior turns
-roughly halves retrieval — the embedding pools all tokens, so unrelated context
-dilutes the signal. Continuity across turns comes from the session window, not a
-fat query.
+The recall query is the **latest user turn alone** (system-reminders stripped; the
+query is then redacted and truncated to 2000 runes). A benchmark
+(`docs/experiments.md` §A1) found that concatenating prior turns roughly halves
+retrieval — the embedding pools all tokens, so unrelated context dilutes the
+signal. Continuity across turns comes from the session window, not a fat query.
+The one exception: a format whose body yields no single user turn falls back to
+the last 3 turns of context, so those requests still get a query.
 
 ### 1. When to ask
 
@@ -306,7 +308,8 @@ appear only when those paths fire.
 ## Fuzzing the parsing surfaces
 
 Every in-flight parser that ingests untrusted agent/model bytes has a Go fuzz
-target (`*/fuzz_test.go`), since the proxy must never panic on malformed traffic:
+target (60 of them, mostly in `fuzz_test.go` files, plus a few in the packages'
+main test files), since the proxy must never panic on malformed traffic:
 
 - `apiformat`: `FuzzExtractUserMessage`, `FuzzExtractAssistantMessage`,
   `FuzzDetectAndExtract`, `FuzzStripSystemReminders`, `FuzzTruncate`, `FuzzExtractSSE`

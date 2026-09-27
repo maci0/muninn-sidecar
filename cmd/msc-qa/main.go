@@ -620,8 +620,8 @@ func recallContext(ctx context.Context, mcp *mcpclient.Client, vault, query stri
 	return strings.Join(recallCandidates(ctx, mcp, vault, query, minScore, multi), "\n")
 }
 
-// recallCandidates returns the gated recall passages' content, highest-scored
-// first (bare content — used for grounding and the distractor arm).
+// recallCandidates returns the gated recall passages' content in recall order
+// (bare content — used for grounding and the distractor arm).
 func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) []string {
 	cands := recallStructured(ctx, mcp, vault, query, minScore, multi)
 	out := make([]string, len(cands))
@@ -632,7 +632,8 @@ func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query s
 }
 
 // recallStructured returns the gated recall candidates (cosine >= minScore) with
-// concept and relevance, highest-scored first.
+// concept and relevance, in MuninnDB's return order (already score-ranked; the
+// multi-query path concatenates per-sub-query results, not a global ranking).
 func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) []cand {
 	if multi {
 		// Dedup by content, keeping the best score across sub-queries: a memory

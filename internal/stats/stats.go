@@ -35,7 +35,7 @@ type Stats struct {
 	GroundingRuns   atomic.Int64 // turns the answer-grounding rerank ran (one listwise judge call each)
 	GroundDropped   atomic.Int64 // candidates the grounding rerank dropped (judged not to answer the query)
 	BudgetTruncated atomic.Int64 // gated memories dropped because they exceeded the injection token budget
-	Upgraded        atomic.Int64 // protocol-upgrade (e.g. WebSocket) streams spliced through MITM but not captured
+	Upgraded        atomic.Int64 // protocol-upgrade (e.g. WebSocket) streams spliced through MITM; a codex Responses stream is still decoded and captured on the tap
 
 	models sync.Map // model name → *atomic.Int64
 

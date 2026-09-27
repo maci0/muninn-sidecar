@@ -1,14 +1,16 @@
 # Testing & Fuzzing
 
-Every function in the tree has test coverage, and every function that ingests
-fuzzable input (bytes / strings / numbers — i.e. all parsing and transform
-surfaces) has a Go fuzz target.
+Every parsing and transform surface in the tree has a Go fuzz target, and every
+package carries high statement coverage (the floor is `cmd/msc`, where the
+process-level paths are covered by a re-exec test rather than in-package ones).
 
 ## Coverage
 
-- High statement coverage across every package: internal **~81–100%**
-  (`redact` 100%, `agents`/`store`/`stats` ~96%, `inject` 94%, `grounding` 92%,
-  `proxy` 89%, `mitm` 81%), cmd **~66–87%**.
+- High statement coverage across every package: internal **~84–100%**
+  (`redact` 100%, `grounding` 99%, `store` 97%, `stats` 96%, `inject` 96%,
+  `config` 93%, `agents` 91%, `proxy` 92%, `apiformat` 90%, `mcpclient` 89%,
+  `mitm` 84%), cmd **66–91%** (`msc` 66% — its `main()` paths are covered by a
+  re-exec test, not by in-package tests — and `msc-qa`/`msc-bench` 91%/90%).
 - `make cover` — race-enabled coverage with a per-function breakdown.
 - The `main()` wrappers are exercised via a re-exec test (`TestMainHelp`)
   that runs `main()` inside the instrumented test binary, so even those count.
@@ -31,7 +33,8 @@ surfaces) has a Go fuzz target.
 - **agents** — proxy-flag argument injection / `{proxy}` substitution
   (`buildArgs`) and the TLS-MITM child environment (`BuildMITMEnv`).
 - **proxy** — request/response anti-recursion filtering, SSE parsing, injected-
-  context stripping, MITM helpers (`stripPort`, `isUpgradeRequest`,
+  context stripping, model/usage extraction, JSON sanitizing, synthetic response
+  building, MITM helpers (`stripPort`, `isUpgradeRequest`,
   `shouldInterceptHost`), and the WebSocket-capture path: frame decoding
   (`readWSFrame`), permessage-deflate inflation (`inflate`), the 101 header
   reader, and the codex message-pairing parsers.

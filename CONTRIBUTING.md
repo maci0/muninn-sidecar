@@ -63,7 +63,10 @@ One command runs everything the CI `test` job runs, in the same order:
 make check   # tidy-check, fmt-check, lint (go vet + staticcheck + shellcheck + ruff + yamllint), go test -race, build
 ```
 
-The other two CI jobs are separate because they are slow or need the network:
+The remaining CI jobs are separate: the `lint` job (ruff, shellcheck, yamllint —
+`make lint` runs the same tools when they are installed), the cross-platform
+`build` matrix (windows/amd64, both unix flavors, both arches — `make build`
+covers the host), and the two slow or networked ones:
 
 ```sh
 FUZZTIME=8s make fuzz   # brief campaign over every fuzz target

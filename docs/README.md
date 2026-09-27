@@ -18,13 +18,17 @@
   models** and **seven+ task regimes**, plus frontier CLI readers, and the
   unifying law: *injection value ≈ retrieval accuracy × the model's in-context
   ability; a wrong injection never helps*.
-- **[testing.md](testing.md)** — test + fuzz posture: every function tested,
-  60 fuzz targets over all parsing/transform surfaces, `make cover` / `make fuzz`.
+- **[testing.md](testing.md)** — test + fuzz posture: measured per-package
+  coverage, 60 fuzz targets over all parsing/transform surfaces, `make cover` /
+  `make fuzz`.
 - **[THREAT_MODEL.md](THREAT_MODEL.md)** — the security view: risk-ranked
   summary, attack-surface inventory (every entry point with a file reference),
   trust boundaries, STRIDE threats per boundary, the mitigations that exist
   mapped to the threats they cover, the ones that do not, abuse cases, and what
   the logs can and cannot answer after an incident.
+- **[websocket-agents.md](websocket-agents.md)** — which agents stream inference
+  over a WebSocket (only codex ChatGPT-mode) versus plain HTTP or gRPC, and how
+  to map a new WebSocket protocol with `MSC_WS_DEBUG`.
 
 ## Dataset zoo
 
@@ -45,6 +49,9 @@ per-vault auto-calibration:
 | `code` | NL→code retrieval (product-relevant) | 0.39 |
 | `xquad-de` / `xquad-zh` | multilingual (German / Chinese) | 0.51 / 0.18 |
 | `quora` | informal community Q&A | 0.40 |
+
+`wikiqa` is the one converter the script ships that has not been seeded or
+probed, so it has no R@1.
 
 ```sh
 python3 scripts/fetch_hf_datasets.py all          # write <tmpdir>/<name>.json for each

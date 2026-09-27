@@ -101,8 +101,8 @@ func DetectFormat(doc map[string]any) string {
 			return Anthropic
 		}
 	}
-	// OpenAI Responses API: has "input" field (string or array of items)
-	// without "messages" or "contents". Must check before generic OpenAI.
+	// OpenAI Responses API: has an "input" field (string or array of items).
+	// Checked before generic OpenAI, which only tests for "messages".
 	if _, ok := doc["input"]; ok {
 		return OpenAIResponses
 	}

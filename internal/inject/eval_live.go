@@ -55,7 +55,7 @@ func ParseLiveScenarios(data []byte) ([]LiveScenario, error) {
 
 // RunLive seeds each scenario's memories into the configured vault, then runs
 // the real recall + selection path against the query and scores which expected
-// concepts were injected. It uses cfg.RelRatio/cfg.Budget (defaulted in New).
+// concepts were injected. It uses cfg.Budget (defaulted in New).
 //
 // Seeding writes to cfg.Vault — point it at a throwaway eval vault, not a
 // working one. A short settle delay lets MuninnDB index the seeded memories

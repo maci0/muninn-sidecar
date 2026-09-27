@@ -201,9 +201,10 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 	if g.key != "" {
 		req.Header.Set("Authorization", "Bearer "+g.key)
 	}
-	// Enforce a TLS 1.2 floor (matches the proxy/mcpclient policy): the API key
-	// is sent as a bearer token, so the transport to the grounding endpoint must
-	// not negotiate down to a legacy protocol version.
+	// Enforce a TLS 1.2 floor: the API key is sent as a bearer token, so the
+	// transport to the (possibly third-party) grounding endpoint must not
+	// negotiate down to a legacy protocol version. mcpclient and the proxy's
+	// upstream leg require 1.3; only the MITM forward leg uses this 1.2 floor.
 	resp, err := (&http.Client{
 		Timeout:   g.timeout,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}},

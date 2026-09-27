@@ -38,9 +38,9 @@ func requestID(ctx context.Context) string {
 }
 
 // captureCtx carries request metadata through the reverse proxy pipeline:
-// ServeHTTP → rewrite → upstream → captureResponse. The request body is
-// buffered in ServeHTTP before the reverse proxy forwards it, since the
-// body stream can only be read once.
+// ServeHTTP → instrument → rewrite → upstream → captureResponse. The request
+// body is buffered in instrument before the reverse proxy forwards it, since the
+// body stream can only be read once; the MITM path buffers there too.
 type captureCtx struct {
 	id      string    // correlation ID, also carried on the request context
 	start   time.Time // request arrival time (for duration calculation)

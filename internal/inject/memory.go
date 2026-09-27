@@ -89,7 +89,8 @@ const decayFactor = 0.7
 
 // decayFloor is the minimum effective score before a memory is evicted from
 // the session window. With decayFactor=0.7 and a starting score of 0.85,
-// a memory survives ~4 turns without being re-recalled before falling below 0.2.
+// a memory survives 4 turns without being re-recalled and is evicted on the
+// fifth, when its decayed score drops below 0.2.
 const decayFloor = 0.2
 
 // decayTable holds precomputed decay multipliers for ages 0–9 turns.

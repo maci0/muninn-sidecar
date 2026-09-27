@@ -10,9 +10,10 @@ import (
 // HotpotQA is a multi-hop QA dataset: each question requires combining facts
 // from two different Wikipedia paragraphs. It is the fair test for whether the
 // `deep` recall mode (graph traversal across linked memories) earns its keep —
-// single-hop SQuAD found deep adds only noise. genHotpot seeds the supporting
-// paragraphs of the first `seedExamples` questions as memories and probes with
-// those multi-hop questions; absent probes come from disjoint later questions.
+// single-hop SQuAD found deep adds only noise. genHotpot seeds every context
+// paragraph (supporting and distractor alike) of the first `seedExamples`
+// questions as memories and probes with those multi-hop questions, the gold
+// being the supporting facts; absent probes come from disjoint later questions.
 //
 // Public HotpotQA mirrors are flaky; if the file is missing this returns a clear
 // error. Fetch: hotpot_dev_distractor_v1.json from the HotpotQA project page.

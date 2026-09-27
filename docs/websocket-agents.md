@@ -21,7 +21,8 @@ do that, based on a static scan of their binaries plus live verification.
 `msc` only decodes codex's Responses-API envelope out of the box. If a future
 agent (or a different mode of an existing one) streams inference over a
 proprietary WebSocket, you first need to learn its message envelope from live
-traffic. Run the agent under `--mitm` with the probe enabled:
+traffic. Run the agent under `--mitm` with the probe enabled — `--debug` is
+required as well, since the probe logs at INFO and the default level is WARN:
 
 ```sh
 MSC_WS_DEBUG=1 msc --mitm --debug <agent> …

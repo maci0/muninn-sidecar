@@ -2,8 +2,11 @@
 set -uo pipefail
 cd "$(dirname "$0")" || exit 1
 
-# Clear env vars from parent msc/claude session to avoid nested detection.
-unset MSC_UPSTREAM ANTHROPIC_BASE_URL CLAUDECODE 2>/dev/null || true
+# Clear env vars from a parent msc session to avoid nested detection. The
+# upstream sentinel is per-agent (MSC_UPSTREAM_<AGENT>), not a bare
+# MSC_UPSTREAM, so name the agents this script drives.
+unset MSC_UPSTREAM_CLAUDE MSC_UPSTREAM_CODEX MSC_UPSTREAM_QWEN \
+    ANTHROPIC_BASE_URL CLAUDECODE 2>/dev/null || true
 
 DEBUG=""
 if [[ "${1:-}" == "-d" ]]; then
