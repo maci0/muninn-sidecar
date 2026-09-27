@@ -93,20 +93,24 @@ const decayFactor = 0.7
 // fifth, when its decayed score drops below 0.2.
 const decayFloor = 0.2
 
-// decayTable holds precomputed decay multipliers for ages 0–9 turns.
-// decayTable[n] = 0.7^n. Memories are evicted at age ~4–5, so the table
-// covers all practical cases without calling math.Pow.
-var decayTable = [10]float64{
-	1.0,
-	0.7,
-	0.49,
-	0.343,
-	0.2401,
-	0.16807,
-	0.117649,
-	0.0823543,
-	0.05764801,
-	0.040353607,
+// decayTableLen is the number of precomputed decay multipliers.
+const decayTableLen = 10
+
+// decayTable holds precomputed decay multipliers for ages 0–(decayTableLen-1)
+// turns, derived from decayFactor so the two cannot drift apart: a hand-typed
+// table of 0.7^n kept a second copy of the factor, and retuning decayFactor
+// would have silently left the table (and every age it covers) on the old
+// curve. Memories are evicted at age ~4–5, so the table covers all practical
+// cases without calling math.Pow.
+var decayTable = buildDecayTable()
+
+func buildDecayTable() [decayTableLen]float64 {
+	var t [decayTableLen]float64
+	t[0] = 1
+	for i := 1; i < len(t); i++ {
+		t[i] = t[i-1] * decayFactor
+	}
+	return t
 }
 
 // trackedMemory wraps a recalled memory with session-level tracking state.

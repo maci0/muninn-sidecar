@@ -179,7 +179,7 @@ func TestRetryBackoffRunsOnTheInjectedClock(t *testing.T) {
 
 	// The first attempt rides the first flush period.
 	clk.Advance(2 * time.Second)
-	waitAttempts(t, count, 1)
+	waitAttempts(t, clk, count, 1)
 	// The 2s and 4s backoffs elapse on the scripted clock, so a frozen clock
 	// must leave the retry budget unspent.
 	time.Sleep(50 * time.Millisecond)
@@ -187,10 +187,8 @@ func TestRetryBackoffRunsOnTheInjectedClock(t *testing.T) {
 		t.Fatalf("%d attempts with the clock frozen, want 1", n)
 	}
 
-	clk.Advance(2 * time.Second)
-	waitAttempts(t, count, 2)
-	clk.Advance(4 * time.Second)
-	waitAttempts(t, count, 3)
+	waitAttempts(t, clk, count, 2)
+	waitAttempts(t, clk, count, 3)
 	time.Sleep(50 * time.Millisecond)
 	if n := count(); n != 3 {
 		t.Fatalf("%d attempts, want the 3-attempt budget and no more", n)
@@ -198,13 +196,20 @@ func TestRetryBackoffRunsOnTheInjectedClock(t *testing.T) {
 	s.Drain()
 }
 
-func waitAttempts(t *testing.T, count func() int, want int) {
+// waitAttempts drives the scripted clock forward until the store has made want
+// attempts. It advances the clock itself rather than taking a fixed schedule:
+// the backoff timer for the next attempt is registered by the worker only after
+// the previous response has been classified, so an advance issued the moment
+// the attempt is observed can land before that timer exists, leaving it due in
+// the future with no further advance coming.
+func waitAttempts(t *testing.T, clk *clock.Fake, count func() int, want int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if count() >= want {
 			return
 		}
+		clk.Advance(time.Second)
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d attempts, got %d", want, count())

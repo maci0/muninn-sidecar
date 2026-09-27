@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -338,7 +339,7 @@ func TestQueueOverflow(t *testing.T) {
 
 	st := &stats.Stats{}
 	// No worker: nothing drains the channel, so filling it is deterministic.
-	s := &MuninnStore{queue: make(chan *CapturedExchange, depth), stats: st}
+	s := &MuninnStore{queue: make(chan queueItem, depth), stats: st}
 
 	ex := func(i int) *CapturedExchange {
 		return &CapturedExchange{
@@ -1349,7 +1350,7 @@ func TestStoreQueueFullWarningIsThrottled(t *testing.T) {
 	defer slog.SetDefault(prev)
 
 	// No worker and a zero-capacity queue: every Store is a drop.
-	s := &MuninnStore{queue: make(chan *CapturedExchange), stats: st}
+	s := &MuninnStore{queue: make(chan queueItem), stats: st}
 	const drops = dropLogEvery*2 + 1
 	for range drops {
 		s.Store(&CapturedExchange{Path: "/v1/messages"})
@@ -1542,7 +1543,7 @@ func TestStoreQueueFullWarningCarriesRequestID(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	defer slog.SetDefault(prev)
 
-	s := &MuninnStore{queue: make(chan *CapturedExchange), stats: st}
+	s := &MuninnStore{queue: make(chan queueItem), stats: st}
 	s.Store(&CapturedExchange{RequestID: "req-7", Path: "/v1/messages"})
 
 	if !strings.Contains(logs.String(), "request_id=req-7") {
@@ -1554,13 +1555,81 @@ func TestQueueDepthReportsBackpressure(t *testing.T) {
 	// The queue is where captures pile up when MuninnDB is slow; at capacity
 	// the next capture is dropped, so the status endpoint needs to see it.
 	s := New("", "", "", nil)
-	s.queue <- &CapturedExchange{Path: "/v1/messages"}
+	s.queue <- queueItem{ex: &CapturedExchange{Path: "/v1/messages"}}
 
 	depth, capacity := s.QueueDepth()
 	if depth != 1 || capacity != 256 {
 		t.Errorf("QueueDepth() = (%d, %d), want (1, 256)", depth, capacity)
 	}
 	s.Drain()
+}
+
+func TestQueueByteBudgetDropsLargeCaptures(t *testing.T) {
+	// The depth alone is not a memory bound. A captured request repeats the
+	// whole conversation and reaches tens of MiB, so a queue a handful of slots
+	// short of full can still be holding gigabytes, and the process dies before
+	// the depth says anything is wrong. The byte budget is the back-pressure
+	// that does bound it.
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	st := &stats.Stats{}
+	// No worker: nothing drains the channel, so the fill is deterministic.
+	s := &MuninnStore{queue: make(chan queueItem, 256), stats: st}
+
+	// Exactly maxQueuedBytes/8MiB captures fit; the next one does not.
+	const chunk = 8 << 20
+	big := func() *CapturedExchange {
+		return &CapturedExchange{Path: "/v1/messages", ReqBody: json.RawMessage(bytes.Repeat([]byte("a"), chunk))}
+	}
+	for range maxQueuedBytes / chunk {
+		s.Store(big())
+	}
+	if got := st.Dropped.Load(); got != 0 {
+		t.Fatalf("dropped %d exchanges below the byte budget, want 0", got)
+	}
+
+	// The queue is nowhere near its 256 slots here, so the depth would read
+	// healthy: only the byte budget catches this.
+	s.Store(big())
+	if got := st.Dropped.Load(); got != 1 {
+		t.Errorf("Dropped = %d, want 1 past the byte budget", got)
+	}
+	if got := len(s.queue); got != maxQueuedBytes/chunk {
+		t.Errorf("queue holds %d exchanges, want %d", got, maxQueuedBytes/chunk)
+	}
+	if inFlight, capacity := s.QueueBytes(); inFlight != maxQueuedBytes || capacity != maxQueuedBytes {
+		t.Errorf("QueueBytes() = (%d, %d), want (%d, %d)",
+			inFlight, capacity, int64(maxQueuedBytes), int64(maxQueuedBytes))
+	}
+	if !strings.Contains(logs.String(), "byte budget") {
+		t.Errorf("byte-budget drop is not named in the log:\n%s", logs.String())
+	}
+}
+
+func TestQueuedBytesReturnAfterDelivery(t *testing.T) {
+	// The budget is only a bound while the accounting is exact: the worker
+	// releases each exchange's bytes once it has formatted it, so a long
+	// session does not slowly starve itself of budget and start dropping.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL, "", "test", nil)
+	s.Store(&CapturedExchange{
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"hello"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"hi"}]}`),
+	})
+	s.Drain()
+
+	if inFlight, _ := s.QueueBytes(); inFlight != 0 {
+		t.Errorf("queued bytes = %d after drain, want 0", inFlight)
+	}
 }
 
 func TestBatchRequestIDsNamesTheLostTurns(t *testing.T) {

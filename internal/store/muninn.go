@@ -36,6 +36,17 @@ const maxBatchSize = 10
 // carries the exact count.
 const dropLogEvery = 100
 
+// maxQueuedBytes bounds the body bytes the queue may hold at once. The queue
+// depth alone is not a memory bound: an exchange carries a captured request
+// that repeats the whole conversation (up to proxy.maxRequestBodySize, 50 MiB)
+// plus its response, so a 256-slot queue can legitimately hold tens of GiB and
+// the process is OOM-killed long before the slot count says anything is wrong.
+// The byte budget is the back-pressure the depth was meant to be: a large
+// capture is dropped when the queued bytes are already at the cap, and small
+// ones keep flowing. 256 MiB is far above a full queue of ordinary turns and
+// far below what a machine running an agent can afford to lose silently.
+const maxQueuedBytes = 256 << 20 // 256 MiB
+
 // Rune caps on what one exchange contributes to a memory. A captured request
 // carries the whole conversation and can reach tens of MiB, so the concept
 // (which the live feed and the dedup key are built from) and the stored content
@@ -53,6 +64,15 @@ const (
 	sideRunesBody = 4000
 )
 
+// queueItem is one exchange in flight through the store, with the body bytes
+// it is holding against maxQueuedBytes. The count travels with the exchange so
+// the worker releases exactly what the producer reserved, whichever side of the
+// handoff fails.
+type queueItem struct {
+	ex    *CapturedExchange
+	bytes int64
+}
+
 // formattedMemory holds a pre-formatted exchange ready for MuninnDB.
 type formattedMemory struct {
 	concept string
@@ -67,15 +87,22 @@ type formattedMemory struct {
 // Writes are async: Store() enqueues to a buffered channel, and a background
 // goroutine batches them (up to 10 per call, flushed every 2s) using
 // muninn_remember for single items or muninn_remember_batch for multiple.
-// This keeps the proxy's hot path free of network I/O.
+// This keeps the proxy's hot path free of network I/O. The queue is bounded
+// by both slot count and body bytes (see maxQueuedBytes).
 type MuninnStore struct {
-	vault     string                 // target vault in MuninnDB (default: "sidecar")
-	mcp       *mcpclient.Client      // shared MCP JSON-RPC client
-	queue     chan *CapturedExchange // buffered channel of pending exchanges (depth 256)
-	done      chan struct{}          // closed when Drain completes
-	drainOnce sync.Once              // ensures Drain is idempotent
-	stats     *stats.Stats           // session statistics (nil-safe)
-	redact    atomic.Bool            // scrub secrets from captured content before storage
+	vault     string            // target vault in MuninnDB (default: "sidecar")
+	mcp       *mcpclient.Client // shared MCP JSON-RPC client
+	queue     chan queueItem    // buffered channel of pending exchanges (depth 256)
+	done      chan struct{}     // closed when Drain completes
+	drainOnce sync.Once         // ensures Drain is idempotent
+	stats     *stats.Stats      // session statistics (nil-safe)
+	redact    atomic.Bool       // scrub secrets from captured content before storage
+
+	// queuedBytes is the body bytes reserved against maxQueuedBytes by the
+	// producers and released by the worker as each exchange is formatted. The
+	// queue depth says how many captures are waiting; this says how much memory
+	// they are holding, which is the number that actually runs the process out.
+	queuedBytes atomic.Int64
 
 	// prepare is written by SetPreparer (the caller) and read on the worker
 	// goroutine, which is already running by the time it is installed, so it
@@ -145,9 +172,10 @@ type CapturedExchange struct {
 }
 
 // New creates a MuninnStore and starts its background flush goroutine.
-// The queue depth of 256 provides back-pressure: if MuninnDB is unreachable
-// for an extended period, new captures are dropped rather than letting
-// memory grow unbounded. Pass a non-nil Stats to track session metrics.
+// The queue depth of 256 and the maxQueuedBytes budget together provide
+// back-pressure: if MuninnDB is unreachable for an extended period, new
+// captures are dropped rather than letting memory grow unbounded. Pass a
+// non-nil Stats to track session metrics.
 func New(mcpURL, token, vault string, st *stats.Stats) *MuninnStore {
 	return NewWithClock(mcpURL, token, vault, st, nil)
 }
@@ -169,7 +197,7 @@ func NewWithClock(mcpURL, token, vault string, st *stats.Stats, clk clock.Clock)
 		// not latency-sensitive, so a generous timeout allows for transient
 		// slowness without losing captures prematurely.
 		mcp:   mcpclient.New(mcpURL, token, 10*time.Second),
-		queue: make(chan *CapturedExchange, 256),
+		queue: make(chan queueItem, 256),
 		done:  make(chan struct{}),
 		stats: st,
 		clock: clk,
@@ -206,9 +234,10 @@ func (s *MuninnStore) preparer() Preparer {
 	return s.prepare
 }
 
-// Store enqueues an exchange for async delivery. Non-blocking: if the queue
-// is full the exchange is dropped with a warning (we never block the proxy).
-// Safe to call after Drain() — late arrivals are dropped with a warning.
+// Store enqueues an exchange for async delivery. Non-blocking: if the queue is
+// full, or the bytes already queued are at maxQueuedBytes, the exchange is
+// dropped with a warning (we never block the proxy). Safe to call after
+// Drain() — late arrivals are dropped with a warning.
 //
 // The exchange is enqueued as captured: normalization (Preparer), redaction,
 // formatting, and the model/token counters all run later, on the worker's
@@ -219,11 +248,25 @@ func (s *MuninnStore) Store(ex *CapturedExchange) {
 		s.stats.Captured.Add(1)
 	}
 
+	n := int64(len(ex.ReqBody)) + int64(len(ex.RespBody))
+	if !s.reserve(n) {
+		if s.stats != nil {
+			s.stats.Dropped.Add(1)
+		}
+		if c := s.dropped.Add(1); c == 1 || c%dropLogEvery == 0 {
+			slog.Warn("muninn store byte budget exhausted, dropping exchanges",
+				reqid.Field, ex.RequestID, "path", ex.Path,
+				"dropped_total", c, "bytes", n, "limit", maxQueuedBytes)
+		}
+		return
+	}
+
 	// Recover from panic if queue has been closed by Drain(). This is
 	// cheaper than adding a mutex on every Store() call and only fires
 	// in the narrow window between Drain() and full shutdown.
 	defer func() {
 		if r := recover(); r != nil {
+			s.release(n)
 			slog.Warn("muninn store: dropped exchange after drain",
 				reqid.Field, ex.RequestID, "path", ex.Path)
 			if s.stats != nil {
@@ -233,17 +276,38 @@ func (s *MuninnStore) Store(ex *CapturedExchange) {
 	}()
 
 	select {
-	case s.queue <- ex:
+	case s.queue <- queueItem{ex: ex, bytes: n}:
 	default:
+		s.release(n)
 		if s.stats != nil {
 			s.stats.Dropped.Add(1)
 		}
-		if n := s.dropped.Add(1); n == 1 || n%dropLogEvery == 0 {
+		if c := s.dropped.Add(1); c == 1 || c%dropLogEvery == 0 {
 			slog.Warn("muninn store queue full, dropping exchanges",
-				reqid.Field, ex.RequestID, "path", ex.Path, "dropped_total", n)
+				reqid.Field, ex.RequestID, "path", ex.Path, "dropped_total", c)
 		}
 	}
 }
+
+// reserve claims n bytes of the queue's memory budget, reporting false when
+// that would take the queued bytes past maxQueuedBytes. The comparison and the
+// claim are one CAS, so concurrent producers cannot both see headroom the other
+// just spent.
+func (s *MuninnStore) reserve(n int64) bool {
+	for {
+		cur := s.queuedBytes.Load()
+		if cur+n > maxQueuedBytes {
+			return false
+		}
+		if s.queuedBytes.CompareAndSwap(cur, cur+n) {
+			return true
+		}
+	}
+}
+
+// release returns n bytes to the queue's memory budget once the exchange that
+// reserved them has been formatted and its bodies are no longer referenced.
+func (s *MuninnStore) release(n int64) { s.queuedBytes.Add(-n) }
 
 // Drain signals the background worker to stop accepting new exchanges, then
 // blocks until all pending exchanges are flushed to MuninnDB and the worker
@@ -268,6 +332,15 @@ func (s *MuninnStore) Drain() {
 // memories are being lost.
 func (s *MuninnStore) QueueDepth() (depth, capacity int) {
 	return len(s.queue), cap(s.queue)
+}
+
+// QueueBytes reports the body bytes currently reserved against the queue's
+// memory budget and that budget. A saturated byte budget drops captures the
+// same way a full queue does, but at a depth well under the cap, which is the
+// signature of a handful of very large exchanges rather than a MuninnDB
+// backlog. The status endpoint needs both numbers to tell those apart.
+func (s *MuninnStore) QueueBytes() (inFlight, capacity int64) {
+	return s.queuedBytes.Load(), maxQueuedBytes
 }
 
 // HealthCheck pings the MuninnDB MCP health endpoint for this store's
@@ -304,14 +377,19 @@ func (s *MuninnStore) worker() {
 
 	for {
 		select {
-		case ex, ok := <-s.queue:
+		case item, ok := <-s.queue:
 			if !ok {
 				if len(batch) > 0 {
 					s.flushFormatted(batch)
 				}
 				return
 			}
-			if fm := s.prepareForStore(ex, &dedupRing, &ringIdx); fm != nil {
+			fm := s.prepareForStore(item.ex, &dedupRing, &ringIdx)
+			// The exchange is prepared: the batch keeps only the truncated
+			// concept and content, so the reserved bodies are unreachable and
+			// their budget returns to the pool.
+			s.release(item.bytes)
+			if fm != nil {
 				batch = append(batch, *fm)
 			}
 			if len(batch) >= maxBatchSize {

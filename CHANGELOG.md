@@ -32,6 +32,17 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   text is now scrubbed of direct identifiers and capped before it becomes an
   error value, so no call site can leak captured conversation into a log line, a
   stderr warning, or an `err` field by way of the transport.
+- **The store queue is bounded by bytes, not only by slot count.** Its
+  back-pressure was a 256-slot channel, but an exchange carries a captured
+  request that repeats the whole conversation (up to 50 MiB a body) plus its
+  response, so a queue a few slots short of full could be holding tens of GiB
+  and take the process down before the depth said anything was wrong. Producers
+  now reserve each exchange's body bytes against a 256 MiB budget as they
+  enqueue, the worker returns them once the exchange is formatted, and a capture
+  that would pass the budget is dropped exactly as one that finds a full queue
+  is. `GET /__msc/health` reports `bytes_in_flight`, `bytes_capacity` and
+  `bytes_saturated` next to the depth, so a queue dropping on its memory budget
+  no longer reads as healthy.
 - **`msc-bench -seed` is idempotent again.** Seeded memories went out without
   the content-addressed `dedup_key` every other write path carries, so a rerun
   of `-seed` stored a second copy of the whole corpus. The duplicates crowd

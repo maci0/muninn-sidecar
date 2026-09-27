@@ -2549,6 +2549,66 @@ type queueStore struct {
 
 func (q *queueStore) QueueDepth() (int, int) { return q.depth, q.capacity }
 
+// byteQueueStore is a Storer whose queue is nowhere near its slot cap but is
+// holding more body bytes than it budgeted for, the other way captures get
+// dropped.
+type byteQueueStore struct {
+	recordStore
+	depth, capacity         int
+	bytesInFlight, bytesCap int64
+}
+
+func (q *byteQueueStore) QueueDepth() (int, int) { return q.depth, q.capacity }
+
+func (q *byteQueueStore) QueueBytes() (int64, int64) { return q.bytesInFlight, q.bytesCap }
+
+func TestStatusEndpointReportsByteSaturatedQueue(t *testing.T) {
+	// A queue short on slots but long on bytes reads as healthy on depth alone:
+	// the operator sees an idle-looking queue and no clue that captures are
+	// being thrown away, so the byte budget has to reach the status body.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	st := &stats.Stats{}
+	store := &byteQueueStore{depth: 3, capacity: 256, bytesInFlight: 256 << 20, bytesCap: 256 << 20}
+
+	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: upstream.URL, AgentName: "claude", Store: store, Stats: st})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	resp, err := http.Get("http://" + addr + StatusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		Degraded bool       `json:"degraded"`
+		Reasons  []string   `json:"degraded_reasons"`
+		StoreQ   storeQueue `json:"store_queue"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.Degraded || len(body.Reasons) != 1 {
+		t.Fatalf("degraded = %v, reasons = %v, want one reason for the byte budget", body.Degraded, body.Reasons)
+	}
+	if body.StoreQ.Saturated {
+		t.Errorf("store_queue = %+v, want the slot count unsaturated", body.StoreQ)
+	}
+	if !body.StoreQ.BytesSaturated || body.StoreQ.BytesInFlight != 256<<20 {
+		t.Errorf("store_queue = %+v, want the byte budget saturated at 256 MiB", body.StoreQ)
+	}
+}
+
 func TestStatusEndpointReportsDegradedSidecar(t *testing.T) {
 	// Losing memories is not a crash: msc keeps proxying, so the status code
 	// stays 200 (restarting would not help) and the body has to say so, naming

@@ -248,10 +248,10 @@ When the agent misbehaves, three things answer the usual questions: did the turn
 
 ```console
 $ curl -s http://127.0.0.1:41287/__msc/health
-{"status":"ok","degraded":false,"agent":"claude","upstream":"https://api.anthropic.com","uptime_s":214,"store_queue":{"depth":0,"capacity":256,"saturated":false},"stats":{"requests":11,"captured":9,"saved":9,"dropped":0,"save_errors":0,"upstream_errors":1,"proxy_errors":0,"injections":6,"injection_errors":0,"recalls":7,"latency_samples":2,"latency_mean_ms":11515,"latency_max_ms":18720}}
+{"status":"ok","degraded":false,"agent":"claude","upstream":"https://api.anthropic.com","uptime_s":214,"store_queue":{"depth":0,"capacity":256,"saturated":false,"bytes_capacity":268435456},"stats":{"requests":11,"captured":9,"saved":9,"dropped":0,"save_errors":0,"upstream_errors":1,"proxy_errors":0,"injections":6,"injection_errors":0,"recalls":7,"latency_samples":2,"latency_mean_ms":11515,"latency_max_ms":18720}}
 ```
 
-`status` answers liveness and `degraded` answers health, separately, because a sidecar that is up but no longer saving memories should not be restarted: it keeps proxying, and killing it would take the agent's API path down with it. When `degraded` is true, `degraded_reasons` names what is failing (proxy transport errors, delivery errors to MuninnDB, dropped captures, a full store queue) and `store_queue` gives the depth that causes drops. An upstream 4xx/5xx is the provider's answer, forwarded to the agent unchanged, and does not count as degraded. The endpoint does not probe MuninnDB, so an outage shows up as climbing `save_errors` rather than as a failing probe; reachability is checked once at startup, and `msc` refuses to launch without `--force`.
+`status` answers liveness and `degraded` answers health, separately, because a sidecar that is up but no longer saving memories should not be restarted: it keeps proxying, and killing it would take the agent's API path down with it. When `degraded` is true, `degraded_reasons` names what is failing (proxy transport errors, delivery errors to MuninnDB, dropped captures, a full store queue or an exhausted store memory budget) and `store_queue` gives the depth, and the bytes in flight, that cause drops. An upstream 4xx/5xx is the provider's answer, forwarded to the agent unchanged, and does not count as degraded. The endpoint does not probe MuninnDB, so an outage shows up as climbing `save_errors` rather than as a failing probe; reachability is checked once at startup, and `msc` refuses to launch without `--force`.
 
 `requests` counts everything the agent sent, so `requests / uptime_s` is the request rate; `captured` counts only the exchanges that reached the store, which is what makes a session that is answering but no longer capturing visible.
 
@@ -335,9 +335,10 @@ To inspect the resolved configuration without launching anything, run `msc --dry
   upstream (the agent's API). An agent that talks to several API hosts needs
   `--mitm` (which intercepts per-CONNECT-host).
 - **Best-effort capture.** Captures are async and bounded: if MuninnDB is
-  unreachable or the queue (depth 256) fills, exchanges are dropped rather than
-  blocking the agent; shutdown flushing is time-bounded (~8s). Recall/injection
-  fail open — a MuninnDB hiccup never blocks or corrupts a request.
+  unreachable, the queue (depth 256) fills, or the queued bodies reach their
+  256 MiB memory budget, exchanges are dropped rather than blocking the agent;
+  shutdown flushing is time-bounded (~8s). Recall/injection fail open — a
+  MuninnDB hiccup never blocks or corrupts a request.
 - **Secret redaction is best-effort.** Captured content is scrubbed of well-known
   credential formats and personal data (emails, payment-card numbers, SSNs,
   phone numbers, and your own home-directory path, which is a direct identifier

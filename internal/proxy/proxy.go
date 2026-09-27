@@ -449,12 +449,27 @@ type storeQueue struct {
 	Depth     int  `json:"depth"`     // exchanges waiting for the store worker
 	Capacity  int  `json:"capacity"`  // the queue's fixed capacity
 	Saturated bool `json:"saturated"` // depth has reached capacity: new captures are dropped
+
+	// The depth counts exchanges, but what the queue holds is bodies: a
+	// captured request repeats the whole conversation and can be tens of MiB,
+	// so the store bounds queued bytes separately. Reporting both keeps the
+	// two ways of dropping captures apart (a saturated depth is a MuninnDB
+	// backlog, a saturated byte budget is a few very large captures).
+	BytesInFlight  int64 `json:"bytes_in_flight,omitempty"`
+	BytesCapacity  int64 `json:"bytes_capacity,omitempty"`
+	BytesSaturated bool  `json:"bytes_saturated,omitempty"`
 }
 
 // queueReporter is the optional Storer capability that reports its queue depth.
 // Asserted rather than required of Storer so a Storer that keeps no queue (a
 // test double, or a store with no worker) still serves the status endpoint.
 type queueReporter interface{ QueueDepth() (depth, capacity int) }
+
+// byteReporter is the optional Storer capability that reports the bytes its
+// queue is holding, separately from the queueReporter's slot count.
+type byteReporter interface {
+	QueueBytes() (inFlight, capacity int64)
+}
 
 // storeQueue reports the storer queue's depth, or zeros when the storer has no
 // queue to report.
@@ -464,7 +479,13 @@ func (p *Proxy) storeQueue() storeQueue {
 		return storeQueue{}
 	}
 	depth, capacity := q.QueueDepth()
-	return storeQueue{Depth: depth, Capacity: capacity, Saturated: capacity > 0 && depth >= capacity}
+	out := storeQueue{Depth: depth, Capacity: capacity, Saturated: capacity > 0 && depth >= capacity}
+	if b, ok := p.store.(byteReporter); ok {
+		inFlight, cap := b.QueueBytes()
+		out.BytesInFlight, out.BytesCapacity = inFlight, cap
+		out.BytesSaturated = cap > 0 && inFlight >= cap
+	}
+	return out
 }
 
 // degradedReasons names what is stopping the sidecar from doing its job. Only
@@ -482,10 +503,13 @@ func degradedReasons(snap stats.Snapshot, q storeQueue) []string {
 		reasons = append(reasons, "delivery errors: captured exchanges are not reaching MuninnDB")
 	}
 	if snap.Dropped > 0 {
-		reasons = append(reasons, "dropped captures: the store queue overflowed")
+		reasons = append(reasons, "dropped captures: the store queue overflowed or hit its memory budget")
 	}
 	if q.Saturated {
 		reasons = append(reasons, "store queue is full: new captures are being dropped")
+	}
+	if q.BytesSaturated {
+		reasons = append(reasons, "store queue is at its memory budget: new captures are being dropped")
 	}
 	return reasons
 }
