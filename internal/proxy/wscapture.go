@@ -55,11 +55,13 @@ type wsExchange struct {
 	// only link from a line it logs (or an exchange it stores) back to the turn.
 	requestID string
 	mu        sync.Mutex
-	lastReq   []byte          // most recent response.create payload (the request)
+	lastReq   []byte          // most recent unpaired response.create payload (the request); nil once a completion has consumed it
 	respText  strings.Builder // assistant text accumulated from output_text deltas (s->c goroutine only)
 }
 
-// onClient handles client→server messages: remember the latest request.
+// onClient handles client→server messages: remember the latest request. A new
+// response.create replaces any unpaired one, so the pairing below always sees
+// the most recent turn.
 func (e *wsExchange) onClient(_ string, msg []byte) {
 	var env struct {
 		Type string `json:"type"`
@@ -78,6 +80,15 @@ func (e *wsExchange) onClient(_ string, msg []byte) {
 // turn's text with the last request and store it. Reasoning-only cycles emit no
 // text deltas, so they're naturally skipped. Runs on a single goroutine, so the
 // accumulator needs no lock (only lastReq is shared).
+//
+// A completion consumes the request it paired with, so one response.create can
+// be stored at most once. Without that, a replayed or duplicated
+// response.completed — a redelivered frame, a connection that resumes
+// mid-stream — finds lastReq still set and stores a second exchange built from
+// the same question, and with an empty delta buffer it would be dropped anyway;
+// if the backend restreamed the turn's deltas, the stale question is what makes
+// it a *wrong* memory rather than a mere duplicate. A completion with nothing
+// left to pair is dropped instead.
 func (e *wsExchange) onServer(_ string, msg []byte) {
 	var env struct {
 		Type  string `json:"type"`
@@ -107,6 +118,7 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 		}
 		e.mu.Lock()
 		req := e.lastReq
+		e.lastReq = nil // consumed: this completion is the only one that may pair it
 		e.mu.Unlock()
 		if req == nil {
 			return

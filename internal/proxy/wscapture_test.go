@@ -105,6 +105,37 @@ func TestWSExchangeReasoningOnlySkipped(t *testing.T) {
 	}
 }
 
+func TestWSExchangeCompletionStoredOnce(t *testing.T) {
+	rec := &recordStore{}
+	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}}
+
+	// One turn, delivered twice: a redelivered response.completed, or a
+	// connection that resumes and restreams the tail of the turn. The second
+	// delivery finds no request left to pair with, so it stores nothing —
+	// without consuming lastReq it would pair the replayed answer with the
+	// question of a turn that is already stored.
+	ex.onClient("c->s", []byte(`{"type":"response.create","input":[{"type":"message","role":"user","content":"what is 2+2"}]}`))
+	ex.onServer("s->c", []byte(`{"type":"response.output_text.delta","delta":"4"}`))
+	ex.onServer("s->c", []byte(`{"type":"response.completed"}`))
+	ex.onServer("s->c", []byte(`{"type":"response.output_text.delta","delta":"4"}`))
+	ex.onServer("s->c", []byte(`{"type":"response.completed"}`))
+	if got := rec.all(); len(got) != 1 {
+		t.Fatalf("a replayed completion should not store a second exchange, got %d: %+v", len(got), got)
+	}
+
+	// The next turn on the same connection still pairs its own request.
+	ex.onClient("c->s", []byte(`{"type":"response.create","input":[{"type":"message","role":"user","content":"what is 3+3"}]}`))
+	ex.onServer("s->c", []byte(`{"type":"response.output_text.delta","delta":"6"}`))
+	ex.onServer("s->c", []byte(`{"type":"response.completed"}`))
+	got := rec.all()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 stored exchanges after the second turn, got %d: %+v", len(got), got)
+	}
+	if !bytes.Contains(got[1].ReqBody, []byte("3+3")) || !bytes.Contains(got[1].RespBody, []byte("6")) {
+		t.Errorf("second turn paired the wrong request/answer: %s / %s", got[1].ReqBody, got[1].RespBody)
+	}
+}
+
 func TestReadHeaderBlockBoundedMidLine(t *testing.T) {
 	// A backend that streams bytes with no '\n' must not grow the accumulator
 	// without bound: the 64 KiB cap fires mid-line and returns ErrShortBuffer.
