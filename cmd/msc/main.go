@@ -307,6 +307,12 @@ func run() int {
 	// per-call latency, so it gets a generous timeout independent of the MCP one.
 	var grounder grounding.Grounder
 	if o.groundCmd != "" || o.groundURL != "" {
+		// The CLI backend wins, and --ground-model/--ground-topk/--ground-timeout
+		// only apply to the URL one. Name the flag that is being dropped rather
+		// than leaving a setting in the command line that does nothing.
+		if o.groundCmd != "" && o.groundURL != "" {
+			slog.Warn("--ground-cmd and --ground-url are both set: using --ground-cmd and ignoring --ground-url")
+		}
 		gm := o.groundModel
 		if gm == "" {
 			gm = "qwen2.5:7b-instruct"

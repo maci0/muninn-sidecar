@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -183,6 +185,18 @@ func signalChildHandle(sig syscall.Signal) {
 	if err := signalAgent(p, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		slog.Warn("failed to signal agent", "pid", p.Pid, "err", err)
 	}
+}
+
+// jsonEncoder returns the encoder every --json path in msc writes through, so
+// the machine-readable form is produced the same way everywhere. HTML escaping
+// is off: it exists to protect a <script> context, and it rewrites values the
+// user typed and paths msc computed, so a URL or a proxy placeholder comes out
+// as < and a grep for it in `msc --json --dry-run` finds nothing.
+func jsonEncoder(w io.Writer) *json.Encoder {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	return enc
 }
 
 // logf prints a human-friendly message to stderr with the msc: prefix.

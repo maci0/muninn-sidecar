@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -89,5 +90,23 @@ func TestSeedCorpusIsIdempotent(t *testing.T) {
 	}
 	if len(stored) != len(items) {
 		t.Errorf("two seed runs stored %d memories, want %d", len(stored), len(items))
+	}
+}
+
+// TestMainUsageExitCode pins the exit code for a bad flag value: 2, the code
+// the flag package already uses for an unparseable command line and the code
+// msc exits with, so a script can tell a typo from a runtime failure.
+func TestMainUsageExitCode(t *testing.T) {
+	if os.Getenv("MSC_RUN_MAIN") == "1" {
+		os.Args = []string{"msc-bench", "-ground-topk", "0"}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMainUsageExitCode$")
+	cmd.Env = append(os.Environ(), "MSC_RUN_MAIN=1")
+	cmd.Stderr = io.Discard
+	var exit *exec.ExitError
+	if err := cmd.Run(); !errors.As(err, &exit) || exit.ExitCode() != 2 {
+		t.Errorf("main(-ground-topk 0) should exit 2, got %v", err)
 	}
 }

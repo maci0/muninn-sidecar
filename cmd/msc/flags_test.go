@@ -117,6 +117,17 @@ func TestParseFlags(t *testing.T) {
 		}
 	})
 
+	t.Run("mitm-host rejects a value with no host", func(t *testing.T) {
+		// An empty host list is intercept-all, the opposite of what the flag
+		// asks for, so it must not silently widen TLS interception.
+		for _, v := range []string{"", " ", ",", " , "} {
+			o := &opts{}
+			if _, _, err := parseFlags([]string{"--mitm-host", v, "claude"}, o); err == nil {
+				t.Errorf("--mitm-host %q: want error, got mitm=%v hosts=%v", v, o.mitm, o.mitmHosts)
+			}
+		}
+	})
+
 	t.Run("mitm rejects =value", func(t *testing.T) {
 		if _, _, err := parseFlags([]string{"--mitm=true", "claude"}, &opts{}); err == nil {
 			t.Error("expected error for --mitm=true")

@@ -213,11 +213,20 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			}
 			i = ni
 			// Comma-separated and/or repeated; scoping implies --mitm.
+			var hosts []string
 			for _, h := range strings.Split(v, ",") {
 				if h = strings.TrimSpace(h); h != "" {
-					o.mitmHosts = append(o.mitmHosts, h)
+					hosts = append(hosts, h)
 				}
 			}
+			// An empty list is not "no scoping" but "intercept every host", the
+			// opposite of what the flag asks for, and the one setting that widens
+			// TLS interception to hosts the user never named. Reject it rather
+			// than falling through to intercept-all.
+			if len(hosts) == 0 {
+				return nil, actionNone, fmt.Errorf("%s requires at least one host (got %q)", key, v)
+			}
+			o.mitmHosts = append(o.mitmHosts, hosts...)
 			o.mitm = true
 			i++
 			continue

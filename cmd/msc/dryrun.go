@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -99,8 +98,7 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 				info.InjectCalibrate = "auto-calibrated"
 			}
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
+		enc := jsonEncoder(os.Stdout)
 		if err := enc.Encode(info); err != nil {
 			logerr("failed to encode JSON: %v", err)
 			return 1

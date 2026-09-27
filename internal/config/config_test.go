@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -251,5 +252,41 @@ func TestVaultDirName(t *testing.T) {
 		if got := dirName(dir); got != "" {
 			t.Errorf("dirName(%q) = %q, want no name", dir, got)
 		}
+	}
+}
+
+func TestUsageErrorClassification(t *testing.T) {
+	// Every rejection of a command-line value must be a UsageError, so the CLI
+	// exits 2 for a typo the way the flag package does, and 1 for a run-time
+	// failure.
+	rejects := map[string]error{
+		"OneOf":       OneOf("-corpus", "bogus", "homogeneous", "diverse"),
+		"ValidateURL": ValidateURL("MuninnDB URL", "not a url"),
+		"Usagef":      Usagef("invalid -n 0: must be positive"),
+		"no scheme":   ValidateURL("--mcp-url", "127.0.0.1:8750"),
+	}
+	for name, err := range rejects {
+		if err == nil {
+			t.Errorf("%s: want an error", name)
+			continue
+		}
+		if !IsUsageError(err) {
+			t.Errorf("%s: %v is not a usage error", name, err)
+		}
+	}
+	// Values that are not rejections, and errors from elsewhere.
+	if IsUsageError(OneOf("-corpus", "squad", "homogeneous", "squad")) {
+		t.Error("an allowed value reported a usage error")
+	}
+	if IsUsageError(ValidateURL("--mcp-url", "")) {
+		t.Error("an unset URL reported a usage error")
+	}
+	if IsUsageError(os.ErrNotExist) {
+		t.Error("a runtime error was classified as a usage error")
+	}
+	// A usage error wrapped by a caller is still one.
+	wrapped := fmt.Errorf("loading settings: %w", Usagef("invalid -n 0: must be positive"))
+	if !IsUsageError(wrapped) {
+		t.Error("a wrapped usage error lost its type")
 	}
 }

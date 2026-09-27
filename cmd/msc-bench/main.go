@@ -42,6 +42,11 @@ import (
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "msc-bench:", err)
+		// 2 for a bad flag value, matching what the flag package already
+		// returns for an unparseable command line, and what msc exits with.
+		if config.IsUsageError(err) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
@@ -137,7 +142,7 @@ func run() error {
 		val int
 	}{{"-ground-topk", *groundTopK}, {"-rewrite-n", *rewriteN}} {
 		if c.val <= 0 {
-			return fmt.Errorf("invalid %s %d: must be positive", c.opt, c.val)
+			return config.Usagef("invalid %s %d: must be positive", c.opt, c.val)
 		}
 	}
 	if !*seed && !*doProbe {

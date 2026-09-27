@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,4 +183,14 @@ func FuzzClosestMatch(f *testing.F) {
 	f.Fuzz(func(t *testing.T, s string) {
 		_ = closestMatch(s, []string{"claude", "qwen", "codex"})
 	})
+}
+
+func TestJSONEncoderNoHTMLEscaping(t *testing.T) {
+	var buf bytes.Buffer
+	if err := jsonEncoder(&buf).Encode(map[string]string{"proxy": "http://127.0.0.1:<port>"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "<port>") {
+		t.Errorf("value was HTML-escaped: %s", buf.String())
+	}
 }

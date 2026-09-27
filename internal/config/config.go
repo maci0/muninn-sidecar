@@ -5,6 +5,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -59,6 +60,30 @@ func MCPURL(flagVal string) string {
 	return EnvOr("MUNINN_MCP_URL", DefaultMCPURL)
 }
 
+// UsageError marks a failure caused by what the user typed on the command
+// line, as opposed to a runtime failure. The CLI in this repo exits 2 for a
+// bad flag value and 1 for a failure at run time, so a script can tell a typo
+// from an outage; the flag package already exits 2 for an unparseable command
+// line, and this type extends that code to the values the flag package cannot
+// check on its own.
+type UsageError struct{ err error }
+
+func (e *UsageError) Error() string { return e.err.Error() }
+func (e *UsageError) Unwrap() error { return e.err }
+
+// Usagef returns a UsageError. Use it for every rejection of a flag value that
+// the flag package itself cannot make.
+func Usagef(format string, args ...any) error {
+	return &UsageError{fmt.Errorf(format, args...)}
+}
+
+// IsUsageError reports whether err came from a bad command line, unwrapping
+// through any layer in between.
+func IsUsageError(err error) bool {
+	var ue *UsageError
+	return errors.As(err, &ue)
+}
+
 // OneOf rejects a configuration value that is outside a fixed set, so a typo
 // names itself at startup instead of quietly selecting the default branch of a
 // switch further down. Pass "" in allowed for an option where the empty value
@@ -80,7 +105,7 @@ func OneOf(option, value string, allowed ...string) error {
 	if len(shown) < len(allowed) {
 		empty = " (or the empty value)"
 	}
-	return fmt.Errorf("invalid %s %q: must be one of %s%s", option, value, strings.Join(shown, ", "), empty)
+	return Usagef("invalid %s %q: must be one of %s%s", option, value, strings.Join(shown, ", "), empty)
 }
 
 // ArgSecretWarning returns the message to print when a secret was supplied as
@@ -124,13 +149,13 @@ func ValidateURL(option, raw string) error {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("invalid %s %q: %w", option, raw, err)
+		return Usagef("invalid %s %q: %w", option, raw, err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("invalid %s %q: scheme must be http or https", option, raw)
+		return Usagef("invalid %s %q: scheme must be http or https", option, raw)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("invalid %s %q: missing host", option, raw)
+		return Usagef("invalid %s %q: missing host", option, raw)
 	}
 	return nil
 }

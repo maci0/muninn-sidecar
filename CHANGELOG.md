@@ -61,6 +61,23 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
   Makefile and repeated as literals in `ci.yml`, so a bump in one left the
   other enforcing a different ruff release than `make lint` did. `make lint-ci`
   is now the invocation the workflow runs, pins included.
+- **Breaking: a bad flag value now exits 2 in every binary.** The `flag`
+  package already exits 2 for an unparseable command line, but the three tool
+  binaries exited 1 for a value it parsed and then rejected (`msc-qa -n 0`,
+  `msc-bench -ground-topk 0`, `msc-eval -min-score 5`), so a script could not
+  tell a typo from a runtime failure. The rejections are typed and exit 2, as
+  `msc` already did.
+- **`--mitm-host` with no host in it is rejected.** `--mitm-host ""` (or a
+  value of only commas and spaces) scoped nothing and left `--mitm` on, which
+  TLS-intercepts every host: the opposite of what the flag asks for, and the
+  one setting that widens interception to hosts the user never named. It now
+  fails as a usage error like every other empty flag value.
+- **Two grounding backends in one command line are named.** `--ground-cmd` and
+  `--ground-url` together silently dropped `--ground-url`; the run now warns
+  which backend it picked.
+- **`--json` output is no longer HTML-escaped.** The proxy placeholder in
+  `msc --json --dry-run` came out as `\\u003cport\\u003e`, so a grep or a `sed`
+  over the machine-readable form missed it.
 - **Reader output and judge scope are capped at startup.** `-max-tokens`
   (`msc-qa`) and `-ground-topk` (`msc-qa`, `msc-bench`) were the only things
   bounding a model call, and neither rejected a zero: providers that honor

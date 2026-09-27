@@ -135,7 +135,9 @@ The commands above are the exception: their flags may follow the name, so
 
 `msc` exits `0` on success, `1` when MuninnDB is unreachable, `2` on a usage
 error, and `127` when the agent binary is not in `PATH`. When the agent itself
-exits, its code is propagated (`128+N` if a signal killed it).
+exits, its code is propagated (`128+N` if a signal killed it). `msc-eval`,
+`msc-bench`, and `msc-qa` use the same `0`/`1`/`2` split: `2` for a flag value
+they reject, `1` for a failure while running.
 
 ```bash
 msc claude || echo "agent run failed with $?"
@@ -286,39 +288,58 @@ To inspect the resolved configuration without launching anything, run `msc --dry
 ### Flags
 
 ```
--h, --help            Show help
--v, --version         Show version
--d, --debug           Enable debug logging (verbose structured output)
--q, --quiet           Suppress msc's own output
--n, --dry-run         Show resolved config without launching
--j, --json            Machine-readable output (for list, status, ca, version, --dry-run)
--f, --force           Launch even if MuninnDB is unreachable
-    --no-inject       Disable memory injection (enabled by default)
-    --inject-budget N Max tokens to inject per request (default: 2048)
-    --inject-min-score F  Min cosine score to inject a memory, in (0,1] (default: 0.6)
-    --no-auto-calibrate   Disable per-vault auto-calibration of the injection gate (calibrated by default)
-    --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
-    --ground-url URL      Opt-in answer-grounding rerank via an OpenAI-compatible model (fast local judge, ~1s); drops recalled passages the model says don't answer the query
-    --ground-cmd CMD      Answer-grounding rerank via a CLI agent (e.g. "claude -p"); frontier-quality but slow (~3.5s) — best for offline use
-                          (quote a path containing spaces: "C:\Program Files\...\claude.exe")
-    --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
-    --ground-topk K       Candidates to ground per recall (default: 3)
-    --ground-timeout D    In-flight grounding-call timeout (default: 10s); a slow judge fails open to the cosine gate
-                          (--ground-model, --ground-topk, --ground-timeout require --ground-url
-                          or --ground-cmd; without a backend they are rejected)
-    --mitm            Intercept HTTPS via a local CA + CONNECT proxy instead of a base-URL
-                      override (for agents that ignore *_BASE_URL); the child is told to
-                      trust msc's CA via NODE_EXTRA_CA_CERTS / SSL_CERT_FILE
-    --mitm-host HOST  Scope MITM to HOST (repeatable/comma-separated; implies --mitm). Only
-                      upstream + listed hosts are terminated; others blind-tunnel. Default: all
-                      ("*" forces intercept-all, the default behavior)
-    --no-redact       Disable secret and personal-data redaction of captured content
-                      (full-fidelity capture; trusted environments only — credentials and
-                      personal data will be stored verbatim)
-    --log-json        Emit logs as JSON (for log aggregation pipelines)
-    --vault NAME      MuninnDB vault name
-    --mcp-url URL     MuninnDB MCP endpoint
-    --token TOKEN     MuninnDB bearer token
+-h, --help             Show this help (per command: msc list --help)
+-v, --version          Show version
+-d, --debug            Enable debug logging (verbose structured output)
+-q, --quiet            Suppress msc's own output
+-n, --dry-run          Show resolved config without launching
+-j, --json             Machine-readable output (for list, status, ca,
+                       version, --dry-run)
+-f, --force            Launch even if MuninnDB is unreachable (captures may
+                       be lost)
+    --no-inject        Disable memory injection (enabled by default)
+    --no-redact        Disable secret and personal-data redaction of captured
+                       content (full-fidelity; trusted environments only)
+    --no-auto-calibrate
+                       Disable self-tuning of the injection threshold (keep
+                       min-score fixed)
+    --log-json         Emit logs as JSON (for log aggregation pipelines)
+    --mitm             Intercept HTTPS via a local CA + CONNECT proxy instead
+                       of a base-URL override (for agents that ignore
+                       *_BASE_URL); the child is told to trust msc's CA
+                       (NODE_EXTRA_CA_CERTS/SSL_CERT_FILE)
+    --mitm-host HOST   Scope MITM to HOST (repeatable / comma-separated;
+                       implies --mitm). Only the upstream + listed hosts are
+                       TLS-terminated; all other hosts are blind-tunneled
+                       untouched. Use "*" to force intercept-all. Default (no
+                       flag): intercept all
+    --inject-budget N  Max tokens to inject per request (default: 2048)
+    --inject-min-score F
+                       Min cosine score to inject a memory, in (0,1]
+                       (default: 0.6)
+    --recall-mode MODE
+                       MuninnDB recall mode: semantic|recent|balanced|deep
+                       (default: semantic)
+    --ground-url URL   Opt-in answer-grounding rerank via an OpenAI-compatible
+                       model; drops recalled passages the model says don't
+                       answer the query
+    --ground-cmd CMD   Answer-grounding rerank via a CLI agent (e.g.
+                       "claude -p"); offline. Takes precedence over
+                       --ground-url (quote a path containing spaces:
+                       "C:\Program Files\...\claude.exe")
+    --ground-model NAME
+                       Grounding model for --ground-url (default:
+                       qwen2.5:7b-instruct)
+    --ground-topk K    Candidates to ground per recall (default: 3)
+    --ground-timeout D In-flight grounding-call timeout (default: 10s); fails
+                       open to the gate. --ground-model, --ground-topk and
+                       --ground-timeout need --ground-url or --ground-cmd;
+                       without one they would be silently ignored
+    --vault NAME       MuninnDB vault name (default: current directory name,
+                       fallback: sidecar)
+    --mcp-url URL      MuninnDB MCP endpoint (default:
+                       http://127.0.0.1:8750/mcp)
+    --token TOKEN      MuninnDB bearer token (default: ~/.muninn/mcp.token)
 ```
 
 ## Limitations

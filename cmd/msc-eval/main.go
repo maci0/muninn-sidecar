@@ -39,6 +39,11 @@ const ellipsis = "…"
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "msc-eval:", err)
+		// 2 for a bad flag value, matching what the flag package already
+		// returns for an unparseable command line, and what msc exits with.
+		if config.IsUsageError(err) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
@@ -65,14 +70,14 @@ func run() error {
 	flag.Parse()
 
 	if *compare && (*studyN <= 0 || *studyFolds < 2 || *studyFolds > *studyN) {
-		return fmt.Errorf("-study-n must be > 0 and 2 <= -study-folds <= -study-n")
+		return config.Usagef("-study-n must be > 0 and 2 <= -study-folds <= -study-n")
 	}
 	// 0 keeps the per-scenario threshold; anything else overrides it and is
 	// compared against an embedding cosine in [0,1]. Out-of-range or NaN values
 	// would inject everything or nothing and silently misreport the scenario
 	// score, so reject them. Positive range check, so NaN is caught too.
 	if *minScore != 0 && !(*minScore > 0 && *minScore <= 1) {
-		return fmt.Errorf("invalid -min-score %v: must be 0 (per-scenario default) or in (0,1]", *minScore)
+		return config.Usagef("invalid -min-score %v: must be 0 (per-scenario default) or in (0,1]", *minScore)
 	}
 	if *live {
 		if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
@@ -159,7 +164,7 @@ func runOffline(file string, minScore float64, budget int, sweep, compare, asJSO
 
 func runLive(liveFile, mcpURL, token, vault string, minScore float64, budget int, settle, timeout time.Duration, asJSON bool) error {
 	if liveFile == "" {
-		return fmt.Errorf("-live requires -live-file")
+		return config.Usagef("-live requires -live-file")
 	}
 	data, err := os.ReadFile(liveFile)
 	if err != nil {

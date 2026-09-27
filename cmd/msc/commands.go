@@ -87,8 +87,7 @@ func cmdCA(o *opts) int {
 	}
 
 	if o.asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
+		enc := jsonEncoder(os.Stdout)
 		if err := enc.Encode(map[string]string{
 			"path":        certPath,
 			"sha256":      fingerprint,
@@ -160,8 +159,7 @@ func cmdList(o *opts) int {
 				DefaultURL:   a.DefaultURL,
 			})
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
+		enc := jsonEncoder(os.Stdout)
 		if err := enc.Encode(list); err != nil {
 			logerr("failed to encode JSON: %v", err)
 			return 1
@@ -220,8 +218,7 @@ func cmdStatus(o *opts) int {
 			out["memories"] = memCount
 			out["vault_health"] = vaultHP
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
+		enc := jsonEncoder(os.Stdout)
 		if encErr := enc.Encode(out); encErr != nil {
 			logerr("failed to encode JSON: %v", encErr)
 			return 1
@@ -253,8 +250,7 @@ func cmdStatus(o *opts) int {
 
 func printVersion(o *opts) int {
 	if o.asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
+		enc := jsonEncoder(os.Stdout)
 		if err := enc.Encode(map[string]string{
 			"version": version,
 			"commit":  commit,
@@ -333,7 +329,8 @@ List the agents msc can wrap, with the environment variable each one reads for
 its API base URL and the upstream that variable defaults to.
 
 Flags:
-  -j, --json   Emit a JSON array of {name, env_key, default_url} instead of the table
+  -j, --json   Emit a JSON array of {name, env_key, base_url_source,
+              extra_env_keys?, default_url} instead of the table
 
 Examples:
   msc list           Human-readable table
@@ -461,33 +458,52 @@ Flags:
   -d, --debug            Enable debug logging (verbose structured output)
   -q, --quiet            Suppress msc's own output
   -n, --dry-run          Show resolved config without launching
-  -j, --json             Machine-readable output (for list, status, ca, version, --dry-run)
-  -f, --force            Launch even if MuninnDB is unreachable (captures may be lost)
+  -j, --json             Machine-readable output (for list, status, ca,
+                         version, --dry-run)
+  -f, --force            Launch even if MuninnDB is unreachable (captures may
+                         be lost)
       --no-inject        Disable memory injection (enabled by default)
-      --inject-budget N  Max tokens to inject per request (default: 2048)
-      --inject-min-score F  Min cosine score to inject a memory, in (0,1] (default: 0.6)
-      --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
-      --no-auto-calibrate   Disable self-tuning of the injection threshold (keep min-score fixed)
-      --ground-url URL      Opt-in answer-grounding rerank via an OpenAI-compatible model;
-                            drops recalled passages the model says don't answer the query
-      --ground-cmd CMD      Answer-grounding rerank via a CLI agent (e.g. "claude -p"); offline
-                            (quote a path containing spaces: "C:\Program Files\...\claude.exe")
-      --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
-      --ground-topk K       Candidates to ground per recall (default: 3)
-      --ground-timeout D    In-flight grounding-call timeout (default: 10s); fails open to the gate
-                            (--ground-model, --ground-topk, --ground-timeout need --ground-url
-                            or --ground-cmd; without one they would be silently ignored)
-      --no-redact           Disable secret and personal-data redaction of captured content (full-fidelity; trusted envs only)
-      --mitm             Intercept HTTPS via a local CA + CONNECT proxy instead of a
-                         base-URL override (for agents that ignore *_BASE_URL); the
-                         child is told to trust msc's CA (NODE_EXTRA_CA_CERTS/SSL_CERT_FILE)
-      --mitm-host HOST   Scope MITM to HOST (repeatable / comma-separated; implies --mitm).
-                         Only the upstream + listed hosts are TLS-terminated; all other
-                         hosts are blind-tunneled untouched. Use "*" to force intercept-all.
-                         Default (no flag): intercept all
+      --no-redact        Disable secret and personal-data redaction of captured
+                         content (full-fidelity; trusted environments only)
+      --no-auto-calibrate
+                         Disable self-tuning of the injection threshold (keep
+                         min-score fixed)
       --log-json         Emit logs as JSON (for log aggregation pipelines)
-      --vault NAME       MuninnDB vault name (default: current directory name, fallback: sidecar)
-      --mcp-url URL      MuninnDB MCP endpoint (default: http://127.0.0.1:8750/mcp)
+      --mitm             Intercept HTTPS via a local CA + CONNECT proxy instead
+                         of a base-URL override (for agents that ignore
+                         *_BASE_URL); the child is told to trust msc's CA
+                         (NODE_EXTRA_CA_CERTS/SSL_CERT_FILE)
+      --mitm-host HOST   Scope MITM to HOST (repeatable / comma-separated;
+                         implies --mitm). Only the upstream + listed hosts are
+                         TLS-terminated; all other hosts are blind-tunneled
+                         untouched. Use "*" to force intercept-all. Default (no
+                         flag): intercept all
+      --inject-budget N  Max tokens to inject per request (default: 2048)
+      --inject-min-score F
+                         Min cosine score to inject a memory, in (0,1]
+                         (default: 0.6)
+      --recall-mode MODE
+                         MuninnDB recall mode: semantic|recent|balanced|deep
+                         (default: semantic)
+      --ground-url URL   Opt-in answer-grounding rerank via an OpenAI-compatible
+                         model; drops recalled passages the model says don't
+                         answer the query
+      --ground-cmd CMD   Answer-grounding rerank via a CLI agent (e.g.
+                         "claude -p"); offline. Takes precedence over
+                         --ground-url (quote a path containing spaces:
+                         "C:\Program Files\...\claude.exe")
+      --ground-model NAME
+                         Grounding model for --ground-url (default:
+                         qwen2.5:7b-instruct)
+      --ground-topk K    Candidates to ground per recall (default: 3)
+      --ground-timeout D In-flight grounding-call timeout (default: 10s); fails
+                         open to the gate. --ground-model, --ground-topk and
+                         --ground-timeout need --ground-url or --ground-cmd;
+                         without one they would be silently ignored
+      --vault NAME       MuninnDB vault name (default: current directory name,
+                         fallback: sidecar)
+      --mcp-url URL      MuninnDB MCP endpoint (default:
+                         http://127.0.0.1:8750/mcp)
       --token TOKEN      MuninnDB bearer token (default: ~/.muninn/mcp.token)
 
 Examples:

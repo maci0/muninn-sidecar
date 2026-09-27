@@ -30,7 +30,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -43,6 +42,11 @@ import (
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "msc-qa:", err)
+		// 2 for a bad flag value, matching what the flag package already
+		// returns for an unparseable command line, and what msc exits with.
+		if config.IsUsageError(err) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }
@@ -80,15 +84,10 @@ func run() error {
 	switch *dataset {
 	case "squad", "hotpot", "generic":
 	default:
-		return fmt.Errorf("invalid -dataset %q: must be one of squad, hotpot, generic", *dataset)
-	}
-	// formatInjected's default branch is a valid presentation, so a typo would
-	// silently score the "bare" arm under the name of another one.
-	if !slices.Contains([]string{"bare", "labeled", "scored"}, *injectFmt) {
-		return fmt.Errorf("invalid -inject-format %q: must be one of bare, labeled, scored", *injectFmt)
+		return config.Usagef("invalid -dataset %q: must be one of squad, hotpot, generic", *dataset)
 	}
 	if *n <= 0 {
-		return fmt.Errorf("invalid -n %d: must be positive", *n)
+		return config.Usagef("invalid -n %d: must be positive", *n)
 	}
 	// max_tokens is the only thing bounding a reader's output length. Zero or
 	// negative is rejected by some providers and silently ignored by others
@@ -96,13 +95,13 @@ func run() error {
 	// generation on every one of the -n questions times every arm times every
 	// model, billed by the token.
 	if *maxTokens <= 0 {
-		return fmt.Errorf("invalid -max-tokens %d: must be positive (0 disables the output cap)", *maxTokens)
+		return config.Usagef("invalid -max-tokens %d: must be positive (0 disables the output cap)", *maxTokens)
 	}
 	// The judge grades every candidate in one call, so topK sets the size of that
 	// call: 0 is not "grade none" but "grade all recalled passages", and the
 	// model is only cheap while the candidate list is short.
 	if *groundTopK <= 0 {
-		return fmt.Errorf("invalid -ground-topk %d: must be positive", *groundTopK)
+		return config.Usagef("invalid -ground-topk %d: must be positive", *groundTopK)
 	}
 	for opt, raw := range map[string]string{"-model-url": *modelURL, "-ground-url": *groundURL} {
 		if err := config.ValidateURL(opt, raw); err != nil {
@@ -114,7 +113,7 @@ func run() error {
 	// below describe a run nobody asked for. Written as a positive range check
 	// so NaN is rejected too.
 	if !(*minScore > 0 && *minScore <= 1) {
-		return fmt.Errorf("invalid -min-score %v: must be in (0,1]", *minScore)
+		return config.Usagef("invalid -min-score %v: must be in (0,1]", *minScore)
 	}
 	// A typo here selects formatInjected's default branch, so the injected arm
 	// is compared against context formatted a way the run never asked for.
