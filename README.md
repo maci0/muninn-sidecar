@@ -149,7 +149,7 @@ msc claude || echo "agent run failed with $?"
 4. The agent launches and sends API requests through the proxy
 5. All traffic is forwarded transparently (no extra headers, no modified User-Agent)
 6. Requests matching the agent's `CapturePaths` (e.g. `/v1/messages`, `GenerateContent`) are captured
-7. Captured exchanges are scrubbed of well-known secrets and personal data (API keys, tokens, private keys, emails, payment-card numbers, SSNs → `[REDACTED]`) and sent to MuninnDB asynchronously via MCP JSON-RPC
+7. Captured exchanges are scrubbed of well-known secrets and personal data (API keys, tokens, private keys, emails, payment-card numbers, SSNs → `[REDACTED]`, your home-directory path → `[HOME]`) and sent to MuninnDB asynchronously via MCP JSON-RPC
 
 ### Memory injection
 
@@ -338,7 +338,8 @@ To inspect the resolved configuration without launching anything, run `msc --dry
   fail open — a MuninnDB hiccup never blocks or corrupts a request.
 - **Secret redaction is best-effort.** Captured content is scrubbed of well-known
   credential formats and personal data (emails, payment-card numbers, SSNs,
-  phone numbers)
+  phone numbers, and your own home-directory path, which is a direct identifier
+  on macOS and Windows where the leaf is the account's real name)
   before storage, but the patterns are conservative and not
   exhaustive — it reduces, not eliminates, the risk of a secret reaching the
   store. Don't rely on it as a reason to paste secrets into an agent. It runs both

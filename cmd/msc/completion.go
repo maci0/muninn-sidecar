@@ -78,7 +78,7 @@ _msc() {
         {-f,--force}'[Launch even if MuninnDB is unreachable (captures lost)]'
         '--no-inject[Disable memory injection]'
         '--no-auto-calibrate[Keep the injection threshold fixed]'
-        '--no-redact[Disable secret redaction of captured content]'
+        '--no-redact[Disable secret and personal-data redaction of captured content]'
         '--mitm[Intercept HTTPS via a local CA + CONNECT proxy]'
         '--mitm-host[Scope MITM to a host (implies --mitm)]:host:'
         '--inject-budget[Max tokens to inject per request]:budget:'
@@ -125,7 +125,7 @@ complete -c msc -l json -s j -d "Output as JSON"
 complete -c msc -l force -s f -d "Launch even if MuninnDB is unreachable"
 complete -c msc -l no-inject -d "Disable memory injection"
 complete -c msc -l no-auto-calibrate -d "Keep the injection threshold fixed"
-complete -c msc -l no-redact -d "Disable secret redaction of captured content"
+complete -c msc -l no-redact -d "Disable secret and personal-data redaction of captured content"
 complete -c msc -l mitm -d "Intercept HTTPS via a local CA + CONNECT proxy"
 complete -c msc -l mitm-host -r -d "Scope MITM to a host (implies --mitm)"
 complete -c msc -l inject-budget -r -d "Max tokens to inject per request"

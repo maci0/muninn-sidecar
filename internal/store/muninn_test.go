@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
+	"github.com/maci0/muninn-sidecar/internal/redact"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -105,6 +107,53 @@ func TestStoreRedactsSecrets(t *testing.T) {
 	}
 	if !strings.Contains(all, "[REDACTED]") {
 		t.Errorf("expected redaction marker in stored payload: %q", all)
+	}
+}
+
+// TestStoreRedactsHomeDir pins the control at the point it has to hold: the
+// bytes that leave the process for MuninnDB. A coding turn is wall-to-wall
+// absolute paths, and the home directory is the one that names the operator, so
+// storing it means a name outlives the session and is re-sent to the provider on
+// every later recall.
+func TestStoreRedactsHomeDir(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		t.Skip("no usable home directory to redact")
+	}
+	var (
+		mu       sync.Mutex
+		received []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		received = append(received, string(body))
+		mu.Unlock()
+		w.WriteHeader(200)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL, "", "test", &stats.Stats{})
+	s.Store(&CapturedExchange{
+		Agent:    "test",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"fix the build in ` + home + `/src"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"edited ` + home + `/src/main.go"}]}`),
+	})
+	s.Drain()
+
+	mu.Lock()
+	all := strings.Join(received, " ")
+	mu.Unlock()
+	if all == "" {
+		t.Fatal("nothing flushed")
+	}
+	if strings.Contains(all, home) {
+		t.Errorf("home directory leaked into stored memory: %q", all)
+	}
+	if !strings.Contains(all, redact.HomeMarker) {
+		t.Errorf("expected home marker in stored payload: %q", all)
 	}
 }
 

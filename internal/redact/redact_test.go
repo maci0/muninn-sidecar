@@ -1,7 +1,9 @@
 package redact
 
 import (
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -180,12 +182,102 @@ func FuzzRedactSecrets(f *testing.F) {
 		if got2 := Secrets(got); got2 != got {
 			t.Fatalf("redaction not idempotent: %q -> %q -> %q", s, got, got2)
 		}
-		// A changed result always contains the marker; an unchanged result means
+		// A changed result always contains a marker; an unchanged result means
 		// nothing matched.
-		if got != s && !strings.Contains(got, Marker) {
+		if got != s && !strings.Contains(got, Marker) && !strings.Contains(got, HomeMarker) {
 			t.Fatalf("changed input without inserting a marker: %q -> %q", s, got)
 		}
 	})
+}
+
+// withHome points the home-directory rewrite at dir for the duration of the
+// test. The real value is resolved once per process, so the tests that assert on
+// specific paths must replace it rather than depend on who is running them.
+func withHome(t *testing.T, dir string) {
+	t.Helper()
+	prev := homePattern
+	homePattern = sync.OnceValues(func() (*regexp.Regexp, string) { return compileHome(dir) })
+	t.Cleanup(func() { homePattern = prev })
+}
+
+// TestRedactHomeDir covers the operator's own home directory, the direct
+// identifier that no format pattern can reach: a coding turn is wall-to-wall
+// absolute paths, and on macOS and Windows the leaf is the account's real name.
+func TestRedactHomeDir(t *testing.T) {
+	cases := []struct {
+		name string
+		home string
+		in   string
+		want string
+	}{
+		{"posix path", "/home/alice",
+			"error in /home/alice/src/main.go:42", "error in " + HomeMarker + "/src/main.go:42"},
+		{"home alone", "/home/alice", "cd /home/alice", "cd " + HomeMarker},
+		{"quoted json field", "/home/alice",
+			`{"cwd":"/home/alice/work"}`, `{"cwd":"` + HomeMarker + `/work"}`},
+		{"windows path", `C:\Users\alice`,
+			`C:\Users\alice\project\main.go`, HomeMarker + `\project\main.go`},
+		{"trailing separator on home", "/home/alice/",
+			"/home/alice/notes.md", HomeMarker + "/notes.md"},
+		{"repeated", "/home/alice",
+			"diff /home/alice/a /home/alice/b", "diff " + HomeMarker + "/a " + HomeMarker + "/b"},
+		// A path is usually the last token on its line, not the last token in
+		// the text. An end-of-text anchor alone leaves every one of these whole.
+		{"home at end of a line", "/home/alice",
+			"stack:\n\t/home/alice/src/main.go\ndone", "stack:\n\t" + HomeMarker + "/src/main.go\ndone"},
+		{"bare home at end of a line", "/home/alice",
+			"cd /home/alice\nls", "cd " + HomeMarker + "\nls"},
+		{"home at end of text after a line", "/home/alice",
+			"first line\ncd /home/alice", "first line\ncd " + HomeMarker},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withHome(t, tc.home)
+			if got := Secrets(tc.in); got != tc.want {
+				t.Errorf("Secrets(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if got := Secrets(Secrets(tc.in)); got != tc.want {
+				t.Errorf("not idempotent: %q", got)
+			}
+		})
+	}
+}
+
+// TestRedactHomeDirLeavesAlone pins the paths the rewrite must not touch. The
+// separator anchor is the only thing standing between "/home/al" and
+// "/home/alpha", and a root home would rewrite every absolute path in the turn.
+func TestRedactHomeDirLeavesAlone(t *testing.T) {
+	cases := []struct {
+		name string
+		home string
+		in   string
+	}{
+		{"longer sibling directory", "/home/al", "building /home/alpha/src/app"},
+		{"unrelated absolute path", "/home/alice", "installed under /opt/app/bin"},
+		{"home name as a substring", "/home/alice", "the alice package"},
+		{"relative path", "/home/alice", "see src/main.go"},
+		{"root home", "/", "error in /etc/hosts"},
+		{"unresolvable home", "", "error in /etc/hosts"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withHome(t, tc.home)
+			if got := Secrets(tc.in); got != tc.in {
+				t.Errorf("Secrets(%q) = %q, want unchanged", tc.in, got)
+			}
+		})
+	}
+}
+
+// TestResolveHomePatternUnresolvable covers the process that has no home
+// directory at all (a container started without $HOME): the rewrite must stand
+// down rather than guess at a path.
+func TestResolveHomePatternUnresolvable(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	if re, home := resolveHomePattern(); re != nil || home != "" {
+		t.Fatalf("resolveHomePattern() = (%v, %q), want (nil, \"\")", re, home)
+	}
 }
 
 // TestRedactInternationalEmail covers addresses an ASCII-only grammar misses

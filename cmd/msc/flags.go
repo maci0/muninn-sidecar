@@ -35,7 +35,7 @@ type opts struct {
 	noAutoCalibrate bool          // disable self-tuning of the injection threshold
 	mitm            bool          // intercept HTTPS via a local CA + CONNECT proxy instead of a base-URL override
 	mitmHosts       []string      // scope MITM to these hosts (+ upstream); empty = intercept all. "*" forces all.
-	noRedact        bool          // disable secret redaction of captured content (full-fidelity capture)
+	noRedact        bool          // disable secret and personal-data redaction of captured content (full-fidelity capture)
 }
 
 // parseAction signals a special action from parseFlags instead of os.Exit.

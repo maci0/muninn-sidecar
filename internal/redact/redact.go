@@ -1,7 +1,7 @@
 // Package redact scrubs well-known secret formats (API keys, tokens, private
 // keys, sensitive key=value assignments) and directly-identifying personal data
 // (email addresses, payment card numbers, US Social Security numbers, phone
-// numbers) from text,
+// numbers, the caller's home-directory path) from text,
 // replacing them with a [REDACTED] marker. It is
 // shared by the store (scrub before persisting a captured exchange) and the
 // injector (scrub recalled memory content before it is injected into an outgoing
@@ -13,15 +13,27 @@
 // to avoid corrupting prose. This is not a substitute for never pasting secrets
 // or personal data into an agent, but it stops the obvious leaks before captured
 // conversations persist in long-term memory and resurface on recall.
+//
+// Every call goes through Secrets, which is also where the home-directory
+// rewrite lives. Home redaction needs the process's own home directory, so
+// threading it through each call site would be one more thing a future caller
+// can forget; a forgotten call site is an unredacted leak, not a cosmetic gap.
 package redact
 
 import (
+	"os"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Marker replaces matched secret material.
 const Marker = "[REDACTED]"
+
+// HomeMarker replaces the caller's home-directory prefix. Distinct from Marker
+// so a reader can tell "a secret was here" from "this path was relative to the
+// user's home", and deliberately not a real path so nothing resolves to it.
+const HomeMarker = "[HOME]"
 
 // rule pairs a redaction pattern with a necessary condition for it to match.
 // Secrets runs the condition first (a substring or single byte-class scan) and
@@ -300,8 +312,63 @@ var kvRule = rule{re: kvPattern, keyStem: true}
 // emailRule gates emailPattern on '@', which its grammar requires.
 var emailRule = rule{re: emailPattern, lit: "@"}
 
-// Secrets replaces well-known credential formats in s with Marker. Returns s
-// unchanged when it contains no recognized secret.
+// compileHome builds the home-directory matcher for dir. It returns a nil
+// pattern when dir cannot identify anyone: a root home would rewrite every
+// absolute path in the text and destroy the content it is meant to protect, and
+// an empty or relative value matches text that is not a path at all.
+//
+// The (?m) flag is load-bearing: a path is far more often the last thing on its
+// line than the last thing in the text, and without it a bare home directory
+// ("cd /home/alice" at the end of a captured turn) sails straight through.
+func compileHome(dir string) (*regexp.Regexp, string) {
+	home := strings.TrimRight(dir, `/\`)
+	if home == "" || home == "." {
+		return nil, ""
+	}
+	// The separator-or-end anchor is what keeps it from firing on a longer
+	// directory that merely starts with the same characters: with home /home/al,
+	// "/home/alpha/src" must survive untouched.
+	return regexp.MustCompile(`(?m)` + regexp.QuoteMeta(home) + `(?:[\\/]|$)`), home
+}
+
+// homePattern matches the caller's home directory when it appears as a path
+// prefix.
+//
+// The home directory is the single most reliable direct identifier in a coding
+// session — every absolute path a tool prints, every stack frame, every
+// "cd ~/..." a model writes carries it, and on macOS and Windows the leaf is the
+// account's real name. No format pattern can reach it (there is nothing
+// distinctive about "/home/alice"), and once a captured turn is written to
+// long-term memory the path outlives the session and is re-sent to the provider
+// on every later recall. Only the prefix goes: the remainder of the path is the
+// part that carries the project's meaning and is kept.
+var homePattern = sync.OnceValues(resolveHomePattern)
+
+// resolveHomePattern is homePattern's initializer, named so a test can drive it
+// against a home directory the process cannot resolve.
+func resolveHomePattern() (*regexp.Regexp, string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, ""
+	}
+	return compileHome(home)
+}
+
+// redactHome rewrites the caller's home-directory prefix in s to HomeMarker,
+// keeping the path that follows it.
+func redactHome(s string) string {
+	re, home := homePattern()
+	if re == nil {
+		return s
+	}
+	return re.ReplaceAllStringFunc(s, func(m string) string {
+		return HomeMarker + strings.TrimPrefix(m, home)
+	})
+}
+
+// Secrets replaces well-known credential formats in s with Marker, and the
+// caller's home-directory prefix with HomeMarker. Returns s unchanged when it
+// contains no recognized secret.
 func Secrets(s string) string {
 	if s == "" {
 		return s
@@ -351,5 +418,7 @@ func Secrets(s string) string {
 			return sub[1] + sub[2] + Marker
 		})
 	}
-	return s
+	// Home directory last, on the text every pass above has already finished
+	// with, so it sees the exact bytes that would otherwise be stored.
+	return redactHome(s)
 }

@@ -464,7 +464,7 @@ Flags:
       --ground-timeout D    In-flight grounding-call timeout (default: 10s); fails open to the gate
                             (--ground-model, --ground-topk, --ground-timeout need --ground-url
                             or --ground-cmd; without one they would be silently ignored)
-      --no-redact        Disable secret redaction of captured content (full-fidelity; trusted envs only)
+      --no-redact           Disable secret and personal-data redaction of captured content (full-fidelity; trusted envs only)
       --mitm             Intercept HTTPS via a local CA + CONNECT proxy instead of a
                          base-URL override (for agents that ignore *_BASE_URL); the
                          child is told to trust msc's CA (NODE_EXTRA_CA_CERTS/SSL_CERT_FILE)
