@@ -7,6 +7,26 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **CLI help goes to stdout, usage errors to stderr.** `msc-eval`, `msc-qa`, and
+  `msc-bench` printed `-h` output on stderr, so `msc-eval -h | less` came up
+  empty; a mistyped flag buried its one-line error in a wall of text. Help is now
+  stdout with exit 0, a bad flag or stray positional is stderr with exit 2 and
+  stdout left clean, and each help lists usage and examples.
+- **`--json` is honored by `--dry-run`.** `msc --dry-run --json claude` emitted
+  the JSON report and still warned that `--json` "has no effect"; the warning is
+  now limited to runs that actually launch the agent.
+- **`msc help <arg>` is a usage error**, like every other subcommand, instead of
+  printing help and exiting 0.
+- **An unreachable MuninnDB reads once.** `msc status` and `msc --dry-run`
+  printed "(unreachable: unreachable at ...)", repeating the state; the reason
+  now sits on its own indented line.
+
+### Added
+
+- **Documented exit codes.** `msc --help` and the README now state the contract:
+  0 success, 1 runtime failure, 2 usage error, and the agent's own code (or
+  128+signal) when an agent run ends.
+
 - **Upgrades survive capture.** 101 Switching Protocols responses are no longer
   consumed by capture on the plain proxy path; WebSocket upgrades pass through
   intact.

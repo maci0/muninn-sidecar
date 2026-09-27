@@ -21,9 +21,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"math"
 	"math/rand"
 	"os"
@@ -83,7 +85,7 @@ func run() error {
 		rngSeed    = flag.Int64("rng", 1, "deterministic dataset seed")
 		asJSON     = flag.Bool("json", false, "emit machine-readable JSON")
 	)
-	flag.Parse()
+	parseFlags()
 	switch *corpus {
 	case "homogeneous", "diverse", "facts", "squad", "hotpot", "agentmem":
 	default:
@@ -1037,6 +1039,49 @@ func safeDiv(a, b float64) float64 {
 		return 0
 	}
 	return a / b
+}
+
+// parseFlags parses os.Args with help on stdout and flag errors on stderr.
+// flag's own handling prints usage to stderr for both, so `msc-bench -h | less`
+// comes up empty and a mistyped flag buries its one-line error in a wall of
+// text. Exit codes stay conventional: 0 for help, 2 for a usage error.
+func parseFlags() {
+	flag.CommandLine.Init("msc-bench", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(os.Stderr)
+	flag.Usage = func() {} // replaced by the calls below
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			usage(os.Stdout)
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "Run 'msc-bench -h' for usage.")
+		os.Exit(2)
+	}
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "msc-bench: unexpected argument %q\n", flag.Arg(0))
+		fmt.Fprintln(os.Stderr, "Run 'msc-bench -h' for usage.")
+		os.Exit(2)
+	}
+}
+
+// usage prints the help text. It goes to stdout when asked for, and would go
+// to stderr alongside a usage error.
+func usage(w io.Writer) {
+	flag.CommandLine.SetOutput(w)
+	fmt.Fprint(w, `msc-bench - benchmarks memory retrieval and the when/what-to-inject decision
+
+Usage: msc-bench [flags]
+
+Examples:
+  msc-bench -seed -probe            # seed the corpus then run probes
+  msc-bench -probe                  # re-probe an already-seeded vault
+  msc-bench -n 300 -absent 100      # corpus + absent-probe sizing
+  msc-bench -json                   # machine-readable report
+
+Flags:
+`)
+	flag.PrintDefaults()
+	flag.CommandLine.SetOutput(os.Stderr)
 }
 
 func envOr(key, def string) string {

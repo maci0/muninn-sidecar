@@ -23,8 +23,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,7 +61,7 @@ func run() error {
 		settle     = flag.Duration("settle", 750*time.Millisecond, "delay after seeding before probing (live mode)")
 		timeout    = flag.Duration("timeout", 5*time.Second, "per-MCP-call timeout (live mode)")
 	)
-	flag.Parse()
+	parseFlags()
 
 	if *compare && (*studyN <= 0 || *studyFolds < 2 || *studyFolds > *studyN) {
 		return fmt.Errorf("-study-n must be > 0 and 2 <= -study-folds <= -study-n")
@@ -278,6 +280,52 @@ func trunc(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// parseFlags parses os.Args with help on stdout and flag errors on stderr.
+// flag's own handling prints usage to stderr for both, so `msc-eval -h | less`
+// comes up empty and a mistyped flag buries its one-line error in a wall of
+// text. Exit codes stay conventional: 0 for help, 2 for a usage error.
+func parseFlags() {
+	flag.CommandLine.Init("msc-eval", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(os.Stderr)
+	flag.Usage = func() {} // replaced by the calls below
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			usage(os.Stdout)
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "Run 'msc-eval -h' for usage.")
+		os.Exit(2)
+	}
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "msc-eval: unexpected argument %q\n", flag.Arg(0))
+		fmt.Fprintln(os.Stderr, "Run 'msc-eval -h' for usage.")
+		os.Exit(2)
+	}
+}
+
+// usage prints the help text. It goes to stdout when asked for, and would go
+// to stderr alongside a usage error.
+func usage(w io.Writer) {
+	flag.CommandLine.SetOutput(w)
+	fmt.Fprint(w, `msc-eval - offline and live evaluation of the memory-injection selection pipeline
+
+Usage: msc-eval [flags]
+
+Examples:
+  msc-eval                          # offline report on the built-in corpus
+  msc-eval -sweep                   # + MinScore when+what sweep
+  msc-eval -compare                 # + cross-validated method study (multi-seed)
+  msc-eval -compare -study-seed 7   # + method study on one generator seed
+  msc-eval -file scenarios.json     # offline report on a custom corpus
+  msc-eval -json                    # machine-readable output
+  msc-eval -live -live-file live.json -vault msc-eval
+
+Flags:
+`)
+	flag.PrintDefaults()
+	flag.CommandLine.SetOutput(os.Stderr)
 }
 
 // --- minimal MuninnDB config resolution (mirrors cmd/msc defaults) ---

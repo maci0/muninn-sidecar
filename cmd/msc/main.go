@@ -101,6 +101,10 @@ func run() int {
 
 	switch cmd {
 	case "help":
+		if len(agentArgs) > 0 {
+			logerr("help does not accept arguments")
+			return exitUsage
+		}
 		usage(os.Stdout)
 		return 0
 	case "version":
@@ -165,7 +169,9 @@ func run() int {
 		return exitUsage
 	}
 
-	if o.asJSON && !o.quiet {
+	// --dry-run reports the resolved config in JSON, so the warning only applies
+	// to a run that actually launches the agent.
+	if o.asJSON && !o.quiet && !o.dryRun {
 		logf("-j/--json has no effect when running an agent (use with list, status, ca, version, or --dry-run)")
 	}
 
@@ -517,9 +523,12 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	} else if healthErr == nil {
 		muninnStatus = "(reachable)"
 	} else {
-		muninnStatus = fmt.Sprintf("(unreachable: %v)", healthErr)
+		muninnStatus = "(unreachable)"
 	}
 	fmt.Fprintf(os.Stdout, "MuninnDB: %s %s\n", mcpURL, muninnStatus)
+	if healthErr != nil && !o.force {
+		fmt.Fprintf(os.Stdout, "          %v\n", healthErr)
+	}
 	if !o.noInject {
 		budget := o.injectBudget
 		if budget <= 0 {

@@ -249,6 +249,15 @@ Command-line flags take precedence over environment variables.
     --token TOKEN     MuninnDB bearer token
 ```
 
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | success |
+| `1` | runtime failure (MuninnDB unreachable, proxy or agent launch failed) |
+| `2` | usage error (unknown command or flag, invalid flag value) |
+| `N` | the agent's own exit code, or `128+signal` when a signal ends it |
+
 ## Limitations
 
 - **OAuth-direct / non-override agents.** Agents that ignore a base-URL env

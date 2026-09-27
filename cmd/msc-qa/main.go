@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -104,7 +105,7 @@ func run() error {
 		injectFmt   = flag.String("inject-format", "bare", "injected context presentation: bare | labeled | scored (scored = live proxy format)")
 		answerHintF = flag.String("answer-hint", "", "constrain answers to a fixed label set (e.g. \"SUPPORTS, REFUTES\") for classification regimes like FEVER; empty = extractive span")
 	)
-	flag.Parse()
+	parseFlags()
 	switch *dataset {
 	case "squad", "hotpot", "generic":
 	default:
@@ -908,6 +909,49 @@ func loadDataset(dataset, path string, n int, seed int64) ([]qaItem, error) {
 		qs = qs[:n]
 	}
 	return qs, nil
+}
+
+// parseFlags parses os.Args with help on stdout and flag errors on stderr.
+// flag's own handling prints usage to stderr for both, so `msc-qa -h | less`
+// comes up empty and a mistyped flag buries its one-line error in a wall of
+// text. Exit codes stay conventional: 0 for help, 2 for a usage error.
+func parseFlags() {
+	flag.CommandLine.Init("msc-qa", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(os.Stderr)
+	flag.Usage = func() {} // replaced by the calls below
+	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			usage(os.Stdout)
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, "Run 'msc-qa -h' for usage.")
+		os.Exit(2)
+	}
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "msc-qa: unexpected argument %q\n", flag.Arg(0))
+		fmt.Fprintln(os.Stderr, "Run 'msc-qa -h' for usage.")
+		os.Exit(2)
+	}
+}
+
+// usage prints the help text. It goes to stdout when asked for, and would go
+// to stderr alongside a usage error.
+func usage(w io.Writer) {
+	flag.CommandLine.SetOutput(w)
+	fmt.Fprint(w, `msc-qa - measures the downstream usefulness of memory injection
+
+Usage: msc-qa [flags]
+
+Examples:
+  msc-qa -vault msc-squad -model-url http://localhost:1234/v1 -model gpt-4o-mini -n 100
+  msc-qa -json                      # machine-readable arms and scores
+  msc-qa -md docs/model-eval.md     # append one results row per model
+  msc-qa -model-cmd "claude -p"     # score a CLI reader instead of an endpoint
+
+Flags:
+`)
+	flag.PrintDefaults()
+	flag.CommandLine.SetOutput(os.Stderr)
 }
 
 func envOr(k, d string) string {

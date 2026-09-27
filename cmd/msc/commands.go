@@ -195,7 +195,8 @@ func cmdStatus(o *opts) int {
 	if err == nil {
 		fmt.Printf("MuninnDB: %s (reachable)\n", mcpURL)
 	} else {
-		fmt.Printf("MuninnDB: %s (unreachable: %v)\n", mcpURL, err)
+		fmt.Printf("MuninnDB: %s (unreachable)\n", mcpURL)
+		fmt.Printf("          %v\n", err)
 	}
 	fmt.Printf("Vault:    %s\n", vault)
 	if haveStats {
@@ -265,6 +266,7 @@ Commands:
   ca             Print the TLS-MITM CA cert path + fingerprint (for trusting it elsewhere)
   version        Show version information (use --json for machine output)
   completion     Generate shell completions (bash, zsh, fish)
+  help           Show this help
 
 Flags:
   -h, --help             Show this help
@@ -297,6 +299,12 @@ Flags:
       --vault NAME       MuninnDB vault name (default: current directory name, fallback: sidecar)
       --mcp-url URL      MuninnDB MCP endpoint (default: http://127.0.0.1:8750/mcp)
       --token TOKEN      MuninnDB bearer token (default: ~/.muninn/mcp.token)
+
+Exit codes:
+  0    success
+  1    runtime failure (MuninnDB unreachable, proxy or agent launch failed)
+  2    usage error (unknown command or flag, invalid value)
+  N    the agent's own exit code, or 128+signal when a signal ends it
 
 Examples:
   msc claude                    Launch Claude Code with API capture
