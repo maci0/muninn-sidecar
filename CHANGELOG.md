@@ -11,6 +11,20 @@ minor bump is safe.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The pinned staticcheck installs on the Go line the workflow sets.** The pin
+  was v0.8.1, which declares `go 1.26.0`, so `go install` under the 1.25
+  toolchain (`GOTOOLCHAIN=local`) aborted with "requires go >= 1.26.0" and the
+  `Test` job failed before it ran a single lint or test. The pin is v0.7.0, the
+  newest staticcheck release that still builds on 1.25.
+- **`test-live.sh` is clean under the shellcheck the runner actually ships.**
+  `cleanup` is only invoked from the `EXIT` trap, so it carries a disable for
+  SC2329, the code shellcheck 0.10 and later use for a function it cannot see
+  being called. The runner image ships 0.9.0, which reports the same false
+  positive against every command in that function body as SC2317, so the `Lint`
+  job failed on a clean script. Both codes are now disabled on that function.
+
 ## [0.5.0] — 2026-09-27
 
 ### Added

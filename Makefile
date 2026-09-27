@@ -46,8 +46,13 @@ RUN ?=
 # yamllint below, and overridable for the same reason. Bump on a branch, run
 # `make check`, and note it in CHANGELOG.md. The pins do go stale against new
 # Go release lines (staticcheck v0.5.1 no longer compiled on Go 1.25, stale
-# x/tools), which is what a bump is for, not a reason to float.
-STATICCHECK_VERSION ?= v0.8.1
+# x/tools), which is what a bump is for, not a reason to float. A bump still has
+# to install on the Go line the workflow sets: staticcheck v0.8.0 and up declare
+# `go 1.26.0`, so on this repo's 1.25 line `go install` refuses with "requires go
+# >= 1.26.0 (running go 1.25.x; GOTOOLCHAIN=local)" and the Test job dies before
+# it reaches the lint. v0.7.0 is the newest release that still builds on 1.25;
+# move this pin and GO_VERSION in ci.yml together or not at all.
+STATICCHECK_VERSION ?= v0.7.0
 GOVULNCHECK_VERSION ?= v1.7.0
 STATICCHECK_PKG = honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
 GOVULNCHECK_PKG = golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)

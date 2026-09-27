@@ -80,7 +80,7 @@ run_agent() {
     echo ""
 }
 
-# shellcheck disable=SC2329  # invoked indirectly, via the trap below
+# shellcheck disable=SC2329,SC2317  # invoked via the trap below; <0.10 says the body is unreachable (SC2317), >=0.10 the function uninvoked (SC2329)
 cleanup() {
     echo ""
     echo "=== Cleanup: deleting test vault memories ==="
