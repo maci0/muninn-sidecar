@@ -33,6 +33,13 @@ type Stats struct {
 	UpstreamErrors atomic.Int64 // captured responses with a 4xx/5xx status from the upstream LLM API
 	ProxyErrors    atomic.Int64 // requests the proxy failed itself (dial/TLS/transport error, agent got a 502)
 
+	// Uncapturable counts responses that matched a captured path but whose
+	// bytes this proxy cannot read: gRPC protobuf, a non-gzip content
+	// encoding, a protocol upgrade. They forward to the agent untouched and
+	// never reach the store, so without this counter a session that is
+	// upstream on such a response looks identical to one that is working.
+	Uncapturable atomic.Int64
+
 	Injections      atomic.Int64 // requests enriched with recalled memories
 	InjectedTokens  atomic.Int64 // approximate tokens injected across all enrichments
 	InjectionErrors atomic.Int64 // enrichment failures (inject fell back to original body)
@@ -101,6 +108,7 @@ type Snapshot struct {
 	SaveErrors    int64 `json:"save_errors"`
 	UpstreamError int64 `json:"upstream_errors"`
 	ProxyErrors   int64 `json:"proxy_errors"`
+	Uncapturable  int64 `json:"uncapturable_responses"`
 	Injections    int64 `json:"injections"`
 	InjectErrors  int64 `json:"injection_errors"`
 	Recalls       int64 `json:"recalls"`
@@ -120,6 +128,7 @@ func (s *Stats) Snapshot() Snapshot {
 		SaveErrors:    s.FlushErrors.Load(),
 		UpstreamError: s.UpstreamErrors.Load(),
 		ProxyErrors:   s.ProxyErrors.Load(),
+		Uncapturable:  s.Uncapturable.Load(),
 		Injections:    s.Injections.Load(),
 		InjectErrors:  s.InjectionErrors.Load(),
 		Recalls:       s.Recalls.Load(),
@@ -271,6 +280,13 @@ func (s *Stats) Summary() string {
 	}
 	if proxyErrors > 0 {
 		sb.WriteString(fmt.Sprintf(", %d proxy errors", proxyErrors))
+	}
+	// A turn the proxy could not read is a turn that was never a memory, and it
+	// is invisible everywhere else: it neither reaches the queued arithmetic
+	// above nor the latency sample below. Naming it here is the difference
+	// between "0 saved" and "0 saved, 12 responses this proxy cannot decode".
+	if uncapturable := s.Uncapturable.Load(); uncapturable > 0 {
+		sb.WriteString(fmt.Sprintf(", %d not captured (undecodable response)", uncapturable))
 	}
 	// Individual atomic loads are non-atomic as a group, so a concurrent flush
 	// can make the arithmetic transiently negative; clamp before display.

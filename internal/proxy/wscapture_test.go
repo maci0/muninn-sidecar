@@ -250,7 +250,7 @@ func TestRunWSParser(t *testing.T) {
 	close(ch)
 
 	var got []string
-	runWSParser("s->c", ch, false, func(_ string, msg []byte) {
+	runWSParser("req-test", "s->c", ch, false, func(_ string, msg []byte) {
 		got = append(got, string(msg))
 	})
 	if len(got) != 2 || got[0] != `{"type":"a"}` || got[1] != `{"type":"b"}` {
@@ -277,7 +277,7 @@ func TestRunWSParserDebugLogs(t *testing.T) {
 	close(ch)
 
 	var n int
-	runWSParser("s->c", ch, false, func(_ string, _ []byte) { n++ })
+	runWSParser("req-test", "s->c", ch, false, func(_ string, _ []byte) { n++ })
 	if n != 1 {
 		t.Fatalf("expected one delivered message, got %d", n)
 	}
@@ -289,6 +289,7 @@ func TestRunWSParserDebugLogs(t *testing.T) {
 		}
 		var rec struct {
 			Msg   string `json:"msg"`
+			ReqID string `json:"request_id"`
 			Dir   string `json:"dir"`
 			Type  string `json:"type"`
 			Bytes int    `json:"bytes"`
@@ -300,6 +301,9 @@ func TestRunWSParserDebugLogs(t *testing.T) {
 			continue
 		}
 		found = true
+		if rec.ReqID != "req-test" {
+			t.Errorf("logged request_id = %q, want %q; a frame line with no correlation ID cannot be tied to a turn", rec.ReqID, "req-test")
+		}
 		if rec.Dir != "s->c" {
 			t.Errorf("logged dir = %q, want %q", rec.Dir, "s->c")
 		}
@@ -331,7 +335,7 @@ func TestRunWSParserDebugOff(t *testing.T) {
 	ch <- wsBuildFrame(wsOpText, []byte(`{"type":"gw.message"}`), false, true, false)
 	close(ch)
 
-	runWSParser("s->c", ch, false, func(_ string, _ []byte) {})
+	runWSParser("req-test", "s->c", ch, false, func(_ string, _ []byte) {})
 	if s := logs.String(); strings.Contains(s, "ws message") {
 		t.Errorf("wsDebug is off but the parser logged: %s", s)
 	}
@@ -348,7 +352,7 @@ func TestRunWSParserDecodeErrorStops(t *testing.T) {
 	close(ch)
 
 	var n int
-	runWSParser("s->c", ch, true, func(_ string, _ []byte) { n++ })
+	runWSParser("req-test", "s->c", ch, true, func(_ string, _ []byte) { n++ })
 	if n != 0 {
 		t.Fatalf("decode error must stop the parser before any delivery, got %d", n)
 	}

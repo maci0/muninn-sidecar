@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -263,6 +264,14 @@ func New(cfg Config) (*Proxy, error) {
 		ReadHeaderTimeout: 30 * time.Second,
 		ReadTimeout:       5 * time.Minute,
 		IdleTimeout:       120 * time.Second,
+		// The stdlib logs panics, TLS handshake errors and unclean
+		// connection closes through ErrorLog. Left nil it falls back to the
+		// log package, which writes unstructured text straight to stderr: a
+		// --log-json run would get one unparseable line in the stream, and
+		// the level filter set up in main.go would not apply to it at all.
+		// Routing it through slog keeps every diagnostic in one format, and
+		// ServeHTTP's own recovery logs the turns this handler did catch.
+		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
 	}
 
 	return p, nil
@@ -374,6 +383,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// be tied back to this one turn. It stays in the request context: the
 	// forwarded request must stay byte-identical to what the agent sent.
 	r = r.WithContext(withRequestID(r.Context(), nextRequestID()))
+	id := requestID(r.Context())
 
 	if r.URL.Path == StatusPath && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		p.serveStatus(w)
@@ -396,8 +406,43 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w = newIdleDeadlineWriter(w, p.writeIdleTimeout)
-	r, ok := p.instrument(w, r, p.now())
+	start := p.now()
+	rec := newRequestRecorder(w)
+	w = newIdleDeadlineWriter(rec, p.writeIdleTimeout)
+
+	// Reported against what the agent asked for, not what the rewrite sent
+	// upstream: the operator reads these lines next to the agent's own log.
+	method, path := r.Method, r.URL.Path
+
+	// Every turn ends in exactly one of these two lines: the outcome (status,
+	// duration) the operator correlates against the store counters, or the
+	// panic that ended it. Nothing else on this path reports how long a turn
+	// took or how it finished, so a turn that failed in a way no stage logged
+	// would otherwise be invisible.
+	defer func() {
+		panicked := recover()
+		if panicked != nil {
+			// A panic here would take down the process and with it every
+			// other in-flight turn, so it is caught here and turned into one
+			// failed turn. The stack is the only thing that makes it
+			// diagnosable, and a panic is rare enough that it costs nothing.
+			slog.Error("panic serving request", reqid.Field, id, "method", method,
+				"path", path, "agent", p.agentName, "panic", panicked,
+				"stack", string(debug.Stack()))
+			if p.stats != nil {
+				p.stats.ProxyErrors.Add(1)
+			}
+			// A response that already started (a streaming turn that died
+			// mid-delta) cannot be replaced: the agent sees a truncated
+			// stream and the status line is already on the wire.
+			if !rec.committed {
+				writeJSONError(rec.ResponseWriter, http.StatusBadGateway, "internal proxy error")
+			}
+		}
+		p.logTurn(r.Context(), method, path, rec.statusCode(), p.since(start), panicked != nil)
+	}()
+
+	r, ok := p.instrument(w, r, start)
 	if !ok {
 		return // instrument already wrote an error response
 	}
@@ -505,6 +550,17 @@ func (p *Proxy) storeQueue() storeQueue {
 // turn is not a degraded sidecar. Proxy errors (the agent got a 502) and save
 // errors (memories are being lost) are, as is a saturated queue, which drops
 // the next capture outright.
+// countUncapturable records a response the proxy forwarded to the agent but
+// could not read as a memory (gRPC, a non-gzip encoding, a protocol upgrade).
+// These paths log at debug, which is off by default, so without a counter a
+// session whose upstream answers in brotli reports the same healthy "0 saved,
+// 0 errors" as one that is storing every turn.
+func (p *Proxy) countUncapturable() {
+	if p.stats != nil {
+		p.stats.Uncapturable.Add(1)
+	}
+}
+
 func degradedReasons(snap stats.Snapshot, q storeQueue) []string {
 	var reasons []string
 	if snap.ProxyErrors > 0 {
@@ -515,6 +571,12 @@ func degradedReasons(snap stats.Snapshot, q storeQueue) []string {
 	}
 	if snap.Dropped > 0 {
 		reasons = append(reasons, "dropped captures: the store queue overflowed or hit its memory budget")
+	}
+	if snap.UpstreamError > snap.Requests/2 && snap.Requests > 0 {
+		reasons = append(reasons, "most upstream responses were errors")
+	}
+	if snap.Uncapturable > 0 {
+		reasons = append(reasons, "some responses could not be captured (gRPC, non-gzip encoding, or a protocol upgrade): those turns are not saved")
 	}
 	if q.Saturated {
 		reasons = append(reasons, "store queue is full: new captures are being dropped")
@@ -637,6 +699,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// skip capture and let the reverse proxy splice the connection natively.
 	if resp.StatusCode == http.StatusSwitchingProtocols {
 		slog.Debug("skipping capture of protocol upgrade response", reqid.Field, ctx.id, "path", ctx.path)
+		p.countUncapturable()
 		return nil
 	}
 
@@ -665,6 +728,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// would only add noise. Skip capture; the response still forwards untouched.
 	if strings.Contains(contentType, "application/grpc") {
 		slog.Debug("skipping gRPC response capture (protobuf not decodable)", reqid.Field, ctx.id, "path", ctx.path)
+		p.countUncapturable()
 		return nil
 	}
 
@@ -676,6 +740,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// gRPC skip); the body still forwards to the agent untouched.
 	if enc := resp.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "gzip") {
 		slog.Debug("skipping capture of non-gzip encoded response", reqid.Field, ctx.id, "encoding", enc, "path", ctx.path)
+		p.countUncapturable()
 		return nil
 	}
 

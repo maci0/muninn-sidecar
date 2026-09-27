@@ -9,6 +9,33 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
 
 ## [Unreleased]
 
+### Fixed
+
+- **A panic in a turn no longer takes the session down.** The request pipeline
+  had no recovery of its own, so a panic fell through to the stdlib's
+  per-connection recover with `http.Server.ErrorLog` left nil. That default
+  writes through the `log` package: a `--log-json` run got one unstructured
+  line in the middle of the stream, and the level filter never applied to it,
+  so the panic was invisible in the log an operator was actually reading. It is
+  now recovered per turn (a 502 for that turn, counted as a proxy error, logged
+  at error with a stack), and `ErrorLog` is wired to the same slog handler on
+  the proxy's server and on each MITM tunnel's.
+- **Every turn now reports how it ended.** A successful turn logged no outcome
+  and no duration at any level: `duration_ms` appeared only on the
+  upstream-error warning, so a turn that succeeded and a turn that vanished
+  looked identical. Both the plain and the MITM path now end in one `turn` line
+  with the correlation ID, method, path, status, and duration, at error level
+  for a 5xx.
+- **A response msc cannot decode is now counted.** gRPC, non-gzip, and protocol
+  upgrade responses were skipped at debug level and nowhere else, so an
+  upstream answering in brotli reported the same healthy "0 saved, 0 errors" as
+  one storing every turn. They now count in `uncapturable_responses` on the
+  status endpoint, in the session summary, and in `degraded_reasons`.
+- **WebSocket frame lines carry the turn's correlation ID.** The frame-read and
+  decode stops, and the `MSC_WS_DEBUG` message lines, were the only lines on
+  the request path without one, so a frame dump could not be tied to the turn
+  it belonged to.
+
 ### Security
 
 - **The grounding judge can no longer be told what to grade by the question.**

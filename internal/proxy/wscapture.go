@@ -258,7 +258,13 @@ func spliceCopyTap(dst io.Writer, src io.Reader, tap chan []byte, target, id str
 // to onMessage. Exits on stream end or an unrecoverable decode error (e.g.
 // permessage-deflate desync after a dropped chunk) — capture stops, forwarding
 // is unaffected.
-func runWSParser(dir string, ch <-chan []byte, deflate bool, onMessage func(dir string, msg []byte)) {
+//
+// id is the correlation ID of the tunnel the frames came from, carried on every
+// line here for the same reason every other request-path line carries it: these
+// are the only trace of a turn that stopped being captured, and without the ID
+// the operator reading an MSC_WS_DEBUG frame dump cannot tell which turn it
+// belongs to.
+func runWSParser(id, dir string, ch <-chan []byte, deflate bool, onMessage func(dir string, msg []byte)) {
 	r := bufio.NewReader(&chanReader{ch: ch})
 	asm := &wsMessageAssembler{deflate: deflate}
 	for {
@@ -269,18 +275,18 @@ func runWSParser(dir string, ch <-chan []byte, deflate bool, onMessage func(dir 
 			// error such as the size caps; both need a trace, because the
 			// only other sign is a missing memory much later.
 			if !errors.Is(err, io.EOF) {
-				slog.Debug("ws capture: frame read stopped", "dir", dir, "err", err)
+				slog.Debug("ws capture: frame read stopped", reqid.Field, id, "dir", dir, "err", err)
 			}
 			return
 		}
 		msg, err := asm.add(f)
 		if err != nil {
-			slog.Debug("ws capture: decode stopped", "dir", dir, "err", err)
+			slog.Debug("ws capture: decode stopped", reqid.Field, id, "dir", dir, "err", err)
 			return
 		}
 		if msg != nil {
 			if wsDebug {
-				slog.Info("ws message", "dir", dir, "type", wsMessageType(msg), "bytes", len(msg))
+				slog.Info("ws message", reqid.Field, id, "dir", dir, "type", wsMessageType(msg), "bytes", len(msg))
 			}
 			onMessage(dir, msg)
 		}
@@ -319,8 +325,8 @@ func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, back
 		c2s = make(chan []byte, 256)
 		s2c = make(chan []byte, 256)
 		ex := &wsExchange{p: p, target: target, requestID: id}
-		go runWSParser("c->s", c2s, deflate, ex.onClient)
-		go runWSParser("s->c", s2c, deflate, ex.onServer)
+		go runWSParser(id, "c->s", c2s, deflate, ex.onClient)
+		go runWSParser(id, "s->c", s2c, deflate, ex.onServer)
 		slog.Debug("ws capture: tapping upgraded tunnel", reqid.Field, id, "target", target, "deflate", deflate)
 	}
 

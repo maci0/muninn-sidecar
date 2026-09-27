@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -172,8 +173,33 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// the shared pipeline and the reverse proxy treat it like the plain path.
 		req.URL.Scheme = "https"
 		req.URL.Host = target
-		w = newIdleDeadlineWriter(w, p.writeIdleTimeout)
-		ir, proceed := p.instrument(w, req, p.now())
+
+		// Same outcome line and same panic recovery the plain path gets in
+		// ServeHTTP. A tunnel serves on its own http.Server, so a turn that
+		// dies here would otherwise report neither how long it took nor how
+		// it ended, and a panic in the decrypting pipeline would take the
+		// whole session down rather than one turn.
+		start := p.now()
+		rec := newRequestRecorder(w)
+		w = newIdleDeadlineWriter(rec, p.writeIdleTimeout)
+		turnID := requestID(req.Context())
+		defer func() {
+			panicked := recover()
+			if panicked != nil {
+				slog.Error("panic serving request", reqid.Field, turnID, "method", req.Method,
+					"path", req.URL.Path, "agent", p.agentName, "panic", panicked,
+					"stack", string(debug.Stack()))
+				if p.stats != nil {
+					p.stats.ProxyErrors.Add(1)
+				}
+				if !rec.committed {
+					writeJSONError(rec.ResponseWriter, http.StatusBadGateway, "internal proxy error")
+				}
+			}
+			p.logTurn(req.Context(), req.Method, req.URL.Path, rec.statusCode(), p.since(start), panicked != nil)
+		}()
+
+		ir, proceed := p.instrument(w, req, start)
 		if !proceed {
 			return
 		}
@@ -188,6 +214,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Handler:           handler,
 		ReadHeaderTimeout: 30 * time.Second,
 		ReadTimeout:       5 * time.Minute,
+		// Same reason as Proxy.New's server: the stdlib would otherwise write
+		// this tunnel's panics through the log package, in a format the
+		// structured handler never sees.
+		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
 	}
 	// Serve returns once the tunnel conn closes, so the returned error is
 	// always a shutdown outcome rather than a fault. Log anything else (an
