@@ -366,9 +366,11 @@ To inspect the resolved configuration without launching anything, run `msc --dry
   256 MiB memory budget, exchanges are dropped rather than blocking the agent;
   shutdown flushing is time-bounded (~8s). Recall/injection fail open — a
   MuninnDB hiccup never blocks or corrupts a request.
-- **Secret redaction is best-effort.** Captured content is scrubbed of well-known
-  credential formats and personal data (emails, payment-card numbers, SSNs,
-  phone numbers, and your own home-directory path, which is a direct identifier
+- **Secret and personal-data redaction is best-effort.** Captured content is
+  scrubbed of well-known credential formats and personal data (emails,
+  payment-card numbers, SSNs, phone numbers, personal-data field assignments
+  such as `dob=`/`home_address:`/`iban=`, and your own home-directory path,
+  which is a direct identifier
   on macOS and Windows where the leaf is the account's real name)
   before storage, but the patterns are conservative and not
   exhaustive — it reduces, not eliminates, the risk of a secret reaching the
@@ -377,6 +379,19 @@ To inspect the resolved configuration without launching anything, run `msc --dry
   always, on recalled memory content before injection (so old/cross-client secrets
   aren't re-sent to the provider), on the recall query before it reaches the memory
   backend, and on the answer-grounding judge prompt.
+- **Your conversations leave the process and persist in MuninnDB.** msc
+  captures the last user message and the assistant's reply for every turn and
+  writes them to the vault named by `--vault` (default: the current directory
+  name) over the MuninnDB MCP endpoint, and recall sends the (scrubbed) query
+  text to that same endpoint. The agent's own inference still goes straight to
+  its provider; injected memories are scrubbed again on the way out. So the
+  captured text is only as private as the MuninnDB you point at: a remote or
+  shared vault is a third party, and the memories live there for as long as
+  MuninnDB keeps them (retention is MuninnDB's, not msc's — delete them there).
+  Answer grounding, if enabled, sends the scrubbed query and candidate
+  passages to whatever `--ground-url` / `--ground-cmd` names. There is no flag
+  to turn capture off: running the agent without msc in front of it is the only
+  way to keep the text on your machine.
 - **MITM trust.** `--mitm` is opt-in. The CA private key is generated locally,
   stored `0600`, and trusted only by the agent msc launches — never the system
   trust store (`msc ca` prints the cert for trusting it elsewhere yourself).

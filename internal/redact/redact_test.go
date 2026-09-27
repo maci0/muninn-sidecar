@@ -148,6 +148,72 @@ func TestRedactKeyValueSecrets(t *testing.T) {
 	}
 }
 
+func TestRedactPersonalDataFields(t *testing.T) {
+	// Personal data whose value has no format the patterns can recognize: the
+	// key name is the only signal, as in a pasted form dump, CRM export, config
+	// file, or SQL seed row. The key survives for context, the value does not.
+	cases := []struct{ name, in, mustKeep, mustDrop string }{
+		{"env export", "IBAN=DE89370400440532013000", "IBAN=", "DE89370400440532013000"},
+		{"yaml address with spaces", "home_address: 1600 Pennsylvania Avenue", "home_address:", "1600 Pennsylvania Avenue"},
+		{"json name fields", `{"first_name": "Jane", "last_name": "Doe"}`, "first_name", "Jane"},
+		{"colon dob", "user dob: 1979-04-12", "dob:", "1979-04-12"},
+		{"passport no", "passport_number=HX1234567", "passport_number=", "HX1234567"},
+		{"dotted vendor prefix", "user.email=jane.doe@example.com", "user.email=", "jane.doe"},
+		{"bank account", "bank_account_number = 12345678901", "bank_account_number =", "12345678901"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Secrets(tc.in)
+			if !strings.Contains(got, Marker) {
+				t.Errorf("expected redaction, got %q", got)
+			}
+			if !strings.Contains(got, tc.mustKeep) {
+				t.Errorf("key lost: %q", got)
+			}
+			if strings.Contains(got, tc.mustDrop) {
+				t.Errorf("personal data leaked: %q", got)
+			}
+		})
+	}
+
+	// Two assignments on consecutive lines: the first value stops before the
+	// newline so the newline is still the boundary the second one needs.
+	multi := Secrets("ssn: 123-45-6789\ndob: 1979-04-12\nend")
+	if strings.Contains(multi, "1979-04-12") {
+		t.Errorf("second assignment skipped: %q", multi)
+	}
+	if !strings.HasSuffix(multi, "\nend") {
+		t.Errorf("trailing text damaged: %q", multi)
+	}
+
+	// Idempotent: a value already reduced to the marker is left alone, so a
+	// re-scrub of stored content does not stack markers or grow the text.
+	once := Secrets("dob: 1979-04-12")
+	if twice := Secrets(once); twice != once {
+		t.Errorf("not idempotent: %q -> %q", once, twice)
+	}
+
+	// No false positives. The key must be the whole key: a suffix rule would
+	// eat every identifier in a codebase and destroy the memory it protects.
+	clean := []string{
+		"username=admin",
+		"filename=report.txt",
+		"namespace=internal/proxy",
+		"classname=ProxyHandler",
+		"hotel=hilton",
+		"name: WidgetFactory",
+		"SELECT account_number, routing_number FROM ledger",
+		"the mobile_number column holds an e164 string",
+		"rename the postcode package to zipcode",
+		"postgres://svc@host:5432/app",
+	}
+	for _, c := range clean {
+		if got := Secrets(c); got != c {
+			t.Errorf("false positive: %q -> %q", c, got)
+		}
+	}
+}
+
 func TestRedactSecretsMultiple(t *testing.T) {
 	k1 := "sk-" + strings.Repeat("a", 28)
 	k2 := "AKIA" + strings.Repeat("Z", 16)
@@ -172,6 +238,8 @@ func FuzzRedactSecrets(f *testing.F) {
 	f.Add("contact alice" + "@" + "example.com please")
 	f.Add("card 4111" + "1111" + "1111" + "1111 on file")
 	f.Add("ssn 123-45-6789 on record")
+	f.Add("dob: 1979-04-12")
+	f.Add("username=admin")
 	f.Add("login bob" + "@" + "example.com:hunter2pass99 now")
 	f.Add(`password="abcdefgh12345`)
 	f.Add(`pAsswd="000000"0`) // quoted match leaves a stray byte; second pass must not re-redact

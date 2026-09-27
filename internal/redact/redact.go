@@ -1,7 +1,8 @@
 // Package redact scrubs well-known secret formats (API keys, tokens, private
 // keys, sensitive key=value assignments) and directly-identifying personal data
 // (email addresses, payment card numbers, US Social Security numbers, phone
-// numbers, the caller's home-directory path) from text,
+// numbers, personal-data key=value assignments such as dob= or iban=, the
+// caller's home-directory path) from text,
 // replacing them with a [REDACTED] marker, and drops a URL password for
 // display. It is
 // shared by the store (scrub before persisting a captured exchange), the
@@ -210,6 +211,31 @@ func numericCandidate(s string) bool {
 	return false
 }
 
+// piiKeyStemsByFirst indexes piiKeyStems by the folded first byte, so the scan
+// below costs one map lookup per byte instead of a comparison per stem.
+var piiKeyStemsByFirst = func() map[byte][]string {
+	m := make(map[byte][]string, len(piiKeyStems))
+	for _, stem := range piiKeyStems {
+		first := stem[0] | 0x20
+		m[first] = append(m[first], stem)
+	}
+	return m
+}()
+
+// containsAnyPIIKey reports whether s contains any personal-data key stem from
+// piiKeyStems. One pass, mirroring containsAnyStem: non-ASCII bytes fold to
+// themselves under |0x20 and so never index a stem.
+func containsAnyPIIKey(s string) bool {
+	for i := 0; i < len(s); i++ {
+		for _, stem := range piiKeyStemsByFirst[s[i]|0x20] {
+			if matchFold(s[i:], stem) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // containsAnyStem reports whether s contains any sensitive key=value stem
 // ("pass", "secret", "key", "token", "credential") — one is present in every
 // kvPattern alternative, so without one no assignment can match, which skips the
@@ -323,6 +349,58 @@ var kvPattern = regexp.MustCompile(
 // kvRule gates kvPattern on the key stems every one of its alternatives carries.
 var kvRule = rule{re: kvPattern, keyStem: true}
 
+// piiPattern catches personal-data key=value / key: value assignments — the
+// second dominant leak vector after secrets, and one the format patterns above
+// cannot reach. A pasted form dump, support ticket, CRM export, `.env` with
+// operator details, or SQL seed row carries a person's name, address, birth
+// date, or bank details in fields whose values have no distinctive format:
+// "dob=1979-04-12", "address: 1600 Pennsylvania Ave", "iban=DE8937040044..."
+// survive the email, card, SSN and phone patterns because they are none of
+// those shapes. The key name is the only signal, exactly as in kvPattern, so
+// this is the same mechanism aimed at personal data instead of credentials.
+//
+// The key is the *whole* key, not a suffix of it: kvPattern accepts any prefix
+// because "DB_PASSWORD" ends in a secret word, but for personal-data names a
+// prefix rule would swallow `username=`, `filename=`, `namespace=`, `classname=`
+// and every other identifier in a codebase, redacting the very content memory
+// exists to keep. A dotted vendor prefix is the one exception (user.email,
+// db.ssn), since it ends in a separator and cannot merge into a longer word.
+// The left boundary keeps `hotel=hilton` from matching its `tel`, and the
+// key is never the bare word "name", for the same reason. RE2 has no
+// lookbehind, so the boundary is a captured character (or the start of the
+// input) kept inside group 1 and re-emitted by the replacement.
+//
+// The value runs to end of line rather than to the next space, because the
+// values that matter most here (a street address, a full name) contain spaces.
+// The unquoted alternative stops *before* the newline, so that newline is
+// still available as the boundary for the next assignment on the next line.
+// A quoted value is matched whole, quotes included, so JSON and YAML members
+// keep their delimiters and a following key survives.
+//
+//	group 1: boundary + key  group 2: separator (+ optional quote before it)  group 3: value
+var piiPattern = regexp.MustCompile(
+	`(?i)((?:^|[^A-Za-z0-9_-])(?:[A-Za-z0-9_-]+\.)*` +
+		`(?:full[_-]?name|first[_-]?name|last[_-]?name|given[_-]?name|family[_-]?name|maiden[_-]?name` +
+		`|date[_-]?of[_-]?birth|birth[_-]?date|dob` +
+		`|ssn|social[_-]?security(?:[_-]?(?:number|no|id))?|national[_-]?id` +
+		`|passport(?:[_-]?(?:number|no))?|driver'?s?[_-]?licen[cs]e(?:[_-]?(?:number|no))?` +
+		`|iban|swift[_-]?bic|bic[_-]?code` +
+		`|bank[_-]?account(?:[_-]?(?:number|no))?|account[_-]?(?:number|no)|routing[_-]?(?:number|no)|sort[_-]?code|tax[_-]?id` +
+		`|phone(?:[_-]?number)?|mobile(?:[_-]?number)?|home[_-]?address|street[_-]?address|mailing[_-]?address|billing[_-]?address` +
+		`|postcode|postal[_-]?code|zip[_-]?code))` +
+		`(["']?\s*[:=]\s*)("[^"\n]+"|'[^'\n]+'|[^\n]{4,})`)
+
+// piiKeyStems are the first distinctive fragment of every alternative in
+// piiPattern's key. containsAnyPIIKey checks one of them cheaply so the regex
+// scan is skipped for the overwhelming majority of turns, which contain no
+// personal-data field name at all. Unlike kvPattern's stems these are the whole
+// key or a prefix of it, so a match is necessary and sufficient.
+var piiKeyStems = []string{
+	"ssn", "social", "dob", "birth", "iban", "passport", "licen", "tax",
+	"phone", "mobile", "address", "account", "routing", "sort", "bic",
+	"swift", "postcode", "postal", "zip", "name", "national",
+}
+
 // emailRule gates emailPattern on '@', which its grammar requires.
 var emailRule = rule{re: emailPattern, lit: "@"}
 
@@ -434,6 +512,17 @@ func Secrets(s string) string {
 	if kvRule.matches(s) && kvPattern.MatchString(s) {
 		s = kvPattern.ReplaceAllStringFunc(s, func(m string) string {
 			sub := kvPattern.FindStringSubmatch(m)
+			if strings.HasPrefix(strings.TrimLeft(sub[3], `"'`), Marker) {
+				return m
+			}
+			return sub[1] + sub[2] + Marker
+		})
+	}
+	// Personal-data assignments: the key names the field, so the value goes
+	// even when its shape matches none of the format patterns above.
+	if containsAnyPIIKey(s) && piiPattern.MatchString(s) {
+		s = piiPattern.ReplaceAllStringFunc(s, func(m string) string {
+			sub := piiPattern.FindStringSubmatch(m)
 			if strings.HasPrefix(strings.TrimLeft(sub[3], `"'`), Marker) {
 				return m
 			}
