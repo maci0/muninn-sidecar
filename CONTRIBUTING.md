@@ -28,10 +28,10 @@ quality bar so a change lands cleanly.
 - **shellcheck, ruff and yamllint**, for `make check`. `make lint` refuses to run
   without them, for the same reason staticcheck is required: a linter that
   skips silently reports green and turns into a red CI run. `uv tool install
-  ruff yamllint`; shellcheck comes from your package manager. CI runs the same
-  `make lint-non-go` target with ruff and yamllint pinned to the versions in
-  `ci.yml`, so a different local ruff version is the one thing that can turn a
-  green run red.
+  ruff yamllint`; shellcheck comes from your package manager. CI runs
+  `make lint-ci`, which is `make lint-non-go` with ruff and yamllint pinned to
+  the `RUFF_VERSION` / `YAMLLINT_VERSION` values in the Makefile, so a different
+  local ruff version is the one thing that can turn a green run red.
 
 ```sh
 make doctor   # checks every one of the above against this machine
@@ -142,10 +142,10 @@ supply-chain property. `make vuln` (and CI) then mainly guards stdlib CVEs.
   single-goroutine by design.
 - **gofmt + `go vet` + staticcheck clean.** No new warnings. The non-Go files
   are held to the same bar: `ruff` (`ruff.toml`) for `scripts/*.py`, `shellcheck`
-  for `test-live.sh`, `yamllint` (`.yamllint.yml`) for the workflow YAML. All of
-  them are required, locally and in CI, and CI runs the same `make lint-non-go`
-  target with the two Python linters pinned to the versions in `ci.yml`, so a
-  different local ruff version is the one thing that can turn a green run red.
+  for every tracked `*.sh`, `yamllint` (`.yamllint.yml`) for the workflow YAML.
+  All of them are required, locally and in CI, and CI runs `make lint-ci` with
+  the two Python linters pinned in the Makefile, so a different local ruff
+  version is the one thing that can turn a green run red.
 - **Keep behavior verified, not assumed.** When a change depends on an external
   contract (a MuninnDB tool's response, an agent's env var), verify it against a
   live instance and add a regression guard.

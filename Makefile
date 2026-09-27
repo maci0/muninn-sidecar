@@ -28,7 +28,7 @@ BUILDFLAGS = -trimpath -buildvcs=false
 CGO = CGO_ENABLED=0
 
 .PHONY: help doctor tools tools-staticcheck tools-govulncheck check build build-all build-matrix install \
-	test test-short test-fast cover lint lint-go lint-non-go lint-available check-race check-release vet vuln fmt \
+	test test-short test-fast cover lint lint-go lint-non-go lint-ci lint-available check-race check-release vet vuln fmt \
 	fmt-check tidy tidy-check clean eval eval-models fuzz bench versions
 
 # Packages/tests for the `test` target. PKG=./internal/redact narrows the
@@ -54,8 +54,9 @@ GOVULNCHECK_PKG = golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 # The non-Go linters CI runs through pipx, pinned per run. A pin that lives only
 # in ci.yml is one no local command can name, and an unpinned local copy is how
 # a green `make check` turns into a red push: new rules land in every ruff
-# release. `make versions` prints these in a form ci.yml evals, so the pin is
-# stated once and `make lint` can report the drift it is about to run against.
+# release. `make lint-ci` is what ci.yml runs, so this is the only copy CI and a
+# contributor can read, and `make versions` prints the two values in a form any
+# shell can eval to reproduce the CI lint job.
 RUFF_VERSION ?= 0.16.4
 YAMLLINT_VERSION ?= 1.38.0
 
@@ -84,6 +85,7 @@ help:
 	@echo '  make build-matrix compile for every GOOS/GOARCH the CI build job covers'
 	@echo '  make lint-go      go vet + staticcheck only, the pair CI runs'
 	@echo '  make lint-non-go  shellcheck + ruff + yamllint only, the three CI runs'
+	@echo '  make lint-ci      lint-non-go with the pinned ruff/yamllint (what the CI lint job runs)'
 	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
 	@echo '  make cover        race + coverage report'
 	@echo '  make fuzz         brief campaign over every fuzz target (FUZZTIME=60s for longer)'
@@ -313,19 +315,19 @@ YAMLLINT    ?= yamllint
 
 # Each linter is required, for the same reason staticcheck is: a missing copy
 # that skips silently reports a green `make check` and turns into a red CI run.
-# The presence gate checks the executable the variable names, not the bare tool
+# The presence gate checks the first word of the variable, not the bare tool
 # name, so it also holds for CI's `pipx run ruff@<version>`, whose executable is
-# pipx. Gate and run sit in separate statements: `command -v X && X ... || echo
-# skip` also fires the skip on the tool's own non-zero exit, so a real finding
-# would print "not installed" and the target would still succeed.
-empty :=
-space := $(empty) $(empty)
-exe = $(firstword $(subst $(space),,$(strip $(1))))
+# pipx. Stripping every space out instead of keeping the first word named a
+# command that does not exist (`pipxrunruff@0.16.4`) and failed the gate on
+# every CI run. Gate and run sit in separate statements: `command -v X && X ...
+# || echo skip` also fires the skip on the tool's own non-zero exit, so a real
+# finding would print "not installed" and the target would still succeed.
+exe = $(firstword $(1))
 
 lint-non-go:
 	@command -v $(call exe,$(SHELLCHECK)) >/dev/null 2>&1 || { \
 	  echo "shellcheck is required (CI runs it): https://www.shellcheck.net/#install" >&2; exit 1; }
-	$(SHELLCHECK) test-live.sh
+	$(SHELLCHECK) $$(git ls-files '*.sh')
 	@command -v $(call exe,$(RUFF)) >/dev/null 2>&1 || { \
 	  echo "ruff is required (CI runs it): uv tool install ruff" >&2; exit 1; }
 	$(RUFF) check scripts/
@@ -335,6 +337,16 @@ lint-non-go:
 	$(YAMLLINT) .
 
 lint: lint-go lint-non-go
+
+# The lint job's invocation, pins and all. CI runs this rather than repeating
+# the versions, so a pin bumped here is the pin CI enforces: the copy in
+# ci.yml is what made `make lint` and CI able to disagree about which ruff
+# release the rule set is written against. Nothing is installed onto the
+# runner: ruff and yamllint go through pipx at the versions above.
+lint-ci:
+	@$(MAKE) --no-print-directory lint-non-go \
+	  RUFF="pipx run ruff@$(RUFF_VERSION)" \
+	  YAMLLINT="pipx run yamllint@$(YAMLLINT_VERSION)"
 
 # `make lint` already refuses to run without these three, so this gate is the
 # one that names every missing tool in a single message, which is what

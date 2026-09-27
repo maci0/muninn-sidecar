@@ -40,12 +40,27 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
 
 ### Fixed
 
-- **`msc --dry-run` builds again in MITM mode.** The preview was changed to
-  leave the trust-store-replacing variables unset on a host with no system CA
-  bundle, which is right, but it called `agents.HasSystemCABundle`, a helper
-  that had already been removed as dead, so `cmd/msc` no longer compiled. The
-  helper is back, exported over the same system-roots probe `ExecMITM` uses, so
-  the preview and the real launch cannot disagree about it.
+- **`make build` compiles again.** The `msc --dry-run` preview called
+  `agents.HasSystemCABundle`, a helper that had already been removed as dead
+  after the CA-trust-var change, so `cmd/msc` no longer compiled and every
+  build failed at `cmd/msc/dryrun.go:36` with an undefined symbol. The predicate
+  is back, next to the system-roots probe it answers for, so the preview and
+  the real launch cannot disagree about it, and a test pins it to the bundle
+  `writeCombinedCABundle` actually writes.
+- **The CI lint job can pass again.** The presence gate that runs before
+  shellcheck, ruff and yamllint stripped *every* space out of the tool variable
+  before testing it, so the pipx form CI invokes was looked up as the single
+  word `pipxrunruff@0.16.4` and the job failed with "ruff is required" on every
+  run. It now gates on the first word, which is the executable the command
+  actually runs.
+- **`scripts/check-release-notes.sh` is linted.** `make lint-non-go` passed
+  shellcheck a single file by name, so the release gate's script was never
+  checked. It now passes every tracked `*.sh`, which covers new scripts without
+  a second edit.
+- **The ruff and yamllint pins have one home.** They were stated in the
+  Makefile and repeated as literals in `ci.yml`, so a bump in one left the
+  other enforcing a different ruff release than `make lint` did. `make lint-ci`
+  is now the invocation the workflow runs, pins included.
 - **Reader output and judge scope are capped at startup.** `-max-tokens`
   (`msc-qa`) and `-ground-topk` (`msc-qa`, `msc-bench`) were the only things
   bounding a model call, and neither rejected a zero: providers that honor

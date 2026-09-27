@@ -530,6 +530,33 @@ func TestWriteCombinedCABundle(t *testing.T) {
 	}
 }
 
+// A dry-run preview lists the trust-store-replacing variables only when
+// ExecMITM would have a system bundle to combine msc's CA with, so
+// HasSystemCABundle has to answer what writeCombinedCABundle actually finds.
+func TestHasSystemCABundleMatchesTheBundleItWouldWrite(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca-cert.pem")
+	rootsPath := filepath.Join(dir, "roots.pem")
+	if err := os.WriteFile(caPath, []byte("FAKE MSC CA\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootsPath, []byte("FAKE SYSTEM ROOTS\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSL_CERT_FILE", rootsPath)
+
+	if !HasSystemCABundle() {
+		t.Fatal("a readable SSL_CERT_FILE is a system bundle")
+	}
+	bundlePath, err := writeCombinedCABundle(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundlePath == "" {
+		t.Fatal("HasSystemCABundle reported a bundle writeCombinedCABundle did not write")
+	}
+}
+
 func FuzzBuildMITMEnv(f *testing.F) {
 	f.Add("http://127.0.0.1:9", "https://up", "/ca.pem", "/ca-bundle.pem")
 	f.Fuzz(func(t *testing.T, proxyURL, upstream, caPath, bundlePath string) {

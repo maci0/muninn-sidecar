@@ -438,9 +438,11 @@ func systemRootsPEM() []byte {
 
 // HasSystemCABundle reports whether a system root bundle exists to combine
 // with msc's CA, which decides whether writeCombinedCABundle writes one and
-// whether MITMOverrides sets the trust-store-replacing variables. It is the
-// same probe writeCombinedCABundle makes, so `msc --dry-run` previews the same
-// set the child will really get and agrees with ExecMITM.
+// whether MITMOverrides sets the trust-store-replacing variables. ExecMITM
+// leaves the trust-store-replacing variables unset when it has no system
+// roots, so a dry-run preview has to ask before listing them. It is the same
+// probe writeCombinedCABundle makes, so the preview and the real launch
+// cannot disagree about it.
 func HasSystemCABundle() bool {
 	return systemRootsPEM() != nil
 }

@@ -18,11 +18,11 @@ permissions:
 # One place for every pinned tool version, shared by the steps that use it.
 # GO_VERSION is the 1.25 release line, not a fixed patch: it is declared once
 # here and read by every setup-go step, so the line cannot drift between jobs,
-# and `make doctor` checks it against the go directive in go.mod.
+# and `make doctor` checks it against the go directive in go.mod. The non-Go
+# linter pins live in the Makefile and reach this workflow through `make
+# lint-ci`, so there is no second copy of them here to fall behind.
 env:
   GO_VERSION: "1.25"
-  RUFF_VERSION: "0.16.4"
-  YAMLLINT_VERSION: "1.38.0"
 
 # Cancel superseded runs for the same branch/PR — a new push makes the
 # in-flight run obsolete, so don't burn a runner finishing it.
@@ -87,13 +87,13 @@ jobs:
 
       # Non-Go sources are held to the same bar as the Go tree: the Python
       # dataset helper, the shell smoke script, and this workflow's own YAML.
-      # The invocations live in the Makefile's `lint-non-go` target, which is
-      # what `make lint` runs too, so the rule set a contributor checks is the
-      # one enforced here rather than a second copy that drifts. ruff and
+      # `make lint-ci` is `make lint-non-go` with the ruff and yamllint pins
+      # already applied, so the rule set a contributor checks is the one
+      # enforced here and the pins have one home (the Makefile). ruff and
       # yamllint go through pipx (ephemeral, nothing installed onto the runner
-      # image) at the versions pinned above; shellcheck is on the runner.
+      # image); shellcheck is on the runner.
       - name: Non-Go linters
-        run: make lint-non-go RUFF="pipx run ruff@$RUFF_VERSION" YAMLLINT="pipx run yamllint@$YAMLLINT_VERSION"
+        run: make lint-ci
 
   # `go install` ships whatever the host platform is, so every GOOS users can
   # install on has to keep compiling. Unix-only syscalls (signals, process
@@ -157,11 +157,15 @@ jobs:
           # .git). Fixing VERSION/COMMIT/SOURCE_DATE_EPOCH leaves exactly the
           # leak this step is meant to find, and makes it fail on that alone.
           export VERSION=repro-test COMMIT=repro-test SOURCE_DATE_EPOCH=1700000000
-          make build
+          # The two builds also run under different locales and timezones, so a
+          # stamp that leaked one of them fails here instead of passing because
+          # both runs happened to share a runner's environment. Only TZ is
+          # varied: the second value must be a zone the runner's tzdata has.
+          LC_ALL=C TZ=UTC make build
           mkdir -p "$RUNNER_TEMP/elsewhere"
           cp -r . "$RUNNER_TEMP/elsewhere/src"
           rm -f "$RUNNER_TEMP/elsewhere/src"/msc*
-          (cd "$RUNNER_TEMP/elsewhere/src" && make build)
+          (cd "$RUNNER_TEMP/elsewhere/src" && LC_ALL=C TZ=Asia/Tokyo make build)
           for bin in msc msc-bench msc-eval msc-qa; do
             a=$(sha256sum "$bin" | cut -d' ' -f1)
             b=$(sha256sum "$RUNNER_TEMP/elsewhere/src/$bin" | cut -d' ' -f1)
