@@ -6,6 +6,11 @@ to inject into the traffic between an AI agent and its model — and the empiric
 work behind every one of those choices. No agent involvement, no extra round
 trips: it is a reverse-proxy decision on the request body.
 
+Status: current. Code claims (thresholds, knobs, trigger behavior, fuzz-target
+counts) were checked against the tree on 2026-09-27; the measured numbers
+pointed at `docs/experiments.md` and `docs/model-eval.md` reflect the runs
+recorded there.
+
 ## In plain terms
 
 Think of `msc` as a **careful assistant sitting between your coding agent and the
@@ -308,7 +313,7 @@ appear only when those paths fire.
 ## Fuzzing the parsing surfaces
 
 Every in-flight parser that ingests untrusted agent/model bytes has a Go fuzz
-target (60 of them, mostly in `fuzz_test.go` files, plus a few in the packages'
+target (61 of them, mostly in `fuzz_test.go` files, plus a few in the packages'
 main test files), since the proxy must never panic on malformed traffic:
 
 - `apiformat`: `FuzzExtractUserMessage`, `FuzzExtractAssistantMessage`,

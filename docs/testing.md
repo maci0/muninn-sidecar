@@ -20,7 +20,7 @@ process-level paths are covered by a re-exec test rather than in-package ones).
 
 ## Fuzzing
 
-62 fuzz targets cover the untrusted-input surfaces:
+61 fuzz targets cover the untrusted-input surfaces:
 
 - **apiformat** — request/response extraction, recent-context, system-reminder
   strip, truncation (UTF-8 + length invariants), SSE delta/tool-name.
