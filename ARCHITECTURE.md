@@ -99,6 +99,7 @@ cmd/msc-qa/              Downstream answer-quality eval across models (none/inje
 internal/
   agents/agents.go        Agent registry (claude, codex, grok, qwen, agy, ...)
   config/config.go        MuninnDB connection resolution (flag > env > default) + URL validation
+  clirun/clirun.go       Bounded child-CLI runner for judges/rewriters (capped stdout, process-group timeout)
   apiformat/apiformat.go  Format detection & message extraction (Anthropic/OpenAI/Gemini)
   inject/
     inject.go             Config, Injector, and the Enrich request path
@@ -128,6 +129,7 @@ internal/
     filter.go             Anti-recursion filters (strip injected context, tool calls)
     stream.go             SSE/ndjson stream capture and synthetic response building
     context.go            Request-scoped capture metadata via context.Value
+    clock.go              The proxy's only source of wall-clock time (SystemClock by default)
   reqid/reqid.go          Per-request correlation ID, minted at ingress and carried to the store worker
   stats/stats.go          Session statistics (atomic counters)
   tailbuf/tailbuf.go      Fixed-size tail writer for unbounded model/agent CLI output

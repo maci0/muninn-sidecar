@@ -250,15 +250,6 @@ func sentinelForEnv(k string) string {
 	return ""
 }
 
-// BuildEnv constructs the child process environment. It copies the current env,
-// replaces EnvKey with the proxy URL, and sets the agent-scoped
-// MSC_UPSTREAM_<AGENT> sentinel to the resolved upstream so nested msc
-// invocations of the same agent can detect the real origin and avoid infinite
-// forwarding loops. The proxy listens on plain HTTP so TLS is not involved in
-// the agent→proxy hop.
-// EnvOverrides is the child-environment override set for the plain
-// base-URL-override path, shared by BuildEnv and `msc --dry-run` so the preview
-// matches what the child actually receives.
 // BaseURLSource names where the agent reads its base URL from, as shown by
 // `msc list` and `--help`: the env var msc overrides, or the flag it injects.
 // For an ArgsRouted agent the flag is derived from ProxyArgs (the arguments
@@ -283,6 +274,9 @@ func (a Agent) BaseURLSource() string {
 	return a.EnvKey
 }
 
+// EnvOverrides is the child-environment override set for the plain
+// base-URL-override path, shared by BuildEnv and `msc --dry-run` so the preview
+// matches what the child actually receives.
 func (a Agent) EnvOverrides(proxyURL, upstream string) map[string]string {
 	replace := map[string]string{
 		a.sentinelKey(): upstream,

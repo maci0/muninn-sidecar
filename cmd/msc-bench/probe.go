@@ -15,6 +15,11 @@ import (
 
 // --- seeding ---
 
+// seedCorpus writes items into vault in batches. Every memory carries a
+// content-addressed dedup_key, the same value the sidecar's store sends, so
+// re-seeding a corpus the vault already holds is a no-op instead of a second
+// copy of every item. Without it, a rerun against a persistent vault silently
+// doubles the corpus and every retrieval metric is measured over it.
 func seedCorpus(ctx context.Context, c *mcpclient.Client, vault string, items []item) error {
 	const batchSize = 25
 	for start := 0; start < len(items); start += batchSize {

@@ -50,23 +50,34 @@ func writeMDBlock(path, manifest string, rows []string) error {
 // followed that block up to the next manifest comment (or end of file). When
 // marker is absent, the block is appended. Returns the full new file contents.
 func replaceMDBlock(content, marker, block string) string {
+	// A report edited on Windows, or checked out with core.autocrlf, uses CRLF
+	// throughout. Rewriting it with LF would leave the file with mixed endings,
+	// so the new block adopts whichever ending the file already uses. Marker
+	// matching trims the CR as well: without that the marker never matches on a
+	// CRLF file and every rerun appends another block.
+	eol := "\n"
+	if strings.Contains(content, "\r\n") {
+		eol = "\r\n"
+	}
+	block = strings.ReplaceAll(block, "\n", eol)
+
 	lines := strings.SplitAfter(content, "\n")
 	start := -1
 	for i, l := range lines {
-		if strings.TrimRight(l, "\n") == marker {
+		if strings.TrimRight(l, "\r\n") == marker {
 			start = i
 			break
 		}
 	}
 	if start < 0 {
-		if content != "" && !strings.HasSuffix(content, "\n") {
-			content += "\n"
+		if content != "" && !strings.HasSuffix(content, eol) {
+			content += eol
 		}
 		return content + block
 	}
 	end := len(lines)
 	for i := start + 1; i < len(lines); i++ {
-		if strings.HasPrefix(lines[i], mdManifestPrefix) {
+		if strings.HasPrefix(strings.TrimRight(lines[i], "\r\n"), mdManifestPrefix) {
 			end = i
 			break
 		}
