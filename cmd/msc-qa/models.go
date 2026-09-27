@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/clirun"
 )
 
 // answerer is a reader backend: given a question and an optional injected
@@ -138,19 +138,21 @@ func (c *cliClient) answer(ctx context.Context, question, contextBlock string) (
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	prompt := buildCLIPrompt(question, contextBlock)
-	cmd := exec.CommandContext(cctx, c.argv[0], c.argv[1:]...)
-	cmd.Stdin = strings.NewReader(prompt)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
+	// clirun, not a bare exec.CommandContext: the agent is a black box that
+	// prints reasoning we never parse and spawns helpers of its own. It caps the
+	// captured output (a bytes.Buffer here grows with whatever the agent prints,
+	// over an N-questions × 4-arms loop) and signals the whole process group on
+	// timeout, so a judge that forks helpers cannot orphan them past the call.
+	stdout, err := clirun.Run(cctx, c.argv, prompt, c.timeout)
+	if err != nil {
 		// A non-zero exit can still leave a usable answer on stdout (some agents
 		// exit non-zero on warnings); prefer any captured line over the error.
-		if line := lastNonEmptyLine(stdout.String()); line != "" {
+		if line := lastNonEmptyLine(stdout); line != "" {
 			return line, nil
 		}
 		return "", err
 	}
-	return lastNonEmptyLine(stdout.String()), nil
+	return lastNonEmptyLine(stdout), nil
 }
 
 // buildCLIPrompt flattens the chat arms into one prompt string for single-shot

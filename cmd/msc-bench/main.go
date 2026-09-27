@@ -107,6 +107,7 @@ func run() error {
 	}
 
 	client := mcpclient.New(*mcpURL, config.Token(*token), *timeout)
+	defer client.Close()
 	var items []item
 	var presentProbes, absentProbes []probe
 	var err error

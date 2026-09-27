@@ -67,6 +67,7 @@ func (f *Fake) Advance(d time.Duration) {
 			next.deadline = next.deadline.Add(next.period)
 		} else {
 			next.stopped = true
+			f.dropLocked(next) // a one-shot never fires again; keeping it grows the scan below
 		}
 		if next.ch != nil {
 			select {
@@ -115,6 +116,19 @@ func (f *Fake) stop(t *fakeTimer) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	t.stopped = true
+	f.dropLocked(t)
+}
+
+// dropLocked removes a timer that will never fire again from the pending set, so
+// a test that starts and stops timers does not leave every retired one behind
+// for Advance to scan on each tick. Callers hold f.mu.
+func (f *Fake) dropLocked(t *fakeTimer) {
+	for i, cur := range f.timers {
+		if cur == t {
+			f.timers = append(f.timers[:i], f.timers[i+1:]...)
+			return
+		}
+	}
 }
 
 type fakeTicker struct {
