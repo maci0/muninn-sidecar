@@ -84,11 +84,13 @@ make test-fast PKG=./internal/inject                # no -race, quicker
 ```
 
 `make check` runs the full CI `test` job locally (tidy, gofmt, vet,
-staticcheck, `go test -race`, `make build-all`) so nothing waits for a push to
-fail. It also stops when shellcheck, ruff or yamllint is missing, because CI
-installs all three and fails without them.
+staticcheck, `go test -race`, `make build-all`, `make check-release`) so nothing
+waits for a push to fail. It also stops when shellcheck, ruff or yamllint is
+missing, because CI installs all three and fails without them.
 `make fuzz` and `make vuln` are the two CI jobs that stay separate, being slow
 and network-bound; the cross-platform `build` matrix is `make build-matrix`.
+The `Release notes` job runs only on a `v*` tag, and `make check-release
+TAG=vX.Y.Z` runs the same check before the tag is pushed.
 
 The `-race` targets need a C compiler on `PATH` (`go test -race` links the race
 runtime through cgo). `make doctor` checks that, the Go version against

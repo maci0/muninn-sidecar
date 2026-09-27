@@ -28,8 +28,8 @@ BUILDFLAGS = -trimpath -buildvcs=false
 CGO = CGO_ENABLED=0
 
 .PHONY: help doctor tools tools-staticcheck tools-govulncheck check build build-all build-matrix install \
-	test test-fast cover lint lint-go lint-available check-race vet vuln fmt fmt-check tidy tidy-check \
-	clean eval eval-models fuzz bench
+	test test-fast cover lint lint-go lint-available check-race check-release vet vuln fmt fmt-check \
+	tidy tidy-check clean eval eval-models fuzz bench
 
 # Packages/tests for the `test` target. PKG=./internal/redact narrows the
 # edit-test loop to the package being edited; RUN='^TestFoo$' narrows it to one
@@ -52,7 +52,8 @@ help:
 	@echo '  make tools        go install the two CI linters (staticcheck, govulncheck) into GOBIN'
 	@echo '  make tools-staticcheck   just the staticcheck install (what the CI test job runs)'
 	@echo '  make tools-govulncheck   just the govulncheck install (what the CI vuln job runs)'
-	@echo '  make check        everything CI runs locally: tidy-check fmt-check lint-available lint test build-all'
+	@echo '  make check        everything CI runs locally: tidy-check fmt-check lint-available lint test build-all check-release'
+	@echo '  make check-release  the changelog matches the tag: sections in version order, every version linked, (with TAG=vX.Y.Z) the tagged version documented'
 	@echo '  make test         go test -race -count=1 $(PKG)   (override PKG=... or RUN='"'"'^TestFoo$$'"'"')'
 	@echo '  make test-fast    same without -race, for a quicker loop'
 	@echo '  make fmt          gofmt -w over the tree'
@@ -148,7 +149,7 @@ tools-govulncheck:
 # pushing: anything it misses is a red CI run. lint-available is in the list
 # because CI installs the non-Go linters and fails without them, so a local
 # `make check` that skipped one would report green and turn red after the push.
-check: tidy-check fmt-check lint-available lint test build-all
+check: tidy-check fmt-check lint-available lint test build-all check-release
 
 # CI runs `go mod tidy` and fails if it changes anything, so a stale go.mod
 # only surfaces after a push. Same check, same message, locally: the workflow
@@ -170,6 +171,16 @@ tidy-check:
 	  git diff go.mod; \
 	  exit 1; \
 	fi
+
+# The release contract. The tag is the only place the version number lives
+# (build stamps it from `git describe`), and a release published without the
+# matching notes cannot be corrected afterwards, so the tag and the changelog
+# are checked against each other before the tag is pushed. With no TAG, HEAD
+# is used if it carries a tag; otherwise only the file-level invariants run
+# (section order, every version linked, `[Unreleased]` present), which is why
+# `check` can call this on any commit.
+check-release:
+	bash scripts/check-release-notes.sh $(TAG)
 
 # Build all binaries. Version ldflags only resolve in cmd/msc (the others have
 # no main.version symbol, so -X is a harmless no-op there).
@@ -263,7 +274,7 @@ fuzz:
 lint: lint-go
 	@command -v shellcheck >/dev/null 2>&1 || { \
 	  echo "shellcheck is required (CI runs it): https://www.shellcheck.net/#install" >&2; exit 1; }
-	shellcheck test-live.sh
+	shellcheck test-live.sh scripts/*.sh
 	@command -v ruff >/dev/null 2>&1 || { \
 	  echo "ruff is required (CI runs it): uv tool install ruff" >&2; exit 1; }
 	ruff check scripts/

@@ -3,6 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+    # A v* tag is a release: `make build` stamps the version from `git describe`,
+    # so the tag is the version every consumer sees. The `release` job below
+    # gates it on the changelog before the tag is published.
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -231,3 +235,24 @@ jobs:
         run: |
           make tools-govulncheck
           govulncheck ./...
+
+  release:
+    name: Release notes
+    # Only on a version tag, and only after the code checks are green: a release
+    # notes gate that runs on an untagged commit checks nothing about this tag.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, lint, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The gate reads the tag and the changelog; a shallow clone of a tag
+          # push carries neither the full tag list nor the section order.
+          fetch-depth: 0
+
+      # The tag, the version the binary reports, and the notes are one fact
+      # split across three places (CONTRIBUTING "Release"). A tag pushed
+      # without its section cannot be fixed afterwards, so fail here instead.
+      - name: Changelog documents the tagged version
+        run: make check-release TAG="${{ github.ref_name }}"

@@ -181,18 +181,34 @@ is cut: a shipped feature (the observability work, `request_id` logging,
 all. Group by impact, `Added` / `Fixed` / `Changed`, and write what a user sees
 change, not which function changed.
 
+Each impact group appears once per release, in that order, and no two entries
+describe the same fix: the `[Unreleased]` block had six impact headings and
+five duplicate entries (the `-seed` dedup key and the CRLF report marker were
+each written up twice) before this was enforced.
+
+A change is breaking when an existing invocation stops working or changes what
+it produces: an exit code, an environment variable's meaning, config that used
+to be accepted and is now rejected, output a script parses. Open those entries
+with `**Breaking:**` so a reader does not have to infer it from the bump.
+
 ## Release
 
 The project is pre-1.0, so a minor bump may carry breaking CLI or output
-changes; say so in the entry rather than assuming SemVer protects the reader.
-One commit does all four steps, so the tag, the version, and the notes cannot
-drift apart:
+changes; open those entries with `**Breaking:**` rather than assuming SemVer
+protects the reader. One commit does all four steps, so the tag, the version,
+and the notes cannot drift apart:
 
 1. Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD` in `CHANGELOG.md`,
    leaving an empty `## [Unreleased]` above it.
 2. Add `[X.Y.Z]: .../releases/tag/vX.Y.Z` to the link list at the bottom.
-3. Tag that commit `vX.Y.Z` on `main`. The tag is the release, and a release
+3. Run `make check-release TAG=vX.Y.Z`. It fails when the tag has no changelog
+   section or link, when a released section has no link (or the reverse), or
+   when the sections are out of version order.
+4. Tag that commit `vX.Y.Z` on `main`. The tag is the release, and a release
    published without matching notes cannot be corrected afterwards.
+
+The `Release notes` CI job runs step 3 on the tag push itself, so a tag that
+skipped it is caught there rather than by the next reader of the changelog.
 
 There is nothing to bump in the source: `make build` and `make install` pass
 `git describe` to `-X main.version`, so the tag is the only place the number

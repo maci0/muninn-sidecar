@@ -3,6 +3,10 @@
 All notable changes to `msc` (muninn sidecar) are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
+`msc` is pre-1.0, so a **minor bump may carry breaking CLI, output, and
+configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
+`**Breaking:**`, so a reader does not have to assume the minor bump is safe.
+
 ## [Unreleased]
 
 ### Security
@@ -22,7 +26,7 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Added
 
-- **Enum options are rejected when they hold something outside their set.**
+- **Breaking: an enum option outside its set is now rejected.**
   `-chunk`, `-query-transform`, and `-rerank` (`msc-bench`) and `-inject-format`
   (`msc-qa`) selected a code path in a switch, so a typo silently fell through
   to the "do nothing" branch and the run reported numbers for a configuration
@@ -182,18 +186,124 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   `msc <command> --help` or `msc help <command>`; `msc help <agent>` prints
   that agent's base-URL override, default upstream, and launch line.
 
+### Changed
+
+- **A failing sidecar says so, and a log line names its turn.** Three
+  observability gaps on the request path:
+  - The `request_id` stopped at the end of the HTTP request. The store's
+    background worker, which sees every exchange in a session through one
+    goroutine long after the turn returned, logged "queue full" and "failed to
+    flush" with no way back to the turn that lost its memory, and the injector's
+    recall failures never carried one at all. The ID is now minted in
+    `internal/reqid`, travels on the `CapturedExchange`, and appears on the
+    store, inject, MITM, and WebSocket-tap lines. A failed flush names the turns
+    whose memories were not written.
+  - Requests arriving inside a MITM tunnel are built by the tunnel's own
+    `http.Server` and so arrived with no ID; they mint one per request now, and
+    the codex WebSocket tap keeps the upgrade's ID for the exchanges it decodes
+    off that one connection.
+  - `GET /__msc/health` answered `"status":"ok"` while captures were being
+    dropped and memories were never written. The status code stays liveness
+    (restarting does not help, and the sidecar is still the agent's only route
+    to the API), and the body now carries `degraded` with `degraded_reasons`
+    naming the failing stage, plus the store queue's live depth and
+    saturation, the signal that predicts the next drop. An upstream 4xx/5xx
+    does not count: the provider refused, the sidecar worked.
+  - `requests` counts everything the agent sent, so `requests / uptime_s` is the
+    request rate; `captured` counts only what reached the store, so a session
+    that is answering but no longer capturing is now distinguishable from one the
+    agent has stopped calling.
+- **Captured bodies are decoded once.** A captured request carries the whole
+  conversation and can reach tens of MiB, and the store worker decoded it four
+  times over: once to filter injected context and tool traffic, twice more to
+  pull the model name and token usage, and again to find the last user message.
+  The request and response are now each parsed a single time, and the filtering
+  step hands its parsed document to the callers that read those fields. Capture
+  normalization is ~1.8x faster on a 1 MB request body.
+
+- **Breaking: a typo in the MuninnDB URL fails at startup.** `--mcp-url` and
+  `MUNINN_MCP_URL` are validated before anything else runs, so a missing scheme,
+  a non-HTTP scheme, or a missing host names itself instead of surfacing later as
+  a transport error from the health check or as silent capture loss. All four
+  binaries (`msc`, `msc-eval`, `msc-bench`, `msc-qa`) now resolve the endpoint,
+  token, and vault from one package, so the default, the env var names, and the
+  token-file path have a single definition.
+- **The grounding key is checked against the host, not just the scheme.**
+  `OPENAI_API_KEY` was warned about only over plaintext HTTP. It is now also
+  warned about when `--ground-url` points at a host that is not api.openai.com,
+  since the key then leaves the machine in a form the user may not have intended.
+- **Capture no longer cleans bodies on the request path.** Body normalization ran
+  between receiving a response and forwarding it, so its cost was paid by the
+  agent's turn. It now runs on the store worker, after the bytes are forwarded.
+- **Redaction is gated, and 13x faster.** Almost every pattern starts with a
+  character class or word boundary rather than a literal, so the regexp engine
+  fell back to a full scan per pattern. Each rule now carries a necessary
+  condition (a literal or case-folded substring, a numeric-looking run, a
+  sensitive key stem) checked before the regex runs; every condition is required
+  by its pattern, so which spans get redacted is unchanged. A 4 KiB turn went
+  from ~2.3ms to ~0.17ms.
+- **CI lints the Python, shell, and YAML sources.** A `Lint` job runs `ruff`
+  (plus `ruff format --check` on `scripts/`), `shellcheck` on `test-live.sh`,
+  and `yamllint` on the repository's YAML, each with a pinned version, so the
+  non-Go sources are held to the same bar as the Go tree.
+- **Dev loop matches CI.** `make lint` and `make vuln` no longer swallow a
+  linter's real failure behind a "not installed, skipping" message; a missing
+  tool now fails with the `go install` line to run. `make check` reproduces the
+  CI test job locally (tidy, gofmt, vet, staticcheck, race test, build), `make
+  help` lists every target, `make tools` installs the two CI linters, and
+  `make test PKG=... RUN='^TestFoo$'` (plus `make test-fast`) narrows the
+  edit-test loop to one package or test.
+- **Eval methodology hardened.** `msc-qa`: paired-bootstrap 95% CIs on F1
+  deltas, deterministic `-sample-seed` question sampling, failed calls excluded
+  (not scored as wrong), per-question distractors instead of one shared passage,
+  token-boundary answer matching, and a repro manifest (flags, dataset SHA-256,
+  seed) embedded in output. `msc-bench`: held-out best-gate reporting alongside
+  the in-sample optimum, validated probe namespaces, `-rewrite-key` for
+  authenticated rewrite endpoints. `msc-eval`: `-study-seed`/`-study-n`/
+  `-study-folds`; `-compare` reports cross-seed mean and std of held-out F1.
+- **Docs corrected against code.** SECURITY.md had MITM scoping backwards (no
+  `--mitm-host` means intercept-all); stale thresholds, sweep plateaus, and fuzz
+  counts fixed; eval claims right-sized with provenance and limitations notes
+  (N=20 tables are directional; per-model deltas need N >= 100).
+- **The tag, the version, and the notes are checked against each other.**
+  The tag is the only place the version number lives (`make build` stamps it
+  from `git describe`), and a tag can be pushed with no `CHANGELOG.md` section
+  for it, a version heading with no link, or sections out of version order,
+  none of which any existing check noticed. `make check-release` (in `make
+  check`) reports each of those, and a `Release notes` CI job runs it on a `v*`
+  tag push with `TAG` set, so a release cannot ship undocumented.
+
 ### Fixed
 
-- **A `-md` report edited on Windows grows a block per run.** The manifest
-  marker was matched against the line with only its `\n` trimmed, so in a
-  CRLF file it never matched and every rerun appended another results block.
-  Markers are now matched with the CR trimmed, and the new block adopts the
-  file's line ending instead of mixing LF into it.
-- **The bench seeder carries a dedup_key.** `msc-bench` seeds its ground-truth
-  corpus without the content-addressed key every other MuninnDB write uses, so
-  re-seeding a corpus accumulated a second copy of every memory and the recall
-  that follows measured the run's own history. The store and the live eval
-  already derived one; the bench now does too.
+- **Breaking: `MSC_WS_DEBUG=0` no longer turns the WebSocket probe on.** The
+  switch was read as "set means on", so a shell profile that exported the
+  variable to disable it kept the probe logging. `0`, `false`, `off`, and `no`
+  now turn it off, as does leaving it empty; any other value turns it on.
+- **A memory server's rejection text no longer reaches the log unscrubbed.**
+  `muninn_remember` and `muninn_remember_batch` failures are reported at error
+  level with the concept and content deliberately omitted, but the error itself
+  carried the server's own message, which quotes the memory it refused. The
+  text is now scrubbed of direct identifiers and capped before it becomes an
+  error value, so no call site can leak captured conversation into a log line, a
+  stderr warning, or an `err` field by way of the transport.
+- **The store queue is bounded by bytes, not only by slot count.** Its
+  back-pressure was a 256-slot channel, but an exchange carries a captured
+  request that repeats the whole conversation (up to 50 MiB a body) plus its
+  response, so a queue a few slots short of full could be holding tens of GiB
+  and take the process down before the depth said anything was wrong. Producers
+  now reserve each exchange's body bytes against a 256 MiB budget as they
+  enqueue, the worker returns them once the exchange is formatted, and a capture
+  that would pass the budget is dropped exactly as one that finds a full queue
+  is. `GET /__msc/health` reports `bytes_in_flight`, `bytes_capacity` and
+  `bytes_saturated` next to the depth, so a queue dropping on its memory budget
+  no longer reads as healthy.
+- **A URL with no `//` after the scheme no longer logs its credentials.** The
+  log sanitizer redacted userinfo held in `url.Userinfo`, but a URL parsed in
+  the opaque form (`https:user:pass@host/v1`, which a client can put in an
+  absolute-form request target) keeps that userinfo as literal text inside
+  `Opaque`, so the password reached the logs and the stored exchange verbatim.
+  Both carriers are redacted now, and a fuzz target holds the contract.
+
 - **The MITM root pool is no longer written into a live transport.**
   `SetMITMRoots` stored the pool by assigning `RootCAs` on the MITM transport's
   `TLSClientConfig`, which `http.Transport` clones on every dial from its own
@@ -244,15 +354,15 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   copy of every item: the duplicates crowd recall's top-k and skew the retrieval
   numbers the benchmark exists to measure. Every seeded memory now carries the
   same content-addressed key `msc` and `msc-qa` send.
-- **Bad endpoint config fails at startup.** `--ground-url` (and the eval
-  binaries' `-ground-url`, `-model-url`, `-rewrite-url`) accepted any string, so
-  a typo failed per request as a transport error or silently left the grounder
-  off. All of them now go through one `config.ValidateURL` check, the same
-  fail-fast gate `-mcp-url` already had. `--ground-model`, `--ground-topk`, and
-  `--ground-timeout` are also rejected without a `--ground-url`/`--ground-cmd`
-  backend instead of being silently dropped, and `msc-qa`/`msc-eval` reject a
-  `-min-score` outside (0,1] (NaN included), which would otherwise inject
-  everything or nothing and misreport the run.
+- **Breaking: bad endpoint config fails at startup.** `--ground-url` (and
+  the eval binaries' `-ground-url`, `-model-url`, `-rewrite-url`) accepted any
+  string, so a typo failed per request as a transport error or silently left the
+  grounder off. All of them now go through one `config.ValidateURL` check, the
+  same fail-fast gate `-mcp-url` already had. `--ground-model`, `--ground-topk`,
+  and `--ground-timeout` are also rejected without a
+  `--ground-url`/`--ground-cmd` backend instead of being silently dropped, and
+  `msc-qa`/`msc-eval` reject a `-min-score` outside (0,1] (NaN included), which
+  would otherwise inject everything or nothing and misreport the run.
 - **The MuninnDB default endpoint had three definitions.** `msc-bench` and
   `msc-qa` each carried their own copy of `http://127.0.0.1:8750/mcp` while
   `msc-eval` resolved it through `config`; the dev binaries now take the shared
@@ -260,13 +370,13 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 - **`--debug` logs the effective configuration.** A captured session log now
   names the endpoint, vault, injection budget/gate/recall mode, redaction, and
   MITM state. The bearer token is reported as set/unset, never by value.
-- **`msc help <typo>` no longer looks like it worked.** It ignored the topic,
-  printed the global usage, and exited `0`, so a mistyped topic in a script
-  passed silently. An unknown topic now reports itself, suggests the nearest
-  one, and exits `2`; more than one topic is a usage error too.
-- **A missing agent binary exits `127`, not `1`.** `msc <agent>` for an agent
-  that is not installed reported "not found in PATH" and exited `1`, the same
-  code it used for a general runtime failure. It now uses the shell's
+- **Breaking: `msc help <typo>` no longer looks like it worked.** It ignored
+  the topic, printed the global usage, and exited `0`, so a mistyped topic in a
+  script passed silently. An unknown topic now reports itself, suggests the
+  nearest one, and exits `2`; more than one topic is a usage error too.
+- **Breaking: a missing agent binary exits `127`, not `1`.** `msc <agent>` for
+  an agent that is not installed reported "not found in PATH" and exited `1`,
+  the same code it used for a general runtime failure. It now uses the shell's
   "command not found" code, so a script can tell a mistyped agent name apart
   from an agent that ran and failed. The exit-code table is documented in
   `msc --help` and the README.
@@ -332,7 +442,7 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   `proxy_args`, `inject_min_score`, `inject_recall_mode`, and
   `inject_calibration`, and its `env` values are the real ones. `msc ca` points
   at the combined system+msc bundle for the same reason.
-- **`--inject-min-score nan` is rejected.** The range test was
+- **Breaking: `--inject-min-score nan` is rejected.** The range test was
   `f <= 0 || f > 1`, which `NaN` passes, so a NaN threshold reached the injector.
   The test is now a positive check, `--inject-min-score must be in (0,1]`.
 - **A full MuninnDB queue no longer floods the log.** Every dropped exchange
@@ -433,53 +543,6 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   captures flow.
 - **`msc-bench` and `msc-qa` build again.** Both used `filepath.Join` without
   importing `path/filepath`, so the two commands failed to compile.
-
-### Changed
-
-- **A typo in the MuninnDB URL fails at startup.** `--mcp-url` and
-  `MUNINN_MCP_URL` are validated before anything else runs, so a missing scheme,
-  a non-HTTP scheme, or a missing host names itself instead of surfacing later as
-  a transport error from the health check or as silent capture loss. All four
-  binaries (`msc`, `msc-eval`, `msc-bench`, `msc-qa`) now resolve the endpoint,
-  token, and vault from one package, so the default, the env var names, and the
-  token-file path have a single definition.
-- **The grounding key is checked against the host, not just the scheme.**
-  `OPENAI_API_KEY` was warned about only over plaintext HTTP. It is now also
-  warned about when `--ground-url` points at a host that is not api.openai.com,
-  since the key then leaves the machine in a form the user may not have intended.
-- **Capture no longer cleans bodies on the request path.** Body normalization ran
-  between receiving a response and forwarding it, so its cost was paid by the
-  agent's turn. It now runs on the store worker, after the bytes are forwarded.
-- **Redaction is gated, and 13x faster.** Almost every pattern starts with a
-  character class or word boundary rather than a literal, so the regexp engine
-  fell back to a full scan per pattern. Each rule now carries a necessary
-  condition (a literal or case-folded substring, a numeric-looking run, a
-  sensitive key stem) checked before the regex runs; every condition is required
-  by its pattern, so which spans get redacted is unchanged. A 4 KiB turn went
-  from ~2.3ms to ~0.17ms.
-- **CI lints the Python, shell, and YAML sources.** A `Lint` job runs `ruff`
-  (plus `ruff format --check` on `scripts/`), `shellcheck` on `test-live.sh`,
-  and `yamllint` on the repository's YAML, each with a pinned version, so the
-  non-Go sources are held to the same bar as the Go tree.
-- **Dev loop matches CI.** `make lint` and `make vuln` no longer swallow a
-  linter's real failure behind a "not installed, skipping" message; a missing
-  tool now fails with the `go install` line to run. `make check` reproduces the
-  CI test job locally (tidy, gofmt, vet, staticcheck, race test, build), `make
-  help` lists every target, `make tools` installs the two CI linters, and
-  `make test PKG=... RUN='^TestFoo$'` (plus `make test-fast`) narrows the
-  edit-test loop to one package or test.
-- **Eval methodology hardened.** `msc-qa`: paired-bootstrap 95% CIs on F1
-  deltas, deterministic `-sample-seed` question sampling, failed calls excluded
-  (not scored as wrong), per-question distractors instead of one shared passage,
-  token-boundary answer matching, and a repro manifest (flags, dataset SHA-256,
-  seed) embedded in output. `msc-bench`: held-out best-gate reporting alongside
-  the in-sample optimum, validated probe namespaces, `-rewrite-key` for
-  authenticated rewrite endpoints. `msc-eval`: `-study-seed`/`-study-n`/
-  `-study-folds`; `-compare` reports cross-seed mean and std of held-out F1.
-- **Docs corrected against code.** SECURITY.md had MITM scoping backwards (no
-  `--mitm-host` means intercept-all); stale thresholds, sweep plateaus, and fuzz
-  counts fixed; eval claims right-sized with provenance and limitations notes
-  (N=20 tables are directional; per-model deltas need N >= 100).
 
 ## [0.4.4] — 2026-06-02
 
@@ -590,32 +653,6 @@ scoping/diagnostics.
   dedup). Decoding runs on a best-effort copy that abandons under backpressure,
   so it never blocks or alters the agent's connection. Verified live end-to-end.
 
-### Fixed
-
-- **Explicit JSON content negotiation for MCP calls** — requests now send
-  `Accept: application/json` so an MCP-over-HTTP server capable of both JSON and
-  SSE returns JSON (what the one-shot JSON-RPC client parses) rather than possibly
-  defaulting to a `text/event-stream` reply.
-- **Bounded shutdown when MuninnDB is unreachable** — `Drain` now arms a deadline
-  that cancels in-flight flush retries, so Ctrl-C with a queued backlog against an
-  unreachable MuninnDB exits within ~8s instead of retrying ~6s per queued batch
-  (which could stack to minutes). Flush calls are now context-aware (interruptible
-  backoff); a single in-flight batch still gets its full retry budget for
-  transient blips.
-- **SSE capture without the optional space** — the streaming parser now accepts
-  `data:{...}` (no space after the colon), per the SSE spec's optional leading
-  space. The big-3 APIs send `data: `, but OpenAI-compatible proxies and local
-  servers may omit it; previously those deltas were silently skipped.
-- **MITM upgrade-splice dial timeout** — the WebSocket/upgrade splice now dials
-  the backend with a 30s timeout (mirroring the blind-tunnel), so a black-hole
-  target can't hang the goroutine and its hijacked connection indefinitely.
-- **MITM WebSocket/`101` upgrades** — intercepted protocol-upgrade requests (e.g.
-  codex ChatGPT-mode streams over a WebSocket) are detected and spliced raw to
-  the backend over TLS instead of erroring in the capturing reverse-proxy.
-  Verified live: codex ChatGPT-mode now runs cleanly through `--mitm`.
-
-### Added
-
 - **Secret redaction before storage** — captured exchanges are scanned for
   well-known credential formats (OpenAI/Anthropic `sk-` keys, AWS access keys,
   GitHub tokens incl. fine-grained PATs, Google API keys, Slack tokens, Stripe
@@ -646,6 +683,25 @@ scoping/diagnostics.
   upgrade streams (`mitm: N WebSocket/upgrade stream(s) spliced`). codex's stream
   is decoded and captured (see Added); other WebSocket protocols pass through
   without capture.
+### Fixed
+
+- **Explicit JSON content negotiation for MCP calls** — requests now send
+  `Accept: application/json` so an MCP-over-HTTP server capable of both JSON and
+  SSE returns JSON (what the one-shot JSON-RPC client parses) rather than possibly
+  defaulting to a `text/event-stream` reply.
+- **Bounded shutdown when MuninnDB is unreachable** — `Drain` now arms a deadline
+  that cancels in-flight flush retries, so Ctrl-C with a queued backlog against an
+  unreachable MuninnDB exits within ~8s instead of retrying ~6s per queued batch
+  (which could stack to minutes). Flush calls are now context-aware (interruptible
+  backoff); a single in-flight batch still gets its full retry budget for
+  transient blips.
+- **SSE capture without the optional space** — the streaming parser now accepts
+  `data:{...}` (no space after the colon), per the SSE spec's optional leading
+  space. The big-3 APIs send `data: `, but OpenAI-compatible proxies and local
+  servers may omit it; previously those deltas were silently skipped.
+- **MITM upgrade-splice dial timeout** — the WebSocket/upgrade splice now dials
+  the backend with a 30s timeout (mirroring the blind-tunnel), so a black-hole
+  target can't hang the goroutine and its hijacked connection indefinitely.
 
 ## [0.2.0] — 2026-05-31
 
