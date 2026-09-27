@@ -86,6 +86,14 @@ jobs:
         with:
           version: "0.16.4"
 
+      - name: Ruff format
+        # The action above only lints. `make fmt` rewrites scripts/ with
+        # `ruff format` and `make lint` checks the result, so without this step
+        # formatting drift passes CI and turns the contributor's next
+        # `make check` red. Same version pin as the action, same pipx-ephemeral
+        # pattern as yamllint below.
+        run: pipx run ruff@0.16.4 format --check scripts/
+
       - name: Shellcheck
         run: shellcheck test-live.sh
 

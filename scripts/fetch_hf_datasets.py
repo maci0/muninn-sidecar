@@ -6,7 +6,7 @@ MuninnDB vaults and measured.
 
 Usage:
     python3 scripts/fetch_hf_datasets.py <name> [out.json] [--pages N]
-    python3 scripts/fetch_hf_datasets.py all            # write <tmpdir>/<name>.json for every dataset
+    python3 scripts/fetch_hf_datasets.py all            # writes <tmpdir>/<name>.json per dataset
 
 Then seed + probe, e.g.:
     go run ./cmd/msc-bench -seed -probe -corpus squad \\

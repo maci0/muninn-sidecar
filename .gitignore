@@ -46,3 +46,6 @@ dist/
 # Local agent/session state
 .claude/
 .review-loop.lock
+
+# Scratch working files (dataset dumps, capture scratch, probes)
+.scratch/
