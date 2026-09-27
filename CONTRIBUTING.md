@@ -26,7 +26,9 @@ quality bar so a change lands cleanly.
   cannot find, but CI installs all three and fails on a finding, so the
   advertised local mirror of that job (`make check`) refuses to run without
   them. `pipx install ruff yamllint`; shellcheck comes from your package
-  manager.
+  manager. CI runs ruff and yamllint at the versions in the Makefile
+  (`make -s versions`); `make lint` reports your installed version when it
+  differs, because a newer local copy can report findings CI will not.
 
 ```sh
 make doctor   # checks every one of the above against this machine
@@ -34,8 +36,10 @@ make doctor   # checks every one of the above against this machine
 
 Run it first on a new machine: an old Go or a missing compiler otherwise
 surfaces as an unrelated-looking build error, or as `-race requires cgo`, which
-names the wrong knob. Beyond those tools there are no further dependencies: no
-database and no services to start for a build or test run.
+names the wrong knob. It exits non-zero while any of the tools above is
+missing, so a green `doctor` means `make check` can run to the end rather than
+stopping at its first lint step. Beyond those tools there are no further
+dependencies: no database and no services to start for a build or test run.
 
 ## Build & run
 
@@ -76,14 +80,21 @@ compares the hashes, so a regression here fails the build.
 
 ## The edit-test loop
 
-`make test` runs the whole tree under `-race` (about 25s). Narrow it to what you
-are editing:
+`make test` runs the whole tree under `-race` (about 30s on an x86 Linux box;
+scale that to your machine). Narrow it to what you are editing:
 
 ```sh
 make test PKG=./internal/redact            # one package, still -race
 make test PKG=./internal/redact RUN='^TestFoo$'  # one test
 make test-fast PKG=./internal/inject       # same, without -race
+make test-short                            # whole tree, -short: ~half the run
 ```
+
+`test-short` is not a subset of the tree. Every test still runs under `-race`;
+only the three store tests that spend real seconds waiting out a retry budget
+or a drain deadline skip themselves, so it trades those three for a loop you
+can run several times a minute. Use it while iterating and run the full
+`make test` before you push.
 
 ## Before you open a PR
 

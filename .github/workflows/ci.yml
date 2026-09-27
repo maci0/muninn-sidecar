@@ -21,7 +21,6 @@ permissions:
 # and `make doctor` checks it against the go directive in go.mod.
 env:
   GO_VERSION: "1.25"
-  RUFF_VERSION: "0.16.4"
 
 # Cancel superseded runs for the same branch/PR — a new push makes the
 # in-flight run obsolete, so don't burn a runner finishing it.
@@ -88,23 +87,25 @@ jobs:
       # dataset helper, the shell smoke script, and this workflow's own YAML.
       # ruff runs through pipx (ephemeral, nothing installed on the runner),
       # the same way yamllint does below and the same invocations `make lint`
-      # uses, so the pin is stated once for both steps.
+      # uses. The versions come from the Makefile (`make -s versions`) so the
+      # pin exists once: `make lint` reports drift against the same numbers, and
+      # a contributor can reproduce this job with `make -s versions` in hand.
       - name: Ruff lint
-        run: pipx run ruff@"$RUFF_VERSION" check scripts/
+        run: eval "$(make -s versions)"; pipx run "ruff@$RUFF_VERSION" check scripts/
 
       - name: Ruff format
         # Lint alone is not enough: `make fmt` rewrites scripts/ with
         # `ruff format` and `make lint` checks the result, so without this step
         # formatting drift passes CI and turns the contributor's next
         # `make check` red.
-        run: pipx run ruff@"$RUFF_VERSION" format --check scripts/
+        run: eval "$(make -s versions)"; pipx run "ruff@$RUFF_VERSION" format --check scripts/
 
       - name: Shellcheck
         run: shellcheck test-live.sh
 
       - name: Yamllint
         # Ephemeral venv per run: nothing installed onto the runner image.
-        run: pipx run yamllint@1.38.0 .
+        run: eval "$(make -s versions)"; pipx run "yamllint@$YAMLLINT_VERSION" .
 
   # `go install` ships whatever the host platform is, so every GOOS users can
   # install on has to keep compiling. Unix-only syscalls (signals, process

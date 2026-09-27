@@ -363,9 +363,10 @@ To inspect the resolved configuration without launching anything, run `msc --dry
 ## Contributing
 
 Clone needs Go 1.25+ and a C compiler (for `go test -race`); `make doctor`
-checks that and what else the tree needs. `make tools` adds the two linters CI
-runs, `make help` lists every target, and `make check` reproduces the CI test
-job locally.
+checks that and what else the tree needs, and fails while anything is missing.
+`make tools` adds the two linters CI runs, `make help` lists every target,
+`make check` reproduces the CI test job locally, and `make test PKG=... RUN=...`
+narrows the loop to what you are editing.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the build/test/fuzz workflow, the
 quality bar, how to add an agent (verify empirically), and commit conventions.

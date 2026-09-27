@@ -28,8 +28,8 @@ BUILDFLAGS = -trimpath -buildvcs=false
 CGO = CGO_ENABLED=0
 
 .PHONY: help doctor tools tools-staticcheck tools-govulncheck check build build-all build-matrix install \
-	test test-fast cover lint lint-go lint-available check-race check-release vet vuln fmt fmt-check \
-	tidy tidy-check clean eval eval-models fuzz bench
+	test test-short test-fast cover lint lint-go lint-available check-race check-release vet vuln fmt \
+	fmt-check tidy tidy-check clean eval eval-models fuzz bench versions
 
 # Packages/tests for the `test` target. PKG=./internal/redact narrows the
 # edit-test loop to the package being edited; RUN='^TestFoo$' narrows it to one
@@ -46,6 +46,18 @@ GOVULNCHECK_VERSION ?= latest
 STATICCHECK_PKG = honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
 GOVULNCHECK_PKG = golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
+# The non-Go linters CI runs through pipx, pinned per run. A pin that lives only
+# in ci.yml is one no local command can name, and an unpinned local copy is how
+# a green `make check` turns into a red push: new rules land in every ruff
+# release. `make versions` prints these in a form ci.yml evals, so the pin is
+# stated once and `make lint` can report the drift it is about to run against.
+RUFF_VERSION ?= 0.16.4
+YAMLLINT_VERSION ?= 1.38.0
+
+versions:
+	@echo 'RUFF_VERSION=$(RUFF_VERSION)'
+	@echo 'YAMLLINT_VERSION=$(YAMLLINT_VERSION)'
+
 help:
 	@echo 'dev targets:'
 	@echo '  make doctor       check the toolchain against what this Makefile needs, before anything else'
@@ -55,10 +67,12 @@ help:
 	@echo '  make check        everything CI runs locally: tidy-check fmt-check lint-available lint test build-all check-release'
 	@echo '  make check-release  the changelog matches the tag: sections in version order, every version linked, (with TAG=vX.Y.Z) the tagged version documented'
 	@echo '  make test         go test -race -count=1 $(PKG)   (override PKG=... or RUN='"'"'^TestFoo$$'"'"')'
+	@echo '  make test-short   test with -short: the few wall-clock-dependent tests skip, ~half the run'
 	@echo '  make test-fast    same without -race, for a quicker loop'
 	@echo '  make fmt          gofmt -w over the tree'
 	@echo '  make fmt-check    fail on unformatted files (what CI does)'
 	@echo '  make lint         go vet + staticcheck (both required, like CI) + shellcheck, ruff, yamllint where installed'
+	@echo '  make versions     the ruff/yamllint pins CI runs (eval it to reproduce the CI lint job)'
 	@echo '  make build-matrix compile for every GOOS/GOARCH the CI build job covers'
 	@echo '  make lint-go      go vet + staticcheck only, the pair CI runs'
 	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
@@ -83,9 +97,13 @@ help:
 # "-race requires cgo", which names the wrong knob (the fix is a compiler, not
 # an env var). Run this before `make check` when a command fails oddly.
 # The Go and C-compiler lines decide the exit status: a preflight that prints
-# "you need a newer Go" and returns 0 is a check nobody can gate on. The
-# optional-tool lines stay advisory, because `make check` already fails hard on
-# those through lint-available and lint-go.
+# "you need a newer Go" and returns 0 is a check nobody can gate on. The linter
+# lines do too. They used to stay advisory, on the theory that `make check`
+# already fails hard on them through lint-available and lint-go, but that made
+# the preflight call a bare machine ready and then let `make check` stop on its
+# first lint step: a doctor that prints "done" on a clean clone is the failure
+# it exists to prevent. A missing linter is a missing prerequisite, and
+# prerequisites are what this target reports.
 doctor:
 	@required=$$(awk '/^go /{print $$2}' go.mod); \
 	 have=$$(go env GOVERSION); have=$${have#go}; status=0; \
@@ -108,13 +126,16 @@ doctor:
 	   status=1; \
 	 fi; \
 	 for t in staticcheck govulncheck; do \
-	   command -v $$t >/dev/null 2>&1 || echo "$$t: missing; CI installs it, run 'make tools'" >&2; \
+	   command -v $$t >/dev/null 2>&1 || { \
+	     echo "$$t: missing; 'make check' and CI run it — 'make tools' installs it" >&2; status=1; }; \
 	 done; \
 	 for t in shellcheck ruff yamllint; do \
-	   command -v $$t >/dev/null 2>&1 || echo "$$t: not installed; 'make lint' skips it, CI runs it" >&2; \
+	   command -v $$t >/dev/null 2>&1 || { \
+	     echo "$$t: missing; 'make check' and CI run it — pipx install $$t (shellcheck comes from your package manager)" >&2; \
+	     status=1; }; \
 	 done; \
 	 if [ "$$status" -eq 0 ]; then echo "doctor: done"; \
-	 else echo "doctor: the toolchain above is not usable" >&2; fi; \
+	 else echo "doctor: prerequisites above are missing; 'make build' and 'make test-fast' need only go and a C compiler" >&2; fi; \
 	 exit $$status
 
 # The `-race` half of the preflight, run on its own by the targets that need
@@ -222,6 +243,13 @@ install:
 test: check-race
 	go test -race -count=1 $(if $(RUN),-run '$(RUN)') $(PKG)
 
+# The three store tests that spend real seconds waiting out a retry budget or a
+# drain deadline guard themselves with testing.Short, so -short drops the tree
+# from ~30s to ~15s. It skips those, and only those: every other test still
+# runs, under -race, exactly as `make test` runs it.
+test-short: check-race
+	go test -short -race -count=1 $(if $(RUN),-run '$(RUN)') $(PKG)
+
 # Same packages without -race: much quicker while iterating, still worth a
 # race-enabled `make test` before pushing.
 test-fast:
@@ -270,17 +298,24 @@ fuzz:
 # `command -v X && X ... || echo skip` also fires the skip on the tool's own
 # non-zero exit, so a real finding would print "not installed" and the target
 # would still succeed. CI runs the same three, so the local and remote rule sets
-# are the same set; the version pin for CI's ephemeral ruff lives in ci.yml.
+# are the same set. Their version pins are RUFF_VERSION/YAMLLINT_VERSION above:
+# CI runs those exactly, while a locally installed copy may be older or newer,
+# so each is compared against its pin and any drift is reported rather than
+# discovered as a finding after the push.
 lint: lint-go
 	@command -v shellcheck >/dev/null 2>&1 || { \
 	  echo "shellcheck is required (CI runs it): https://www.shellcheck.net/#install" >&2; exit 1; }
 	shellcheck test-live.sh scripts/*.sh
 	@command -v ruff >/dev/null 2>&1 || { \
-	  echo "ruff is required (CI runs it): uv tool install ruff" >&2; exit 1; }
+	  echo "ruff is required (CI runs it): pipx install ruff" >&2; exit 1; }
+	@have=$$(ruff --version | awk '{print $$2}'); \
+	 [ "$$have" = "$(RUFF_VERSION)" ] || echo "ruff $$have installed, CI pins $(RUFF_VERSION); a newer copy can report findings CI will not" >&2
 	ruff check scripts/
 	ruff format --check scripts/
 	@command -v yamllint >/dev/null 2>&1 || { \
-	  echo "yamllint is required (CI runs it): uv tool install yamllint" >&2; exit 1; }
+	  echo "yamllint is required (CI runs it): pipx install yamllint" >&2; exit 1; }
+	@have=$$(yamllint --version | awk '{print $$2}'); \
+	 [ "$$have" = "$(YAMLLINT_VERSION)" ] || echo "yamllint $$have installed, CI pins $(YAMLLINT_VERSION); a newer copy can report findings CI will not" >&2
 	yamllint .
 
 # `make lint` treats the non-Go linters as optional, so a contributor without
