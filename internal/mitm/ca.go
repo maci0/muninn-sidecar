@@ -32,9 +32,13 @@ import (
 	"time"
 )
 
-// caValidity is how long the generated CA is valid. Long-lived so users don't
-// have to re-trust it often; it lives only on the local machine.
-const caValidity = 10 * 365 * 24 * time.Hour
+// caValidityYears is how many calendar years the generated CA is valid.
+// Long-lived so users don't have to re-trust it often; it lives only on the
+// local machine. Calendar years, not days: a year is not 365 days, so a
+// 10*365*24h validity would fall short of ten years by two or three days
+// depending on the leap days it spans, and the expiry is a date users reason
+// about ("this CA is good until ..."), not a span of elapsed time.
+const caValidityYears = 10
 
 // caRenewBefore triggers regeneration when a loaded CA is within this window of
 // expiry, so a stale on-disk CA is rotated rather than minting leaves that
@@ -44,6 +48,11 @@ const caRenewBefore = 30 * 24 * time.Hour
 // leafValidity bounds minted leaf certs. Expired cached leaves are re-minted on
 // demand (matters only for sessions longer than this).
 const leafValidity = 24 * time.Hour
+
+// certBackdate is how far before its NotBefore a minted certificate starts. The
+// verifier's clock is not the minter's, so a certificate valid from exactly
+// "now" can be rejected as not yet valid by a peer running a few seconds slow.
+const certBackdate = time.Hour
 
 // maxCacheEntries caps the per-host leaf cache so a long-running transparent
 // proxy that sees many hosts can't grow it without bound. Eviction is
@@ -147,11 +156,15 @@ func generateCA() (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
+	// One clock read for the whole validity window: NotBefore and NotAfter
+	// derived from separate reads can disagree on which side of a clock
+	// adjustment the certificate was minted.
+	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "muninn-sidecar local CA", Organization: []string{"muninn-sidecar"}},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(caValidity),
+		NotBefore:             now.Add(-certBackdate),
+		NotAfter:              now.AddDate(caValidityYears, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -263,11 +276,12 @@ func (c *CA) mintLeaf(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: host},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(leafValidity),
+		NotBefore:    now.Add(-certBackdate),
+		NotAfter:     now.Add(leafValidity),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}

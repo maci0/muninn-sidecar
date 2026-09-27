@@ -295,6 +295,27 @@ func mustGenCA(t *testing.T) *CA {
 	return ca
 }
 
+// The CA's expiry is a calendar date, ten years out. A fixed 10*365*24h span
+// falls short of that by the leap days in between, so a CA minted across a leap
+// day would expire days before the ten years it advertises.
+func TestCAValidityIsCalendarYears(t *testing.T) {
+	ca := mustGenCA(t)
+
+	notAfter := ca.cert.NotAfter
+	// Undoing the ten calendar years must land back at the minting instant, which
+	// is time.Now() modulo the test's own runtime: a fixed 10*365*24h span would
+	// come back a few days short, by exactly the leap days in between.
+	if back := notAfter.AddDate(-caValidityYears, 0, 0); back.Before(time.Now().Add(-time.Minute)) || back.After(time.Now().Add(time.Minute)) {
+		t.Errorf("CA expires %v, which is not ten calendar years from now (%v)", notAfter, back)
+	}
+	if elapsed := notAfter.Sub(time.Now()); elapsed < time.Duration(caValidityYears)*365*24*time.Hour {
+		t.Errorf("CA validity %v is shorter than %d nominal years", elapsed, caValidityYears)
+	}
+	if notAfter.Sub(ca.cert.NotBefore) <= 0 {
+		t.Errorf("CA validity window is empty: %v to %v", ca.cert.NotBefore, notAfter)
+	}
+}
+
 func FuzzNormalizeHost(f *testing.F) {
 	f.Add("api.openai.com:443")
 	f.Add("[::1]:443")

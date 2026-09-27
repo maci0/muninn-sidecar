@@ -150,6 +150,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// the shared pipeline and the reverse proxy treat it like the plain path.
 		req.URL.Scheme = "https"
 		req.URL.Host = target
+		w = newIdleDeadlineWriter(w, p.writeIdleTimeout)
 		ir, proceed := p.instrument(w, req, p.now())
 		if !proceed {
 			return
@@ -158,11 +159,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Serve HTTP/1.x (incl. keep-alive) over the single decrypted connection.
+	// WriteTimeout is 0 for the reason in Proxy.New: the per-write idle bound
+	// installed by the handler above is what a streaming turn needs, and an
+	// absolute one would truncate a long turn mid-stream.
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 30 * time.Second,
 		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      10 * time.Minute,
 	}
 	// Serve returns once the tunnel conn closes, so the returned error is
 	// always a shutdown outcome rather than a fault. Log anything else (an

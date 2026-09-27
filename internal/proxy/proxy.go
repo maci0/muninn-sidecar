@@ -107,6 +107,7 @@ type Proxy struct {
 	// cleared once the handshake completes.
 	handshakeTimeout        time.Duration // CONNECT tunnel: client-side TLS handshake
 	upgradeHandshakeTimeout time.Duration // spliced upgrade: backend's reply
+	writeIdleTimeout        time.Duration // gap between response writes after which the agent's conn is cut
 }
 
 // Config holds the parameters for creating a Proxy.
@@ -159,6 +160,7 @@ func New(cfg Config) (*Proxy, error) {
 
 		handshakeTimeout:        handshakeTimeout,
 		upgradeHandshakeTimeout: upgradeHandshakeTimeout,
+		writeIdleTimeout:        writeIdleTimeout,
 	}
 
 	// MITM defaults to intercepting every CONNECT host: that's the whole point —
@@ -236,12 +238,18 @@ func New(cfg Config) (*Proxy, error) {
 	// Long timeouts: LLM API calls routinely take 30-120s for large contexts.
 	// ReadHeaderTimeout is kept short to prevent slow-header (slowloris) attacks
 	// even though the server is loopback-only.
+	//
+	// WriteTimeout stays 0 deliberately. Go arms it once per request, when the
+	// headers are read, so it is an absolute cap on the whole response, not an
+	// idle bound: a turn that streams for longer than that is cut off mid-stream
+	// and the agent sees an i/o timeout. Response-bound latency is unbounded
+	// here (a large context with extended thinking, a queued upstream), so the
+	// response leg is bounded per write instead — see idleDeadlineWriter.
 	p.server = &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           p,
 		ReadHeaderTimeout: 30 * time.Second,
 		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      10 * time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -321,11 +329,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// MITM mode: an agent that routes via HTTPS_PROXY opens a tunnel with CONNECT.
 	// Terminate TLS and intercept the decrypted traffic (the same pipeline).
+	// CONNECT and the upgrades spliced inside a tunnel hijack the connection, so
+	// they run against the raw writer; the deadline wrapper goes on after them.
 	if r.Method == http.MethodConnect && p.ca != nil {
 		p.handleConnect(w, r)
 		return
 	}
 
+	w = newIdleDeadlineWriter(w, p.writeIdleTimeout)
 	r, ok := p.instrument(w, r, p.now())
 	if !ok {
 		return // instrument already wrote an error response
