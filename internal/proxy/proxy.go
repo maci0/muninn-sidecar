@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -556,6 +557,30 @@ func (p *Proxy) prepareExchange(ex *store.CapturedExchange) {
 	extractModelAndTokens(ex)
 }
 
+// maxTokenCount bounds a usage number taken from an upstream response body. No
+// real request comes near it (it is ~1e12 tokens), so anything beyond is a
+// provider bug or a hostile body rather than a count.
+const maxTokenCount = 1 << 40
+
+// tokenCount converts a usage field from an upstream response body to a token
+// count. The value crosses a trust boundary (an arbitrary JSON body from the
+// provider or from whatever was MITM'd), and Go's float64→int conversion is
+// undefined outside the representable range: 1e30 converts to an arbitrary
+// value (MinInt64 on amd64), which would be stored on the exchange and added
+// into the session token totals as a huge negative. Absent, non-finite,
+// negative, and out-of-range values therefore report 0 — "no usage reported"
+// — instead of a garbage count.
+func tokenCount(v *float64) int {
+	if v == nil {
+		return 0
+	}
+	f := *v
+	if math.IsNaN(f) || f <= 0 || f >= maxTokenCount {
+		return 0
+	}
+	return int(f)
+}
+
 // extractModelAndTokens pulls the model name and token usage from the
 // request and response JSON. Handles:
 //   - Anthropic: usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}
@@ -618,32 +643,28 @@ func extractModelAndTokens(ex *store.CapturedExchange) {
 	if u := respData.Usage; u != nil {
 		// Input tokens: Anthropic input_tokens or OpenAI prompt_tokens.
 		if u.InputTokens != nil {
-			ex.TokensIn = int(*u.InputTokens)
+			ex.TokensIn = tokenCount(u.InputTokens)
 		} else if u.PromptTokens != nil {
-			ex.TokensIn = int(*u.PromptTokens)
+			ex.TokensIn = tokenCount(u.PromptTokens)
 		}
 		// Output tokens: Anthropic output_tokens or OpenAI completion_tokens.
 		if u.OutputTokens != nil {
-			ex.TokensOut = int(*u.OutputTokens)
+			ex.TokensOut = tokenCount(u.OutputTokens)
 		} else if u.CompletionTokens != nil {
-			ex.TokensOut = int(*u.CompletionTokens)
+			ex.TokensOut = tokenCount(u.CompletionTokens)
 		}
 		// Anthropic prompt caching tokens.
-		if u.CacheCreationTokens != nil {
-			ex.CacheWrite = int(*u.CacheCreationTokens)
-		}
-		if u.CacheReadTokens != nil {
-			ex.CacheRead = int(*u.CacheReadTokens)
-		}
+		ex.CacheWrite = tokenCount(u.CacheCreationTokens)
+		ex.CacheRead = tokenCount(u.CacheReadTokens)
 	}
 
 	// Gemini: "usageMetadata" object.
 	if u := respData.UsageMetadata; u != nil {
 		if u.PromptTokenCount != nil {
-			ex.TokensIn = int(*u.PromptTokenCount)
+			ex.TokensIn = tokenCount(u.PromptTokenCount)
 		}
 		if u.CandidatesTokenCount != nil {
-			ex.TokensOut = int(*u.CandidatesTokenCount)
+			ex.TokensOut = tokenCount(u.CandidatesTokenCount)
 		}
 	}
 }

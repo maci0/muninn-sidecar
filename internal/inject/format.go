@@ -6,6 +6,7 @@ package inject
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -31,7 +32,17 @@ func withinBudget(memories []memory, budget int) []memory {
 		return memories
 	}
 
-	budgetChars := budget * charPerToken
+	// budget is user-supplied (`--inject-budget`); `budget * charPerToken`
+	// overflows int for a budget above MaxInt/4, and the wrapped negative
+	// budgetChars would then make every memory after the first exceed the
+	// budget, silently degrading a huge budget to a single memory. Clamp
+	// instead: a budget that large already admits every memory.
+	budgetChars := budget
+	if budgetChars > math.MaxInt/charPerToken {
+		budgetChars = math.MaxInt
+	} else {
+		budgetChars *= charPerToken
+	}
 	totalChars := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
 
 	kept := make([]memory, 0, len(memories))

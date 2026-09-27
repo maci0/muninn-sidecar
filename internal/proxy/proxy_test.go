@@ -1956,6 +1956,24 @@ func TestExtractModelAndTokens(t *testing.T) {
 			respBody:  `{not valid`,
 			wantModel: "gpt-4",
 		},
+		{
+			// A usage number too large for an int is a provider bug or a hostile
+			// body: int(1e30) is undefined in Go (MinInt64 on amd64) and would be
+			// stored and added into the session token totals as a huge negative.
+			// Out-of-range and negative counts report 0 (no usage) instead.
+			name:      "out-of-range usage counts are dropped",
+			reqBody:   `{"model":"gpt-4","messages":[]}`,
+			respBody:  `{"usage":{"input_tokens":1e30,"output_tokens":-5,"cache_creation_input_tokens":1e300}}`,
+			wantModel: "gpt-4",
+		},
+		{
+			// Fractional usage truncates toward zero, as before.
+			name:      "fractional usage truncates",
+			reqBody:   `{"model":"gpt-4","messages":[]}`,
+			respBody:  `{"usage":{"input_tokens":10.9,"output_tokens":0.5}}`,
+			wantModel: "gpt-4",
+			wantIn:    10,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

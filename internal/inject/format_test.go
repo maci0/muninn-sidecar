@@ -2,6 +2,7 @@ package inject
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -355,4 +356,19 @@ func TestInjectGeminiContext(t *testing.T) {
 			t.Fatalf("expected append after orig, got %v", p)
 		}
 	})
+}
+
+func TestWithinBudgetHugeBudget(t *testing.T) {
+	// A budget above MaxInt/charPerToken overflowed the budget*charPerToken
+	// conversion to a negative number, which made every memory past the first
+	// look over-budget: a MaxInt budget silently injected a single memory.
+	mems := []memory{
+		{ID: "1", Concept: "one", Content: "first memory body", Score: 0.9},
+		{ID: "2", Concept: "two", Content: "second memory body", Score: 0.8},
+		{ID: "3", Concept: "three", Content: "third memory body", Score: 0.7},
+	}
+	kept := withinBudget(mems, math.MaxInt)
+	if len(kept) != len(mems) {
+		t.Fatalf("kept %d memories under a MaxInt budget, want all %d", len(kept), len(mems))
+	}
 }
