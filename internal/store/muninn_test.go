@@ -644,6 +644,7 @@ func TestFormatAndDedupAnthropic(t *testing.T) {
 	st := &stats.Stats{}
 	s := &MuninnStore{stats: st, vault: "test"}
 	var ring [dedupRingSize]map[uint64]struct{}
+	pending := make(map[uint64]struct{})
 	ringIdx := 0
 
 	ex := &CapturedExchange{
@@ -663,7 +664,7 @@ func TestFormatAndDedupAnthropic(t *testing.T) {
 		}`),
 	}
 
-	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	fm := s.formatAndDedup(ex, &ring, pending, &ringIdx)
 	if fm == nil {
 		t.Fatal("expected non-nil formatted memory")
 	}
@@ -706,6 +707,7 @@ func TestFormatAndDedupOpenAI(t *testing.T) {
 	st := &stats.Stats{}
 	s := &MuninnStore{stats: st, vault: "test"}
 	var ring [dedupRingSize]map[uint64]struct{}
+	pending := make(map[uint64]struct{})
 	ringIdx := 0
 
 	ex := &CapturedExchange{
@@ -724,7 +726,7 @@ func TestFormatAndDedupOpenAI(t *testing.T) {
 		}`),
 	}
 
-	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	fm := s.formatAndDedup(ex, &ring, pending, &ringIdx)
 	if fm == nil {
 		t.Fatal("expected non-nil formatted memory")
 	}
@@ -744,6 +746,7 @@ func TestFormatAndDedupGemini(t *testing.T) {
 	st := &stats.Stats{}
 	s := &MuninnStore{stats: st, vault: "test"}
 	var ring [dedupRingSize]map[uint64]struct{}
+	pending := make(map[uint64]struct{})
 	ringIdx := 0
 
 	ex := &CapturedExchange{
@@ -757,7 +760,7 @@ func TestFormatAndDedupGemini(t *testing.T) {
 		}`),
 	}
 
-	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	fm := s.formatAndDedup(ex, &ring, pending, &ringIdx)
 	if fm == nil {
 		t.Fatal("expected non-nil formatted memory")
 	}
@@ -778,6 +781,7 @@ func TestFormatAndDedupEmptySkipped(t *testing.T) {
 	st := &stats.Stats{}
 	s := &MuninnStore{stats: st, vault: "test"}
 	var ring [dedupRingSize]map[uint64]struct{}
+	pending := make(map[uint64]struct{})
 	ringIdx := 0
 
 	ex := &CapturedExchange{
@@ -788,7 +792,7 @@ func TestFormatAndDedupEmptySkipped(t *testing.T) {
 		RespBody:   json.RawMessage(`{"ok":true}`),
 	}
 
-	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	fm := s.formatAndDedup(ex, &ring, pending, &ringIdx)
 	if fm != nil {
 		t.Error("expected nil for empty exchange (no extractable messages)")
 	}
@@ -1120,6 +1124,7 @@ func TestSkipContextContinuation(t *testing.T) {
 	st := &stats.Stats{}
 	s := &MuninnStore{stats: st, vault: "test"}
 	var ring [dedupRingSize]map[uint64]struct{}
+	pending := make(map[uint64]struct{})
 	ringIdx := 0
 
 	ex := &CapturedExchange{
@@ -1131,7 +1136,7 @@ func TestSkipContextContinuation(t *testing.T) {
 		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"I'll continue from where we left off."}]}`),
 	}
 
-	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	fm := s.formatAndDedup(ex, &ring, pending, &ringIdx)
 	if fm != nil {
 		t.Error("expected nil for context continuation message")
 	}
@@ -1144,6 +1149,7 @@ func TestSkipSummaryTask(t *testing.T) {
 	st := &stats.Stats{}
 	s := &MuninnStore{stats: st, vault: "test"}
 	var ring [dedupRingSize]map[uint64]struct{}
+	pending := make(map[uint64]struct{})
 	ringIdx := 0
 
 	ex := &CapturedExchange{
@@ -1155,7 +1161,7 @@ func TestSkipSummaryTask(t *testing.T) {
 		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"<analysis>..."}]}`),
 	}
 
-	fm := s.formatAndDedup(ex, &ring, &ringIdx)
+	fm := s.formatAndDedup(ex, &ring, pending, &ringIdx)
 	if fm != nil {
 		t.Error("expected nil for summary task prompt")
 	}

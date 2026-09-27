@@ -274,3 +274,113 @@ func TestDedupRingExpiresOnTheInjectedClock(t *testing.T) {
 	}
 	st.store.Drain()
 }
+
+// TestFailedFlushLeavesNoDedupMark pins the dedup ledger to what the vault
+// actually holds. The ring suppresses a concept it has already delivered, so
+// recording a hash when the memory is formatted rather than when it is stored
+// would make a permanently-failed flush swallow the retry: the re-ask arrives
+// inside the ring window, is deduped, and the memory is never written at all.
+// The server here rejects every write with a permanent 4xx (no retry budget to
+// wait out), so the first flush is the only attempt for that concept.
+func TestFailedFlushLeavesNoDedupMark(t *testing.T) {
+	var mu sync.Mutex
+	var batches [][]string
+	reject := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var call struct {
+			Params struct {
+				Arguments struct {
+					Concept  string `json:"concept"`
+					Memories []struct {
+						Concept string `json:"concept"`
+					} `json:"memories"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.Unmarshal(body, &call)
+		// A one-memory batch goes out as muninn_remember (a top-level concept);
+		// a larger one as muninn_remember_batch. Read both so the test does not
+		// depend on which shape this batch happened to take.
+		var concepts []string
+		if c := call.Params.Arguments.Concept; c != "" {
+			concepts = append(concepts, c)
+		}
+		for _, m := range call.Params.Arguments.Memories {
+			concepts = append(concepts, m.Concept)
+		}
+		mu.Lock()
+		batches = append(batches, concepts)
+		failing := reject
+		mu.Unlock()
+		if failing {
+			// 4xx is permanent, so callTool returns without spending retries.
+			w.WriteHeader(400)
+			return
+		}
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	clk := clock.NewFake()
+	s := NewWithClock(srv.URL, "", "test", &stats.Stats{}, clk)
+	defer s.Drain()
+	// The flush period is fired by advancing the scripted clock, so an advance
+	// issued before the worker has formatted its exchange would roll a tick
+	// over an empty batch and leave the memory waiting for a tick that never
+	// comes. Wait for the format before each advance.
+	prepared := make(chan struct{}, 64)
+	s.SetPreparer(func(*CapturedExchange) {
+		select {
+		case prepared <- struct{}{}:
+		default:
+		}
+	})
+
+	enqueue := func(user string) {
+		s.Store(&CapturedExchange{
+			Agent:    "test",
+			Path:     "/v1/messages",
+			ReqBody:  json.RawMessage(fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`, user)),
+			RespBody: json.RawMessage(fmt.Sprintf(`{"content":[{"type":"text","text":"reply to %s"}]}`, user)),
+		})
+		select {
+		case <-prepared:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("worker never formatted %q", user)
+		}
+	}
+
+	// First attempt at the concept: every write is rejected.
+	enqueue("retryable")
+	clk.Advance(2 * time.Second)
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(batches) >= 1 })
+
+	// The concept is asked again while the ring still covers the window the
+	// failed batch would have occupied. It must be sent, not deduped.
+	mu.Lock()
+	reject = false
+	mu.Unlock()
+	enqueue("retryable")
+	clk.Advance(2 * time.Second)
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(batches) >= 2 })
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(batches[1]) != 1 || batches[1][0] != concept("retryable") {
+		t.Fatalf("second batch %v, want the re-asked concept delivered after the first write failed", batches[1])
+	}
+}
+
+// waitFor polls cond until it holds or the deadline passes.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the store to flush")
+}

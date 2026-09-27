@@ -82,6 +82,10 @@ type formattedMemory struct {
 	// requestID is the correlation ID of the turn this memory came from, kept
 	// so a failed flush can name the turns whose memories were not written.
 	requestID string
+	// hash is this memory's dedup-ring entry. It travels with the memory so the
+	// ring can record it only once MuninnDB has actually stored it: marking it
+	// at format time would suppress a re-ask of a question whose write failed.
+	hash uint64
 }
 
 // MuninnStore delivers captured API exchanges to MuninnDB via MCP JSON-RPC.
@@ -401,6 +405,11 @@ func (s *MuninnStore) worker() {
 	defer close(s.done)
 
 	var batch []formattedMemory
+	// pending holds the hashes of the memories in the batch that has not been
+	// delivered yet, so a repeat within one batch still collapses. It is
+	// consulted alongside the ring while formatting and is merged into the ring
+	// only once the flush succeeds.
+	pending := make(map[uint64]struct{})
 	var dedupRing [dedupRingSize]map[uint64]struct{}
 	ringIdx := 0
 	ticker := s.clock.NewTicker(2 * time.Second)
@@ -411,30 +420,35 @@ func (s *MuninnStore) worker() {
 		case item, ok := <-s.queue:
 			if !ok {
 				if len(batch) > 0 {
-					s.flushFormatted(batch)
+					s.flushDelivered(batch, &dedupRing, &ringIdx)
 				}
 				return
 			}
-			fm := s.prepareForStore(item.ex, &dedupRing, &ringIdx)
+			fm := s.prepareForStore(item.ex, &dedupRing, pending, &ringIdx)
 			// The exchange is prepared: the batch keeps only the truncated
 			// concept and content, so the reserved bodies are unreachable and
 			// their budget returns to the pool.
 			s.release(item.bytes)
 			if fm != nil {
+				pending[fm.hash] = struct{}{}
 				batch = append(batch, *fm)
 			}
 			if len(batch) >= maxBatchSize {
-				s.flushFormatted(batch)
-				batch = nil
+				s.flushDelivered(batch, &dedupRing, &ringIdx)
+				batch, pending = nil, make(map[uint64]struct{})
 			}
 		case <-ticker.C():
-			if len(batch) > 0 {
-				s.flushFormatted(batch)
-				batch = nil
-			}
-			// Advance ring slot each flush cycle to expire old hashes.
+			// Roll the dedup window before flushing. The batch about to be
+			// delivered is recorded into the slot this tick opens, so it lives
+			// the full dedupRingSize cycles the window promises; rolling after
+			// the flush would clear the very slot that flush had just written,
+			// leaving a one-cycle (~2s) window instead of the ~16s one.
 			ringIdx = (ringIdx + 1) % dedupRingSize
 			dedupRing[ringIdx] = nil
+			if len(batch) > 0 {
+				s.flushDelivered(batch, &dedupRing, &ringIdx)
+				batch, pending = nil, make(map[uint64]struct{})
+			}
 		}
 	}
 }
@@ -464,7 +478,7 @@ func isNoiseContent(msg string) bool {
 // prepareForStore runs the capture-side Preparer (when installed), records the
 // model and token usage it derived, then formats and deduplicates the
 // exchange. Returns nil if the exchange should be dropped.
-func (s *MuninnStore) prepareForStore(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, ringIdx *int) *formattedMemory {
+func (s *MuninnStore) prepareForStore(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, pending map[uint64]struct{}, ringIdx *int) *formattedMemory {
 	if p := s.preparer(); p != nil {
 		p(ex)
 	}
@@ -475,15 +489,17 @@ func (s *MuninnStore) prepareForStore(ex *CapturedExchange, ring *[dedupRingSize
 		s.stats.CacheWrite.Add(int64(ex.CacheWrite))
 		s.stats.CacheRead.Add(int64(ex.CacheRead))
 	}
-	return s.formatAndDedup(ex, ring, ringIdx)
+	return s.formatAndDedup(ex, ring, pending, ringIdx)
 }
 
 // formatAndDedup formats an exchange, strips system-reminders, skips empty
 // captures, filters noise content, appends metadata tags, and deduplicates
-// by concept hash. Returns nil if the exchange should be dropped. Each ring
-// slot holds a set of hashes from one flush cycle, so multiple exchanges per
-// cycle are tracked correctly.
-func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, ringIdx *int) *formattedMemory {
+// by concept hash. Returns nil if the exchange should be dropped. Duplicates
+// are looked up in pending (the undelivered batch) and in the ring (memories
+// already stored), and the hash is returned with the memory rather than
+// recorded here: it enters the ring only once the flush that writes it
+// succeeds, so a failed write never leaves a mark that suppresses the retry.
+func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, pending map[uint64]struct{}, ringIdx *int) *formattedMemory {
 	userMsg := apiformat.StripSystemReminders(exchangeText(ex.UserText, func() string {
 		return apiformat.ExtractUserMessage(ex.ReqBody)
 	}))
@@ -562,16 +578,20 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 			}
 		}
 	}
-	if ring[*ringIdx] == nil {
-		ring[*ringIdx] = make(map[uint64]struct{})
+	if _, exists := pending[hash]; exists {
+		slog.Debug("dedup: skipping duplicate concept already in this batch", reqid.Field, ex.RequestID, "hash", hash)
+		if s.stats != nil {
+			s.stats.Deduped.Add(1)
+		}
+		return nil
 	}
-	ring[*ringIdx][hash] = struct{}{}
 
 	return &formattedMemory{
 		concept:   concept,
 		content:   content,
 		tags:      buildTags(ex),
 		requestID: ex.RequestID,
+		hash:      hash,
 	}
 }
 
@@ -585,13 +605,31 @@ func exchangeText(prepared *string, extract func() string) string {
 	return extract()
 }
 
+// flushDelivered sends a batch and records its dedup hashes in the ring only if
+// the write landed. The ring is the store's ledger of "this concept is already
+// in the vault", so a hash entered for a batch that failed would suppress a
+// re-ask of the same question for the rest of the window and lose a memory
+// that was never stored. A failed batch is dropped and its hashes are left
+// unrecorded, so the next occurrence of the concept is formatted and sent
+// again.
+func (s *MuninnStore) flushDelivered(batch []formattedMemory, ring *[dedupRingSize]map[uint64]struct{}, ringIdx *int) {
+	if s.flushFormatted(batch) {
+		if ring[*ringIdx] == nil {
+			ring[*ringIdx] = make(map[uint64]struct{})
+		}
+		for _, fm := range batch {
+			ring[*ringIdx][fm.hash] = struct{}{}
+		}
+	}
+}
+
 // flushFormatted sends a batch of pre-formatted memories to MuninnDB:
 // single items use muninn_remember, multiple use muninn_remember_batch.
 // Every memory carries a content-addressed dedup_key (mcpclient.DedupKey), and
 // the whole call reuses one JSON-RPC request id across attempts (see callTool),
 // so a retry of an ambiguous write is recognisable as the same operation on
-// both sides.
-func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
+// both sides. Reports whether the batch is stored.
+func (s *MuninnStore) flushFormatted(batch []formattedMemory) bool {
 	var err error
 	n := int64(len(batch))
 
@@ -634,12 +672,13 @@ func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 		if s.stats != nil {
 			s.stats.FlushErrors.Add(n)
 		}
-	} else {
-		slog.Debug("flushed exchanges to MuninnDB", "vault", s.vault, "batch_size", n)
-		if s.stats != nil {
-			s.stats.Flushed.Add(n)
-		}
+		return false
 	}
+	slog.Debug("flushed exchanges to MuninnDB", "vault", s.vault, "batch_size", n)
+	if s.stats != nil {
+		s.stats.Flushed.Add(n)
+	}
+	return true
 }
 
 // maxFlushLogIDs caps the correlation IDs a failed-flush line names. A batch

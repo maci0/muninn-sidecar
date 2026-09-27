@@ -45,9 +45,10 @@ func FuzzFormatAndDedup(f *testing.F) {
 
 		// Fresh ring per iteration: dedup state must not leak across fuzz inputs.
 		var ring [dedupRingSize]map[uint64]struct{}
+		pending := make(map[uint64]struct{})
 		ringIdx := 0
 
-		fm := s.formatAndDedup(ex, &ring, &ringIdx)
+		fm := s.formatAndDedup(ex, &ring, pending, &ringIdx)
 		if fm == nil {
 			return // dropped as empty/noise/dup — a valid outcome.
 		}

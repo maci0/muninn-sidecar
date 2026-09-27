@@ -349,12 +349,6 @@ func (a Agent) MITMOverrides(proxyURL, upstream, caCertPath, caBundlePath string
 	return overrides
 }
 
-// HasSystemCABundle reports whether systemRootsPEM finds a root bundle, which
-// is what decides whether ExecMITM gets a combined bundle path or an empty
-// one. `msc --dry-run` uses it to preview the same environment without writing
-// the bundle.
-func HasSystemCABundle() bool { return systemRootsPEM() != nil }
-
 // CABundlePath is where writeCombinedCABundle puts the system-roots+CA bundle.
 func CABundlePath(caCertPath string) string {
 	return filepath.Join(filepath.Dir(caCertPath), "ca-bundle.pem")

@@ -105,6 +105,17 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
 - **`--json` output is no longer HTML-escaped.** The proxy placeholder in
   `msc --json --dry-run` came out as `\\u003cport\\u003e`, so a grep or a `sed`
   over the machine-readable form missed it.
+- **A failed flush no longer leaves a dedup mark that swallows the retry.** The
+  store's dedup ring recorded a concept's hash when the exchange was formatted,
+  up to two seconds before the flush that writes it. A flush that failed
+  permanently (a 4xx, or a retry budget spent against an unreachable server) left
+  a "already stored" mark for a memory that was never written, so the user
+  re-asking the same question inside the ~16s window was deduped away and lost.
+  A hash now enters the ring only once its flush succeeds; a repeat inside the
+  undelivered batch is collapsed against a per-batch pending set instead. The
+  ring window is also rolled before each flush rather than after, so a delivered
+  memory occupies the full ~16s window instead of being cleared by the same tick
+  that stored it.
 - **Reader output and judge scope are capped at startup.** `-max-tokens`
   (`msc-qa`) and `-ground-topk` (`msc-qa`, `msc-bench`) were the only things
   bounding a model call, and neither rejected a zero: providers that honor
