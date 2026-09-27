@@ -159,6 +159,12 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 // forwarding is never blocked or altered. This lets msc observe (and, with the
 // schema mapping, capture) WebSocket-framed exchanges like codex ChatGPT-mode.
 
+// maxHdrBlockBytes caps a forwarded backend header block while it is still
+// growing. An upgrade handshake is a header block and nothing else, so a backend
+// streaming endless bytes with no terminator must not grow it without bound. A
+// block that does terminate is returned however long it is.
+const maxHdrBlockBytes = 64 << 10
+
 // readHeaderBlock reads through the end of an HTTP header block (\r\n\r\n) and
 // returns the bytes verbatim — used to forward the backend's 101 handshake.
 func readHeaderBlock(r *bufio.Reader) ([]byte, error) {
@@ -170,7 +176,7 @@ func readHeaderBlock(r *bufio.Reader) ([]byte, error) {
 		line, err := r.ReadSlice('\n')
 		out = append(out, line...)
 		if err == bufio.ErrBufferFull {
-			if len(out) > 64<<10 {
+			if len(out) > maxHdrBlockBytes {
 				return out, io.ErrShortBuffer
 			}
 			continue
@@ -181,7 +187,8 @@ func readHeaderBlock(r *bufio.Reader) ([]byte, error) {
 		if string(line) == "\r\n" || string(line) == "\n" {
 			return out, nil
 		}
-		if len(out) > 64<<10 {
+		// The block is not terminated yet, so it can still grow: bound it.
+		if len(out) > maxHdrBlockBytes {
 			return out, io.ErrShortBuffer
 		}
 	}

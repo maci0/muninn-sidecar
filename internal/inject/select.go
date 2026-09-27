@@ -119,12 +119,14 @@ func resolveConflicts(kept []memory) []memory {
 				continue
 			}
 			// Keep the superseding side; drop the other.
+			loser, winner := j, i
 			if supersedes(kept[j], kept[i]) {
-				drop[i] = true
-			} else {
-				drop[j] = true
+				loser, winner = i, j
 			}
-			slog.Debug("inject: dropped contradicted memory", "kept_a", kept[i].ID, "kept_b", kept[j].ID, "dropped_i", drop[i])
+			drop[loser] = true
+			slog.Debug("inject: dropped contradicted memory",
+				"dropped", kept[loser].ID, "kept", kept[winner].ID,
+				"dropped_created", kept[loser].CreatedAt, "kept_created", kept[winner].CreatedAt)
 		}
 	}
 	out := kept[:0]

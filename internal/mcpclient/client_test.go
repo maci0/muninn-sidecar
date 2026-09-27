@@ -317,6 +317,21 @@ func TestServerErrorTextIsBounded(t *testing.T) {
 	}
 }
 
+// A rejection long enough to be truncated is still scrubbed: the cap must not
+// become a way around the redaction the short path applies.
+func TestServerErrorTextScrubsBeforeTruncating(t *testing.T) {
+	const secret = "ada.lovelace@example.com"
+	_, err := classifyResponse(200, []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"rejected: `+
+		secret+` `+strings.Repeat("x", maxErrorRunes*2)+`"}}`))
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("expected *RPCError, got %T: %v", err, err)
+	}
+	if strings.Contains(rpcErr.Message, secret) {
+		t.Errorf("over-long server error text carried personal data into the error: %v", rpcErr)
+	}
+}
+
 // Truncation must not land mid-rune: a message ending in a multi-byte character
 // has to come back intact or as U+FFFD-free text, not a replacement char.
 func TestServerErrorTextTruncationKeepsRunes(t *testing.T) {

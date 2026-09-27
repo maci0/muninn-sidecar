@@ -326,8 +326,7 @@ func writeStatus(clientConn net.Conn, ctx context.Context, target, status string
 	}
 }
 
-// copyTunnel pipes r (reads taken from src, which is normally src itself or a
-// buffered reader over it) into dst, re-arming tunnelIdleTimeout on the read and
+// copyTunnel pipes src into dst, re-arming tunnelIdleTimeout on the read and
 // the write side before every chunk. A deadline error is returned like any other
 // copy error; the caller logs it and closes its half. id is the correlation ID of
 // the CONNECT that opened the tunnel.
@@ -340,7 +339,7 @@ func copyTunnel(dst net.Conn, src net.Conn, r io.Reader, target, id string) erro
 		if err := dst.SetWriteDeadline(time.Now().Add(tunnelIdleTimeout)); err != nil {
 			slog.Debug("mitm: could not set tunnel write deadline", reqid.Field, id, "target", target, "err", err)
 		}
-		n, rerr := r.Read(buf)
+		n, rerr := src.Read(buf)
 		if n > 0 {
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return fmt.Errorf("write to tunnel peer: %w", werr)

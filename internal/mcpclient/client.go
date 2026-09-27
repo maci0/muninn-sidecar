@@ -168,14 +168,17 @@ const maxErrorRunes = 300
 // memory ("content too long: <the content>") hands back exactly the captured
 // conversation the write path redacts everywhere else. Every call site treats
 // the error as safe to log or print, so the scrub belongs here rather than at
-// the log lines, where one new call site would undo it.
+// the log lines, where one new call site would undo it. Redaction runs before
+// the cap, so an over-long rejection cannot escape the scrub by being over-long;
+// the cap may then cut a marker redaction inserted, which costs the line some
+// context, never secrecy.
 func scrubServerText(s string) string {
-	s = strings.TrimSpace(s)
+	s = redact.Secrets(strings.TrimSpace(s))
 	r := []rune(s)
 	if len(r) > maxErrorRunes {
 		return string(r[:maxErrorRunes]) + "…"
 	}
-	return redact.Secrets(s)
+	return s
 }
 
 // RPCError is a non-retryable error for JSON-RPC protocol-level failures
