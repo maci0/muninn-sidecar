@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -277,41 +278,57 @@ func TestBatching(t *testing.T) {
 	t.Logf("10 items sent in %d MCP call(s)", n)
 }
 
+// TestQueueOverflow pins the drop path at the real queue depth. The previous
+// form raced 300 Store calls against a worker doing HTTP round-trips and only
+// asserted "some were dropped", so it passed on a slow machine and failed on a
+// fast one. Filling the channel first, with no worker draining it, makes the
+// boundary exact.
 func TestQueueOverflow(t *testing.T) {
-	// Server responds normally — the queue overflows because we store
-	// faster than the worker can flush via HTTP round-trips.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Small delay to ensure queue fills before worker drains.
-		time.Sleep(10 * time.Millisecond)
-		w.WriteHeader(200)
-		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
-	}))
-	defer srv.Close()
+	const depth = 256 // the depth New allocates
 
 	st := &stats.Stats{}
-	s := New(srv.URL, "", "test", st)
+	// No worker: nothing drains the channel, so filling it is deterministic.
+	s := &MuninnStore{queue: make(chan *CapturedExchange, depth), stats: st}
 
-	// Fill the queue (buffer size is 256). Tight loop outpaces the worker.
-	for i := range 300 {
-		msg := fmt.Sprintf(`{"messages":[{"role":"user","content":"overflow test %d"}]}`, i)
-		resp := fmt.Sprintf(`{"content":[{"type":"text","text":"response %d"}]}`, i)
-		s.Store(&CapturedExchange{
+	ex := func(i int) *CapturedExchange {
+		return &CapturedExchange{
 			Agent:    "test",
 			Path:     "/v1/messages",
-			ReqBody:  json.RawMessage(msg),
-			RespBody: json.RawMessage(resp),
-		})
+			ReqBody:  json.RawMessage(fmt.Sprintf(`{"messages":[{"role":"user","content":"overflow test %d"}]}`, i)),
+			RespBody: json.RawMessage(fmt.Sprintf(`{"content":[{"type":"text","text":"response %d"}]}`, i)),
+		}
 	}
 
-	dropped := st.Dropped.Load()
-	if dropped == 0 {
-		t.Fatal("expected some exchanges to be dropped when queue is full")
+	// Exactly the queue depth: every exchange is accepted, nothing dropped.
+	for i := range depth {
+		s.Store(ex(i))
 	}
-	t.Logf("dropped %d out of 300 (queue size 256)", dropped)
+	if got := st.Dropped.Load(); got != 0 {
+		t.Fatalf("dropped %d exchanges before the queue was full, want 0", got)
+	}
+	if got := st.Captured.Load(); got != depth {
+		t.Errorf("Captured = %d, want %d", got, depth)
+	}
 
-	s.Drain()
+	// One past the depth: the surplus is dropped, not blocked on.
+	const surplus = 44
+	for i := range surplus {
+		s.Store(ex(depth + i))
+	}
+	if got := st.Dropped.Load(); got != surplus {
+		t.Errorf("Dropped = %d, want %d", got, surplus)
+	}
+	if got := s.dropped.Load(); got != surplus {
+		t.Errorf("internal drop count = %d, want %d", got, surplus)
+	}
+	if got := st.Captured.Load(); got != depth+surplus {
+		t.Errorf("Captured = %d, want %d (drops still count as captured attempts)",
+			got, depth+surplus)
+	}
+	if got := len(s.queue); got != depth {
+		t.Errorf("queue holds %d, want %d", got, depth)
+	}
 }
-
 func TestDrainBoundedWhenUnreachable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping bounded-drain test (needs ~8s)")
@@ -729,34 +746,43 @@ func TestFormatAndDedupEmptySkipped(t *testing.T) {
 	}
 }
 
+// TestBuildTags pins the exact tag list the store sends to muninn, in order.
+// A subset check passes when buildTags emits an extra tag (a debug marker, a
+// duplicate, a stray "model:" for an empty model) and cannot see a
+// misformatted one, since the server routes on these strings.
 func TestBuildTags(t *testing.T) {
-	ex := &CapturedExchange{
-		Agent:      "claude",
-		StatusCode: 200,
-		Model:      "claude-3-opus",
+	cases := []struct {
+		name string
+		ex   *CapturedExchange
+		want []string
+	}{
+		{
+			name: "all fields",
+			ex:   &CapturedExchange{Agent: "claude", StatusCode: 200, Model: "claude-3-opus"},
+			want: []string{"sidecar", "claude", "status:200", "model:claude-3-opus"},
+		},
+		{
+			name: "no model: no model tag",
+			ex:   &CapturedExchange{Agent: "codex", StatusCode: 429},
+			want: []string{"sidecar", "codex", "status:429"},
+		},
+		{
+			// A stream capture that never saw a model still gets the three
+			// unconditional tags; an empty Agent is passed through rather than
+			// silently dropped, so the tag count stays fixed.
+			name: "status zero",
+			ex:   &CapturedExchange{},
+			want: []string{"sidecar", "", "status:0"},
+		},
 	}
-
-	tags := buildTags(ex)
-
-	expected := map[string]bool{
-		"sidecar":             true,
-		"claude":              true,
-		"status:200":          true,
-		"model:claude-3-opus": true,
-	}
-
-	for _, tag := range tags {
-		delete(expected, tag)
-	}
-	if len(expected) > 0 {
-		missing := make([]string, 0, len(expected))
-		for k := range expected {
-			missing = append(missing, k)
-		}
-		t.Fatalf("missing tags: %v", missing)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := buildTags(tc.ex); !slices.Equal(got, tc.want) {
+				t.Errorf("buildTags = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
-
 func TestPartialSystemReminderStrip(t *testing.T) {
 	// User message has system-reminders interleaved with real content.
 	var (
@@ -808,12 +834,15 @@ func TestPartialSystemReminderStrip(t *testing.T) {
 	}
 }
 
-func TestDedupRingExpiry(t *testing.T) {
-	// Verify that a fresh store with an empty ring buffer does not consider
-	// a previously seen concept as a duplicate. In production the ring buffer
-	// rotates on a ticker, so old entries expire; here we simulate that by
-	// creating a new store instance (fresh ring) rather than waiting for the
-	// ticker to advance.
+// TestDedupIsPerStore covers the half of ring expiry that is reachable without
+// waiting: a store starts with an empty ring, so a concept another instance
+// already wrote is not suppressed. The rotating half (the worker's 2s ticker
+// advancing a slot, which is what actually expires an entry) is not exercised
+// here — a full expiry takes dedupRingSize flush cycles, and nothing pins the
+// rotation at all.
+func TestDedupIsPerStore(t *testing.T) {
+	// The ring lives in the worker goroutine of one store; a new store does not
+	// inherit the previous instance's hashes.
 	var (
 		mu    sync.Mutex
 		calls int
@@ -1285,5 +1314,170 @@ func TestStoreQueueFullWarningIsThrottled(t *testing.T) {
 	warnings := strings.Count(logs.String(), "queue full")
 	if want := 3; warnings != want {
 		t.Errorf("queue-full warnings = %d, want %d (first, then every %d):\n%s", warnings, want, dropLogEvery, logs.String())
+	}
+}
+
+// mcpCall is one JSON-RPC tool invocation as the server saw it.
+type mcpCall struct {
+	Name string         `json:"name"`
+	Args map[string]any `json:"arguments"`
+}
+
+// recordingMCP captures every tool call and answers 200, so a test can assert
+// what was written rather than how many calls were made.
+func recordingMCP(t *testing.T, calls *[]mcpCall, mu *sync.Mutex) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var env struct {
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &env); err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		mu.Lock()
+		*calls = append(*calls, mcpCall{Name: env.Params.Name, Args: env.Params.Arguments})
+		mu.Unlock()
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func storedCall(t *testing.T, calls *[]mcpCall, mu *sync.Mutex, i int) mcpCall {
+	t.Helper()
+	mu.Lock()
+	defer mu.Unlock()
+	if i >= len(*calls) {
+		t.Fatalf("expected at least %d MCP call(s), got %d", i+1, len(*calls))
+	}
+	return (*calls)[i]
+}
+
+// TestWritePayloadSingle pins the arguments of the one-memory write. A payload
+// with the wrong tool name, a missing vault, type or dedup_key still gets a
+// 200 from a permissive server, so counting calls cannot tell a correct write
+// from a broken one; every field the server routes on is asserted here.
+func TestWritePayloadSingle(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls []mcpCall
+	)
+	srv := recordingMCP(t, &calls, &mu)
+
+	const vault = "payload-vault"
+	s := New(srv.URL, "", vault, &stats.Stats{})
+	s.Store(&CapturedExchange{
+		Agent:    "claude",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"how does auth work"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"use jwt"}]}`),
+	})
+	s.Drain()
+
+	c := storedCall(t, &calls, &mu, 0)
+	if c.Name != "muninn_remember" {
+		t.Fatalf("tool name = %q, want muninn_remember", c.Name)
+	}
+	if got := c.Args["vault"]; got != vault {
+		t.Errorf("vault = %v, want %q", got, vault)
+	}
+	if got := c.Args["type"]; got != "observation" {
+		t.Errorf("type = %v, want observation", got)
+	}
+	for _, key := range []string{"concept", "content", "dedup_key"} {
+		if v, ok := c.Args[key]; !ok || v == "" {
+			t.Errorf("args[%q] missing or empty in %v", key, c.Args)
+		}
+	}
+	if tags, ok := c.Args["tags"]; !ok || tags == nil {
+		t.Errorf("args[tags] missing in %v", c.Args)
+	}
+	// dedup_key is content-addressed: identical (vault, concept, content) must
+	// reproduce it, so a retry lands on the same memory.
+	if want := dedupKey(vault, c.Args["concept"].(string), c.Args["content"].(string)); c.Args["dedup_key"] != want {
+		t.Errorf("dedup_key = %v, want %q", c.Args["dedup_key"], want)
+	}
+	// A batch payload here would be silently misrouted by the server.
+	if _, ok := c.Args["memories"]; ok {
+		t.Error("single write carried a memories array")
+	}
+}
+
+// TestWritePayloadBatch pins the batched write: the batch tool, a top-level
+// vault, and one entry per memory carrying its own dedup_key. Dropping
+// dedup_key from this path would let the same memory be written twice and no
+// other test would see it, since batch tests assert the call count only.
+func TestWritePayloadBatch(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls []mcpCall
+	)
+	srv := recordingMCP(t, &calls, &mu)
+
+	const vault = "batch-vault"
+	s := New(srv.URL, "", vault, &stats.Stats{})
+	for i := range maxBatchSize {
+		s.Store(&CapturedExchange{
+			Agent:    "test",
+			Path:     "/v1/messages",
+			ReqBody:  json.RawMessage(fmt.Sprintf(`{"messages":[{"role":"user","content":"question %d"}]}`, i)),
+			RespBody: json.RawMessage(fmt.Sprintf(`{"content":[{"type":"text","text":"answer %d"}]}`, i)),
+		})
+	}
+	s.Drain()
+
+	c := storedCall(t, &calls, &mu, 0)
+	if c.Name != "muninn_remember_batch" {
+		t.Fatalf("tool name = %q, want muninn_remember_batch", c.Name)
+	}
+	if got := c.Args["vault"]; got != vault {
+		t.Errorf("vault = %v, want %q", got, vault)
+	}
+	mems, ok := c.Args["memories"].([]any)
+	if !ok {
+		t.Fatalf("args[memories] is %T, want an array: %v", c.Args["memories"], c.Args)
+	}
+	if len(mems) != maxBatchSize {
+		t.Fatalf("batched %d memories, want %d", len(mems), maxBatchSize)
+	}
+
+	seen := make(map[string]bool, len(mems))
+	for i, raw := range mems {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("memories[%d] is %T, want an object", i, raw)
+		}
+		if m["type"] != "observation" {
+			t.Errorf("memories[%d].type = %v, want observation", i, m["type"])
+		}
+		for _, key := range []string{"concept", "content", "tags", "dedup_key"} {
+			if v, ok := m[key]; !ok || v == nil {
+				t.Errorf("memories[%d] missing %q: %v", i, key, m)
+			}
+		}
+		dk, _ := m["dedup_key"].(string)
+		if dk == "" {
+			t.Errorf("memories[%d] has an empty dedup_key", i)
+			continue
+		}
+		if want := dedupKey(vault, m["concept"].(string), m["content"].(string)); dk != want {
+			t.Errorf("memories[%d].dedup_key = %q, want %q", i, dk, want)
+		}
+		if seen[dk] {
+			t.Errorf("memories[%d] reuses dedup_key %q; distinct memories must not collide", i, dk)
+		}
+		seen[dk] = true
+	}
+	// The per-memory fields must not leak to the batch envelope, where the
+	// server would ignore them.
+	for _, key := range []string{"concept", "content", "dedup_key"} {
+		if _, ok := c.Args[key]; ok {
+			t.Errorf("batch envelope carries a top-level %q", key)
+		}
 	}
 }

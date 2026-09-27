@@ -2,8 +2,17 @@ package inject
 
 import (
 	"math"
+	"reflect"
+	"slices"
 	"testing"
 )
+
+// sameCands reports whether two selector outputs are identical, treating a nil
+// slice and an empty slice as equal. The selectors return one or the other
+// depending on which branch they take, and the distinction carries no meaning.
+func sameCands(a, b []studyCand) bool {
+	return len(a) == len(b) && slices.Equal(a, b)
+}
 
 func TestTopZScore(t *testing.T) {
 	// Fewer than 2 candidates: shape is undefined, return +Inf (z-gate never fires).
@@ -53,35 +62,48 @@ func TestShapeGatesReduceToAbsolute(t *testing.T) {
 		base := abs.sel(cands, studyParams{abs: 0.6})
 		gotSep := sep.sel(cands, studyParams{abs: 0.6, sep: 0})
 		gotZ := zg.sel(cands, studyParams{abs: 0.6, z: 0})
-		if len(gotSep) != len(base) {
-			t.Fatalf("sepgate(sep=0) len %d != absolute len %d", len(gotSep), len(base))
+		// Compare the candidates themselves, not their count: a gate that
+		// dropped the top hit and kept the one below, or reordered the result,
+		// would pass a length check while changing every metric downstream.
+		if !sameCands(gotSep, base) {
+			t.Fatalf("sepgate(sep=0) = %v, want absolute %v", gotSep, base)
 		}
 		// z=0 keeps any top hit whose z >= 0, i.e. at or above the mean — always
 		// true for the max — so it matches absolute too.
-		if len(gotZ) != len(base) {
-			t.Fatalf("zgate(z=0) len %d != absolute len %d", len(gotZ), len(base))
+		if !sameCands(gotZ, base) {
+			t.Fatalf("zgate(z=0) = %v, want absolute %v", gotZ, base)
 		}
 	}
 }
 
+// TestParamsAbsSepAndZ pins the full cross product of both shape-parameter
+// grids, fields included. A length check alone cannot see abs and sep crossed
+// over, nor a grid that wrote abs into the z field.
 func TestParamsAbsSepAndZ(t *testing.T) {
-	sp := paramsAbsSep([]float64{0.5, 0.6}, []float64{0.0, 0.1})
-	if len(sp) != 4 {
-		t.Fatalf("paramsAbsSep: got %d, want 4", len(sp))
+	// A 2x2 grid: two thresholds by two secondary values, giving four
+	// combinations each. 0.9 is a value distinct from both 0.5 and 0.6 so a
+	// field routed from the wrong slice is visible.
+	wantSep := []studyParams{
+		{abs: 0.5, sep: 0.0}, {abs: 0.5, sep: 0.1},
+		{abs: 0.6, sep: 0.0}, {abs: 0.6, sep: 0.1},
 	}
-	zp := paramsAbsZ([]float64{0.5, 0.6}, []float64{0.0, 1.0})
-	if len(zp) != 4 {
-		t.Fatalf("paramsAbsZ: got %d, want 4", len(zp))
+	if got := paramsAbsSep([]float64{0.5, 0.6}, []float64{0.0, 0.1}); !reflect.DeepEqual(got, wantSep) {
+		t.Errorf("paramsAbsSep = %+v, want %+v", got, wantSep)
 	}
-	// Spot-check a combination is present and fields routed correctly.
-	found := false
-	for _, p := range sp {
-		if p.abs == 0.6 && p.sep == 0.1 {
-			found = true
-		}
+	wantZ := []studyParams{
+		{abs: 0.5, z: 0.0}, {abs: 0.5, z: 1.0},
+		{abs: 0.6, z: 0.0}, {abs: 0.6, z: 1.0},
 	}
-	if !found {
-		t.Fatal("paramsAbsSep missing {abs:0.6, sep:0.1}")
+	if got := paramsAbsZ([]float64{0.5, 0.6}, []float64{0.0, 1.0}); !reflect.DeepEqual(got, wantZ) {
+		t.Errorf("paramsAbsZ = %+v, want %+v", got, wantZ)
+	}
+	// The grids are pure products, so an empty or single-element axis yields
+	// no combinations rather than a degenerate one.
+	if got := paramsAbsSep(nil, []float64{0.1}); len(got) != 0 {
+		t.Errorf("paramsAbsSep(nil, ...) = %+v, want empty", got)
+	}
+	if got := paramsAbsZ([]float64{0.5}, nil); len(got) != 0 {
+		t.Errorf("paramsAbsZ([...], nil) = %+v, want empty", got)
 	}
 }
 

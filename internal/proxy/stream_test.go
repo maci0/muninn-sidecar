@@ -36,19 +36,39 @@ func TestClampBytes(t *testing.T) {
 	}
 }
 
-// TestStreamCapKeepsValidUTF8 walks the text-accumulator cap end to end: a delta
-// large enough to overshoot maxTextAccum must leave the accumulated text valid
+// TestStreamCapKeepsValidUTF8 walks the text-accumulator cap end to end: deltas
+// whose total far exceeds maxTextAccum must leave the accumulated text valid
 // UTF-8, since a partial rune would be stored as a replacement character.
+//
+// The loop must actually reach the cap: a 7-rune, 21-byte delta needs
+// maxTextAccum/21 iterations to fill the accumulator, and the assertions below
+// require the cap to be saturated, so deleting the clamp fails the test instead
+// of leaving it green.
 func TestStreamCapKeepsValidUTF8(t *testing.T) {
+	const delta = "日本語テキスト" // 7 runes, 21 bytes, 3 bytes per rune
+	// Two more iterations than the cap strictly needs, so the delta that lands
+	// on the boundary is the one clamped mid-rune.
+	iters := maxTextAccum/len(delta) + 2
+
 	sc := &streamCapture{ctx: &captureCtx{}}
-	for i := 0; i < 64; i++ {
-		sc.processChunk([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"日本語テキスト\"}}\n"))
+	for i := 0; i < iters; i++ {
+		sc.processChunk([]byte(`data: {"type":"content_block_delta","delta":{"text":"` + delta + `"}}` + "\n"))
 	}
-	if !utf8.ValidString(sc.textAccum.String()) {
-		t.Fatal("accumulated text is not valid UTF-8")
+	got := sc.textAccum.String()
+	if !utf8.ValidString(got) {
+		t.Fatalf("accumulated %d bytes is not valid UTF-8", len(got))
 	}
-	if got := sc.textAccum.Len(); got > maxTextAccum {
-		t.Fatalf("accumulated %d bytes, cap is %d", got, maxTextAccum)
+	if len(got) > maxTextAccum {
+		t.Fatalf("accumulated %d bytes, cap is %d", len(got), maxTextAccum)
+	}
+	// The cap must be saturated, and the clamp may only shed the bytes of one
+	// partial trailing rune (3 bytes each here), never a whole delta.
+	if slack := maxTextAccum - len(got); slack > len(delta) {
+		t.Fatalf("accumulated %d bytes, %d short of the %d cap: the clamp never engaged",
+			len(got), slack, maxTextAccum)
+	}
+	if n := utf8.RuneCountInString(got); n != len(got)/len("日") {
+		t.Fatalf("accumulated %d runes from %d bytes: the cap split a multi-byte sequence", n, len(got))
 	}
 	if n := len(sc.toolNames); n != 0 {
 		t.Fatalf("collected %d tool names from text-only deltas", n)

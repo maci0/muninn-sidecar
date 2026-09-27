@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,7 +15,11 @@ import (
 // fakeClock is a manually advanced clock: every capture timestamp and duration
 // is a function of how far it has been advanced, so replaying the same request
 // sequence produces byte-identical exchanges.
+//
+// It is read from the upstream handler goroutine and advanced from the test
+// goroutine, so every access is under the mutex.
 type fakeClock struct {
+	mu  sync.Mutex
 	now time.Time
 }
 
@@ -22,11 +27,23 @@ func newFakeClock() *fakeClock {
 	return &fakeClock{now: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}
 }
 
-func (c *fakeClock) Now() time.Time { return c.now }
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
 
-func (c *fakeClock) Since(t time.Time) time.Duration { return c.now.Sub(t) }
+func (c *fakeClock) Since(t time.Time) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now.Sub(t)
+}
 
-func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
 
 func TestCaptureIsReplayableFromClock(t *testing.T) {
 	// The upstream advances the scripted clock while the request is in flight, so
@@ -51,7 +68,7 @@ func TestCaptureIsReplayableFromClock(t *testing.T) {
 	// the request is in flight.
 	run := func() (string, time.Duration) {
 		clock = newFakeClock()
-		base := clock.now
+		base := clock.Now()
 		rec := &recordStore{}
 		p, err := New(Config{
 			ListenAddr: "127.0.0.1:0",
@@ -85,7 +102,7 @@ func TestCaptureIsReplayableFromClock(t *testing.T) {
 			out.Write(b)
 			out.WriteByte('\n')
 		}
-		return out.String(), clock.now.Sub(base)
+		return out.String(), clock.Since(base)
 	}
 
 	first, firstElapsed := run()

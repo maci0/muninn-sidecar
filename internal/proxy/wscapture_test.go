@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -220,10 +221,19 @@ func TestRunWSParser(t *testing.T) {
 	}
 }
 
+// TestRunWSParserDebugLogs pins the wsDebug gate: with it on, the parser logs
+// one line per reassembled message carrying the direction, the decoded message
+// type and the byte count, and still delivers the message. Asserting only the
+// delivery (as a bare onMessage counter) would pass whether or not the logging
+// exists, so the log records are decoded and checked structurally.
 func TestRunWSParserDebugLogs(t *testing.T) {
-	// With wsDebug on, the parser logs each message's type but still delivers it.
 	defer func(prev bool) { wsDebug = prev }(wsDebug)
 	wsDebug = true
+
+	var logs bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prevLogger)
 
 	ch := make(chan []byte, 1)
 	ch <- wsBuildFrame(wsOpText, []byte(`{"type":"gw.message"}`), false, true, false)
@@ -233,6 +243,60 @@ func TestRunWSParserDebugLogs(t *testing.T) {
 	runWSParser("s->c", ch, false, func(_ string, _ []byte) { n++ })
 	if n != 1 {
 		t.Fatalf("expected one delivered message, got %d", n)
+	}
+
+	var found bool
+	for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec struct {
+			Msg   string `json:"msg"`
+			Dir   string `json:"dir"`
+			Type  string `json:"type"`
+			Bytes int    `json:"bytes"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line is not valid JSON: %v (%q)", err, line)
+		}
+		if rec.Msg != "ws message" {
+			continue
+		}
+		found = true
+		if rec.Dir != "s->c" {
+			t.Errorf("logged dir = %q, want %q", rec.Dir, "s->c")
+		}
+		if rec.Type != "gw.message" {
+			t.Errorf("logged type = %q, want %q", rec.Type, "gw.message")
+		}
+		if rec.Bytes != len(`{"type":"gw.message"}`) {
+			t.Errorf("logged bytes = %d, want %d", rec.Bytes, len(`{"type":"gw.message"}`))
+		}
+	}
+	if !found {
+		t.Fatalf("wsDebug is on but no %q record was logged; got:\n%s", "ws message", logs.String())
+	}
+}
+
+// TestRunWSParserDebugOff pins the other side of the gate: with wsDebug off the
+// parser must stay silent, so the flag reads the debug level and not merely
+// "something got logged".
+func TestRunWSParserDebugOff(t *testing.T) {
+	defer func(prev bool) { wsDebug = prev }(wsDebug)
+	wsDebug = false
+
+	var logs bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prevLogger)
+
+	ch := make(chan []byte, 1)
+	ch <- wsBuildFrame(wsOpText, []byte(`{"type":"gw.message"}`), false, true, false)
+	close(ch)
+
+	runWSParser("s->c", ch, false, func(_ string, _ []byte) {})
+	if s := logs.String(); strings.Contains(s, "ws message") {
+		t.Errorf("wsDebug is off but the parser logged: %s", s)
 	}
 }
 
@@ -298,6 +362,12 @@ func TestWSExchangeNoRequestNoStore(t *testing.T) {
 // oversized delta carried the accumulator past the cap by its full length; the
 // multi-byte delta here is the case that would also leave a partial rune, which
 // marshals as U+FFFD into stored memory.
+//
+// The assertions read the stored body, not ex.respText: response.completed
+// resets the accumulator, so reading it after the store would always see zero.
+// ValidString alone proves nothing here either, since json.Unmarshal repairs
+// invalid bytes to U+FFFD, so the rune count and the replacement characters
+// are what distinguish a clean clamp from a split rune.
 func TestWSExchangeDeltaCapClamped(t *testing.T) {
 	rec := &recordStore{}
 	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}, target: "t"}
@@ -310,9 +380,6 @@ func TestWSExchangeDeltaCapClamped(t *testing.T) {
 	}
 	ex.onServer("s->c", []byte(`{"type":"response.completed"}`))
 
-	if ex.respText.Len() > wsMaxRespText {
-		t.Fatalf("accumulated %d bytes, cap is %d", ex.respText.Len(), wsMaxRespText)
-	}
 	got := rec.all()
 	if len(got) != 1 {
 		t.Fatalf("expected 1 stored exchange, got %d", len(got))
@@ -323,8 +390,25 @@ func TestWSExchangeDeltaCapClamped(t *testing.T) {
 	if err := json.Unmarshal(got[0].RespBody, &body); err != nil {
 		t.Fatalf("stored response body is not valid JSON: %v", err)
 	}
-	if !utf8.ValidString(body.Content[0].Text) {
-		t.Errorf("cap split a multi-byte sequence: %q", body.Content[0].Text[len(body.Content[0].Text)-8:])
+	if len(body.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(body.Content))
+	}
+	text := body.Content[0].Text
+	// The clamp sheds only the trailing bytes that do not complete a rune.
+	want := wsMaxRespText - wsMaxRespText%3
+	if len(text) != want {
+		t.Fatalf("stored %d bytes, want %d (cap %d, %d bytes per rune)",
+			len(text), want, wsMaxRespText, len("日"))
+	}
+	if n := utf8.RuneCountInString(text); n != len(text)/3 {
+		t.Errorf("stored %d runes from %d bytes: the cap split a multi-byte sequence", n, len(text))
+	}
+	if n := strings.Count(text, "�"); n != 0 {
+		t.Errorf("stored %d U+FFFD replacement characters, want 0: %q", n, text[len(text)-8:])
+	}
+	// The cap truncates the tail; the head must survive intact.
+	if !strings.HasPrefix(big, text) {
+		t.Error("stored text is not a prefix of the deltas it was fed")
 	}
 }
 

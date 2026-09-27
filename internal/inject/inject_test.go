@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -18,15 +19,25 @@ import (
 )
 
 // fakeRecallResponse builds a JSON-RPC response with the given memories.
+//
+// vector_score is emitted only for memories that carry one, matching muninn's
+// wire behavior: a vault on a recall mode that does not return cosines sends
+// none, and normalizeRelevance then keeps the composite score. Dropping the
+// field unconditionally would force every Enrich test down the no-cosine
+// fallback branch and hide the cosine gate these tests claim to cover.
 func fakeRecallResponse(memories []memory) []byte {
 	items := make([]map[string]any, 0, len(memories))
 	for _, m := range memories {
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"id":      m.ID,
 			"concept": m.Concept,
 			"content": m.Content,
 			"score":   m.Score,
-		})
+		}
+		if m.VectorScore > 0 {
+			item["vector_score"] = m.VectorScore
+		}
+		items = append(items, item)
 	}
 	inner, _ := json.Marshal(map[string]any{"memories": items})
 	resp, _ := json.Marshal(map[string]any{
@@ -1197,34 +1208,106 @@ func TestWhereLeftOffNullText(t *testing.T) {
 	}
 }
 
+// TestParseRecallResponseFormats pins every recall payload shape parseRecallResponse
+// accepts, and the full field set each one carries. Checking only the first ID
+// would let a typo in any other JSON tag through, and the direct-array form was
+// reachable from no test or fuzz seed at all.
 func TestParseRecallResponseFormats(t *testing.T) {
-	t.Run("memories field", func(t *testing.T) {
-		resp := fakeRecallResponse([]memory{
-			{ID: "1", Concept: "test", Content: "content", Score: 0.8},
-		})
-		mems, err := parseRecallResponse(resp)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(mems) != 1 {
-			t.Fatalf("expected 1 memory, got %d", len(mems))
-		}
-		if mems[0].ID != "1" {
-			t.Error("expected ID 1")
-		}
-	})
-
-	t.Run("results field", func(t *testing.T) {
-		inner, _ := json.Marshal(map[string]any{
-			"results": []map[string]any{
-				{"id": "r1", "concept": "res", "content": "result content", "score": 0.7},
+	wrap := func(inner string) []byte {
+		resp, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": inner}},
 			},
+			"id": 1,
 		})
+		return resp
+	}
+
+	cases := []struct {
+		name  string
+		inner string
+		want  []memory
+	}{
+		{
+			name: "memories field",
+			inner: `{"memories":[{"id":"1","concept":"test","content":"content",` +
+				`"score":0.8,"vector_score":0.55,"state":"active","trust":"verified",` +
+				`"created_at":"2026-05-01T00:00:00Z"}]}`,
+			want: []memory{{
+				ID: "1", Concept: "test", Content: "content",
+				Score: 0.8, VectorScore: 0.55, State: "active", Trust: "verified",
+				CreatedAt: "2026-05-01T00:00:00Z",
+			}},
+		},
+		{
+			name:  "results field",
+			inner: `{"results":[{"id":"r1","concept":"res","content":"result content","score":0.7}]}`,
+			want: []memory{{
+				ID: "r1", Concept: "res", Content: "result content", Score: 0.7,
+			}},
+		},
+		{
+			name: "memories wins over results",
+			inner: `{"memories":[{"id":"m1","concept":"m","content":"mc","score":0.5}],` +
+				`"results":[{"id":"r1","concept":"r","content":"rc","score":0.9}]}`,
+			want: []memory{{
+				ID: "m1", Concept: "m", Content: "mc", Score: 0.5,
+			}},
+		},
+		{
+			// muninn versions that answer with a bare array: the struct decode
+			// fails and the direct-array branch takes over.
+			name: "direct array",
+			inner: `[{"id":"d1","concept":"dc","content":"dcontent","score":0.4,` +
+				`"vector_score":0.3,"state":"active","trust":"verified"}]`,
+			want: []memory{{
+				ID: "d1", Concept: "dc", Content: "dcontent",
+				Score: 0.4, VectorScore: 0.3, State: "active", Trust: "verified",
+			}},
+		},
+		{
+			name:  "empty object",
+			inner: `{}`,
+			want:  nil,
+		},
+		{
+			name:  "empty memories array",
+			inner: `{"memories":[]}`,
+			want:  nil,
+		},
+		{
+			// Neither a struct nor an array: an error, not an empty result.
+			name:  "malformed",
+			inner: `{not json`,
+			want:  nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mems, err := parseRecallResponse(wrap(tc.inner))
+			if tc.name == "malformed" {
+				if err == nil {
+					t.Fatalf("expected a parse error, got %d memories", len(mems))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(mems, tc.want) {
+				t.Errorf("parseRecallResponse = %+v, want %+v", mems, tc.want)
+			}
+		})
+	}
+
+	t.Run("non-text content blocks are skipped", func(t *testing.T) {
 		resp, _ := json.Marshal(map[string]any{
 			"jsonrpc": "2.0",
 			"result": map[string]any{
 				"content": []map[string]any{
-					{"type": "text", "text": string(inner)},
+					{"type": "image", "text": `{"memories":[{"id":"skip"}]}`},
+					{"type": "text", "text": `{"memories":[{"id":"keep","score":0.2}]}`},
 				},
 			},
 			"id": 1,
@@ -1233,11 +1316,10 @@ func TestParseRecallResponseFormats(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(mems) != 1 || mems[0].ID != "r1" {
-			t.Error("expected result with ID r1")
+		if len(mems) != 1 || mems[0].ID != "keep" {
+			t.Errorf("expected the text block's memory, got %+v", mems)
 		}
 	})
-
 }
 
 // TestWindowPreservesInjectMetadata locks in a non-obvious correctness property:
@@ -1276,11 +1358,13 @@ func TestSessionMemoryWindow(t *testing.T) {
 	// Simulate 3 turns where different memories are recalled each time.
 	// Turn 1: recall A. Turn 2: recall B (A should persist via decay).
 	// Turn 3: recall B again (A should still be present but decayed further).
-	turn := 0
+	// The recall handler runs on a server goroutine, so the turn counter is
+	// atomic: an Enrich could otherwise overlap a later call and the switch
+	// below would read a torn value.
+	var turn atomic.Int64
 	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
-		turn++
 		var mems []memory
-		switch turn {
+		switch turn.Add(1) {
 		case 1:
 			mems = []memory{{ID: "a", Concept: "auth rules", Content: "Use JWT", Score: 0.90}}
 		case 2:
@@ -1453,11 +1537,10 @@ func TestSemanticReuseTrigger(t *testing.T) {
 func TestSessionMemoryEviction(t *testing.T) {
 	// A memory with score 0.72 (above the 0.6 inject threshold) at decayFactor=0.7
 	// drops below decayFloor=0.2 after a few turns: 0.72 * 0.7^4 = 0.17.
-	turn := 0
+	var turn atomic.Int64
 	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
-		turn++
 		var mems []memory
-		if turn == 1 {
+		if turn.Add(1) == 1 {
 			mems = []memory{{ID: "a", Concept: "old context", Content: "stale info", Score: 0.72}}
 		}
 		// Turns 2+ return nothing — memory A should decay and eventually be evicted.

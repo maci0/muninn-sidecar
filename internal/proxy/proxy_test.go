@@ -313,7 +313,11 @@ func TestCapturePathStreamingSSE(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			t.Fatal("expected flusher")
+			// t.Fatal on a non-test goroutine calls runtime.Goexit, which
+			// kills the handler without failing the test; report instead and
+			// let the assertion below on the response do the failing.
+			t.Errorf("expected flusher")
+			return
 		}
 		w.WriteHeader(200)
 
@@ -1376,7 +1380,8 @@ func TestStreamCaptureAccumulatesText(t *testing.T) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				flusher, ok := w.(http.Flusher)
 				if !ok {
-					t.Fatal("expected flusher")
+					t.Errorf("expected flusher")
+					return
 				}
 				w.WriteHeader(200)
 				w.Write([]byte(stream.String()))

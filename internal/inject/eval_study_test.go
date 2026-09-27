@@ -2,6 +2,7 @@ package inject
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 )
 
@@ -71,8 +72,30 @@ func TestMethodStudySeeds(t *testing.T) {
 	)
 	rep := RunMethodStudySeeds([]int64{1, 2, 3}, n, k)
 
-	if want := len(candidateMethods()); len(rep.Methods) != want {
-		t.Fatalf("got %d methods, want %d", len(rep.Methods), want)
+	// The study must report exactly this set of methods. Comparing the count
+	// against len(candidateMethods()) would stay equal if a method were dropped
+	// from both sides, so the names are spelled out here instead.
+	want := []string{
+		"fixed-topk", "absolute", "relative-only", "absfloor+relative",
+		"absolute+sepgate", "absolute+zgate", "absfloor+gapcut", "absfloor+margin",
+		"absolute+capN",
+	}
+	got := make(map[string]bool, len(rep.Methods))
+	for _, m := range rep.Methods {
+		got[m.Name] = true
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("method %q missing from the study", name)
+		}
+	}
+	for _, m := range rep.Methods {
+		if !slices.Contains(want, m.Name) {
+			t.Errorf("unexpected method %q in the study", m.Name)
+		}
+	}
+	if len(rep.Methods) != len(want) {
+		t.Errorf("got %d methods, want %d", len(rep.Methods), len(want))
 	}
 	if rep.Best != rep.Methods[0].Name {
 		t.Errorf("Best %q != top-ranked %q", rep.Best, rep.Methods[0].Name)
