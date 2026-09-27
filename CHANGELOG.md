@@ -24,6 +24,13 @@ minor bump is safe.
   being called. The runner image ships 0.9.0, which reports the same false
   positive against every command in that function body as SC2317, so the `Lint`
   job failed on a clean script. Both codes are now disabled on that function.
+- **The pinned ruff and yamllint install through pipx.** `make lint-ci` asked
+  pipx for `ruff@0.16.4` and `yamllint@1.38.0`. That `@` form is uv shorthand:
+  pipx only accepts it when its uv backend is selected, and `uv` is not on the
+  runner, so pipx fell back to pip, which read `ruff@0.16.4` as pip's
+  direct-reference syntax (`name @ url`) and failed with "Invalid URL '0.16.4':
+  No scheme supplied". Both pins now use a PEP 440 `==` specifier, the one form
+  the uv and pip backends both install.
 
 ## [0.5.0] — 2026-09-27
 

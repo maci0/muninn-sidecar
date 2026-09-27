@@ -417,10 +417,16 @@ lint: lint-go lint-non-go
 # ci.yml is what made `make lint` and CI able to disagree about which ruff
 # release the rule set is written against. Nothing is installed onto the
 # runner: ruff and yamllint go through pipx at the versions above.
+#
+# `==`, not `@`. `pipx run ruff@0.16.4` is uv shorthand: pipx only understands
+# it when its uv backend is selected, and `uv` is not on the runner, so pipx
+# falls back to pip, which reads `ruff@0.16.4` as pip's direct-reference syntax
+# (name @ url) and dies on "Invalid URL '0.16.4': No scheme supplied". A PEP 440
+# specifier is the one form both backends install.
 lint-ci:
 	@$(MAKE) --no-print-directory lint-non-go \
-	  RUFF="pipx run ruff@$(RUFF_VERSION)" \
-	  YAMLLINT="pipx run yamllint@$(YAMLLINT_VERSION)"
+	  RUFF="pipx run ruff==$(RUFF_VERSION)" \
+	  YAMLLINT="pipx run yamllint==$(YAMLLINT_VERSION)"
 
 # `make lint` already refuses to run without these three, so this gate is the
 # one that names every missing tool in a single message, which is what
