@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,9 +14,9 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 )
 
-func fakeMuninn(t *testing.T) *httptest.Server {
+func fakeMuninn() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := readBody(r)
+		body, _ := io.ReadAll(r.Body)
 		var rpc struct {
 			Params struct {
 				Name string `json:"name"`
@@ -34,20 +35,8 @@ func fakeMuninn(t *testing.T) *httptest.Server {
 	}))
 }
 
-func readBody(r *http.Request) ([]byte, error) {
-	b := make([]byte, 0)
-	buf := make([]byte, 512)
-	for {
-		n, err := r.Body.Read(buf)
-		b = append(b, buf[:n]...)
-		if err != nil {
-			return b, nil
-		}
-	}
-}
-
 func TestSeedCorpusAndRunProbes(t *testing.T) {
-	srv := fakeMuninn(t)
+	srv := fakeMuninn()
 	defer srv.Close()
 	c := mcpclient.New(srv.URL, "", 2*time.Second)
 
@@ -89,7 +78,7 @@ func TestPrintersSmoke(t *testing.T) {
 }
 
 func TestRunBench(t *testing.T) {
-	srv := fakeMuninn(t)
+	srv := fakeMuninn()
 	defer srv.Close()
 	old := os.Stdout
 	w, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
@@ -108,7 +97,7 @@ func TestRunBench(t *testing.T) {
 // bearer token; a keyless call against an authenticated endpoint would fail
 // open and silently measure the baseline.
 func TestRunBenchRewriteKey(t *testing.T) {
-	srv := fakeMuninn(t)
+	srv := fakeMuninn()
 	defer srv.Close()
 	var gotAuth string
 	rw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +124,7 @@ func TestRunBenchRewriteKey(t *testing.T) {
 }
 
 func TestRecallMerged(t *testing.T) {
-	srv := fakeMuninn(t)
+	srv := fakeMuninn()
 	defer srv.Close()
 	c := mcpclient.New(srv.URL, "", 2*time.Second)
 	// single

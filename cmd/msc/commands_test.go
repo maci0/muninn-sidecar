@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -85,6 +88,139 @@ func TestRunDryRun(t *testing.T) {
 	}
 }
 
+// The dry-run preview is only useful if it reports what the child would really
+// get. printDryRun builds its env and args from the same helpers Exec/ExecMITM
+// use, so pin that agreement here: a preview that drifted from the child would
+// still exit 0 and print a confident, wrong answer.
+func TestPrintDryRunPreviewsTheChildsOverrides(t *testing.T) {
+	const upstream = "https://api.anthropic.com"
+	agent := agents.Agent{
+		Command:      "claude",
+		EnvKey:       "ANTHROPIC_BASE_URL",
+		ExtraEnvKeys: []string{"ANTHROPIC_API_URL"},
+		// An agent that reads its base URL from argv, not the environment.
+		ProxyArgs: []string{"--base-url", "{proxy}"},
+	}
+
+	// ArgsRouted keeps EnvKey out of the child env; asserting on the raw
+	// Agent{EnvKey: ...} literal above would not exercise that branch.
+	agent.ArgsRouted = true
+
+	out := captureStdout(t, func() {
+		if rc := printDryRun(&opts{}, "claude", agent, upstream, "http://127.0.0.1:9/mcp", "vault", nil, ""); rc != 0 {
+			t.Errorf("printDryRun rc = %d, want 0", rc)
+		}
+	})
+
+	// Every key the child would receive must appear, with the real value.
+	for k, want := range agent.EnvOverrides("http://127.0.0.1:<port>", upstream) {
+		if !strings.Contains(out, k+"="+want) {
+			t.Errorf("preview missing child env %s=%s:\n%s", k, want, out)
+		}
+	}
+	// {proxy} must be substituted, not printed literally.
+	if strings.Contains(out, "{proxy}") {
+		t.Errorf("preview left {proxy} unsubstituted:\n%s", out)
+	}
+	if !strings.Contains(out, "http://127.0.0.1:<port>") {
+		t.Errorf("preview lost the argv override:\n%s", out)
+	}
+	if strings.Contains(out, agent.EnvKey+"=") {
+		t.Errorf("ArgsRouted agent must not show %s in the child env:\n%s", agent.EnvKey, out)
+	}
+	// --force skips the health probe, so no "unreachable" claim may appear.
+	if strings.Contains(out, "unreachable") {
+		t.Errorf("--force preview must report the DB unchecked, not unreachable:\n%s", out)
+	}
+}
+
+// dry-run --json is the machine-readable half of the same contract. Assert the
+// decoded fields, not the serialized text, so whitespace and field order stay
+// free to change.
+func TestPrintDryRunJSONShape(t *testing.T) {
+	const upstream = "https://api.anthropic.com"
+	agent := agents.Agent{Command: "claude", EnvKey: "ANTHROPIC_BASE_URL", ArgsRouted: true}
+	o := &opts{asJSON: true, force: true, injectBudget: 900, minScore: 0.5, noAutoCalibrate: true, recallMode: "hybrid"}
+
+	raw := captureStdout(t, func() {
+		if rc := printDryRun(o, "claude", agent, upstream, "http://127.0.0.1:9/mcp", "vault", nil, ""); rc != 0 {
+			t.Errorf("printDryRun rc = %d, want 0", rc)
+		}
+	})
+
+	var got struct {
+		Agent           string            `json:"agent"`
+		Binary          string            `json:"binary"`
+		Upstream        string            `json:"upstream"`
+		Vault           string            `json:"vault"`
+		MuninnURL       string            `json:"muninn_url"`
+		MuninnStatus    string            `json:"muninn_status"`
+		Env             map[string]string `json:"env"`
+		ProxyArgs       []string          `json:"proxy_args"`
+		Inject          bool              `json:"inject"`
+		InjectBudget    int               `json:"inject_budget"`
+		InjectMinScore  float64           `json:"inject_min_score"`
+		InjectRecall    string            `json:"inject_recall_mode"`
+		InjectCalibrate string            `json:"inject_calibration"`
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("dry-run --json must emit one JSON object: %v\n%s", err, raw)
+	}
+
+	if got.Agent != "claude" || got.Upstream != upstream || got.Vault != "vault" {
+		t.Errorf("identity fields = (%q, %q, %q), want (claude, %s, vault)", got.Agent, got.Upstream, got.Vault, upstream)
+	}
+	if got.MuninnURL != "http://127.0.0.1:9/mcp" {
+		t.Errorf("muninn_url = %q", got.MuninnURL)
+	}
+	// --force short-circuits the health check; "unreachable" would be a false claim.
+	if got.MuninnStatus != "unchecked" {
+		t.Errorf("muninn_status = %q, want %q under --force", got.MuninnStatus, "unchecked")
+	}
+	if !got.Inject {
+		t.Error("inject must default to enabled")
+	}
+	if got.InjectBudget != 900 || got.InjectMinScore != 0.5 || got.InjectRecall != "hybrid" {
+		t.Errorf("inject knobs = (%d, %.2f, %q), want (900, 0.50, hybrid)", got.InjectBudget, got.InjectMinScore, got.InjectRecall)
+	}
+	if got.InjectCalibrate != "fixed" {
+		t.Errorf("inject_calibration = %q, want %q with --no-auto-calibrate", got.InjectCalibrate, "fixed")
+	}
+	if want := agent.EnvOverrides("http://127.0.0.1:<port>", upstream); !maps.Equal(got.Env, want) {
+		t.Errorf("env = %v, want %v", got.Env, want)
+	}
+	if len(got.ProxyArgs) != 0 {
+		t.Errorf("args-routed agent without ProxyArgs must report none, got %v", got.ProxyArgs)
+	}
+}
+
+// A health failure is the case --force exists to bypass, so the preview must
+// still say so rather than silently reporting a reachable database.
+func TestPrintDryRunJSONReportsUnreachable(t *testing.T) {
+	agent := agents.Agent{Command: "claude", EnvKey: "ANTHROPIC_BASE_URL"}
+	raw := captureStdout(t, func() {
+		printDryRun(&opts{asJSON: true, noInject: true}, "claude", agent, "https://x", "http://127.0.0.1:1/mcp", "v", errors.New("dial refused"), "")
+	})
+	var got struct {
+		MuninnStatus string `json:"muninn_status"`
+		MuninnError  string `json:"muninn_error"`
+		Inject       bool   `json:"inject"`
+		InjectBudget int    `json:"inject_budget"` // omitted when injection is off
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("dry-run --json must emit one JSON object: %v\n%s", err, raw)
+	}
+	if got.MuninnStatus != "unreachable" || got.MuninnError != "dial refused" {
+		t.Errorf("unreachable DB = (%q, %q), want (unreachable, dial refused)", got.MuninnStatus, got.MuninnError)
+	}
+	if got.Inject {
+		t.Error("--no-inject must be reported as inject=false")
+	}
+	if got.InjectBudget != 0 {
+		t.Errorf("inject_budget must be omitted when injection is off, got %d", got.InjectBudget)
+	}
+}
+
 func TestRunCA(t *testing.T) {
 	// Pin a throwaway config home so the CA is created under it.
 	tmp := t.TempDir()
@@ -125,6 +261,130 @@ func TestVaultStats(t *testing.T) {
 	// Unreachable endpoint -> error (caller omits stats, doesn't fail).
 	if _, _, err := vaultStats("http://127.0.0.1:1/mcp", "", "v"); err == nil {
 		t.Error("expected error against unreachable endpoint")
+	}
+}
+
+// statusMCP is a MuninnDB whose health endpoint answers 200 and whose
+// muninn_status reports the given memory count, so cmdStatus's reachable path
+// and its best-effort vault stats can be exercised end to end.
+func statusMCP(t *testing.T, total int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		body, _ := json.Marshal(map[string]any{"vault": "v", "total_memories": total, "health": "good"})
+		text, _ := json.Marshal(string(body))
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":` + string(text) + `}]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// `msc status` is the command an operator runs when injection is not appearing,
+// so the reachable path and its vault diagnostics are the point of it. Only the
+// unreachable exit code was pinned before; the populated, empty, and JSON
+// outputs were exercised by nothing.
+func TestCmdStatusReachable(t *testing.T) {
+	srv := statusMCP(t, 47)
+	t.Setenv("MUNINN_MCP_URL", srv.URL+"/mcp")
+	t.Setenv("MUNINN_TOKEN", "x")
+
+	var rc int
+	out := captureStdout(t, func() { rc = cmdStatus(&opts{}) })
+	if rc != 0 {
+		t.Errorf("reachable status rc = %d, want 0", rc)
+	}
+	if !strings.Contains(out, "reachable") {
+		t.Errorf("status must report the DB as reachable:\n%s", out)
+	}
+	if !strings.Contains(out, "47") {
+		t.Errorf("status must report the memory count:\n%s", out)
+	}
+	// The empty-vault hint must not fire when memories exist.
+	if strings.Contains(out, "vault is empty") {
+		t.Errorf("populated vault must not print the empty hint:\n%s", out)
+	}
+}
+
+// A reachable but empty vault is the common "nothing gets injected" cause, so
+// the warning is the reason to run this command at all.
+func TestCmdStatusEmptyVaultWarns(t *testing.T) {
+	srv := statusMCP(t, 0)
+	t.Setenv("MUNINN_MCP_URL", srv.URL+"/mcp")
+	t.Setenv("MUNINN_TOKEN", "x")
+
+	var rc int
+	out := captureStdout(t, func() { rc = cmdStatus(&opts{}) })
+	if rc != 0 {
+		t.Errorf("empty vault is still reachable, rc = %d, want 0", rc)
+	}
+	if !strings.Contains(out, "vault is empty") {
+		t.Errorf("zero memories must warn that nothing will be injected:\n%s", out)
+	}
+}
+
+// The JSON form is what scripts read. Decode the fields rather than matching
+// the printed text, so key order and indentation stay free to change.
+func TestCmdStatusJSON(t *testing.T) {
+	srv := statusMCP(t, 47)
+	t.Setenv("MUNINN_MCP_URL", srv.URL+"/mcp")
+	t.Setenv("MUNINN_TOKEN", "x")
+
+	var rc int
+	raw := captureStdout(t, func() { rc = cmdStatus(&opts{asJSON: true}) })
+	if rc != 0 {
+		t.Errorf("status --json rc = %d, want 0", rc)
+	}
+	var got struct {
+		MCPURL      string `json:"mcp_url"`
+		Vault       string `json:"vault"`
+		Status      string `json:"status"`
+		Memories    *int   `json:"memories"`
+		VaultHealth string `json:"vault_health"`
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("status --json must emit one JSON object: %v\n%s", err, raw)
+	}
+	if got.Status != "reachable" {
+		t.Errorf("status = %q, want reachable", got.Status)
+	}
+	if got.MCPURL != srv.URL+"/mcp" {
+		t.Errorf("mcp_url = %q, want %q", got.MCPURL, srv.URL+"/mcp")
+	}
+	if got.Memories == nil || *got.Memories != 47 {
+		t.Errorf("memories = %v, want 47", got.Memories)
+	}
+	if got.VaultHealth != "good" {
+		t.Errorf("vault_health = %q, want good", got.VaultHealth)
+	}
+}
+
+// Unreachable is the failure scripts must be able to detect: nonzero exit, an
+// explicit status, and no fabricated memory count.
+func TestCmdStatusJSONUnreachable(t *testing.T) {
+	t.Setenv("MUNINN_MCP_URL", "http://127.0.0.1:1/mcp")
+	t.Setenv("MUNINN_TOKEN", "x")
+
+	var rc int
+	raw := captureStdout(t, func() { rc = cmdStatus(&opts{asJSON: true}) })
+	if rc != 1 {
+		t.Errorf("unreachable status --json rc = %d, want 1", rc)
+	}
+	var got struct {
+		Status   string          `json:"status"`
+		Error    string          `json:"error"`
+		Memories json.RawMessage `json:"memories"`
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("status --json must emit one JSON object: %v\n%s", err, raw)
+	}
+	if got.Status != "unreachable" {
+		t.Errorf("status = %q, want unreachable", got.Status)
+	}
+	if got.Error == "" {
+		t.Error("unreachable status must carry the probe error, not an empty string")
+	}
+	if got.Memories != nil {
+		t.Errorf("no stats were fetched, memories must be absent, got %s", got.Memories)
 	}
 }
 

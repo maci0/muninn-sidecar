@@ -42,6 +42,26 @@ func TestMITMCADir(t *testing.T) {
 	}
 }
 
+// The failure path is the untested half of mitmCADir, and it decides where a
+// TLS-MITM private key would be written. With no config dir and no home there
+// is no safe location, so the call must fail loudly rather than pick one.
+func TestMITMCADirWithoutConfigDirOrHome(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+	dir, err := mitmCADir()
+	if err == nil {
+		t.Fatalf("mitmCADir must fail with neither a config dir nor a home, got %q", dir)
+	}
+	if dir != "" {
+		t.Errorf("failed lookup must not return a path, got %q", dir)
+	}
+	// The message has to say the CA directory could not be located, so the
+	// operator knows it is an environment problem and not a bad flag.
+	if !strings.Contains(err.Error(), "config directory") {
+		t.Errorf("error must name the config-directory lookup, got %v", err)
+	}
+}
+
 // requireProc skips the test on platforms without a /proc filesystem, where
 // childProcs returns nothing and signal forwarding falls back to the agent
 // process handle.
