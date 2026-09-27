@@ -1,0 +1,10 @@
+version: 2
+
+updates:
+  # ci.yml pins third-party actions by tag (actions/checkout, actions/setup-go).
+  # Nothing in the tree would notice a moving tag going bad, so keep the version
+  # bumps arriving as pull requests a maintainer can review.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

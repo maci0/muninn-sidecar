@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+# One place for every pinned tool version, shared by the steps that use it.
+env:
+  RUFF_VERSION: "0.16.4"
+
 # Cancel superseded runs for the same branch/PR — a new push makes the
 # in-flight run obsolete, so don't burn a runner finishing it.
 concurrency:
@@ -34,37 +38,21 @@ jobs:
           cache: false  # no third-party deps / no go.sum to cache
 
       - name: Tidy
-        # Verify `go mod tidy` is a no-op. Uses `git status --porcelain` rather
-        # than `git diff go.mod go.sum` because this module has no dependencies and
-        # thus no go.sum — `git diff` errors on the missing path, while status
-        # handles an absent file and still catches a newly-created (untracked) one.
-        run: |
-          go mod tidy
-          if [ -n "$(git status --porcelain go.mod go.sum)" ]; then
-            echo "::error::go mod tidy changed go.mod/go.sum — commit the result"
-            git status --porcelain go.mod go.sum
-            git diff go.mod
-            exit 1
-          fi
+        # `make tidy-check` is the single copy of this logic, so CI and a
+        # contributor's `make check` cannot drift apart.
+        run: make tidy-check
 
       - name: Format
-        run: |
-          unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            echo "::error::gofmt found unformatted files — run 'make fmt'"
-            echo "$unformatted"
-            exit 1
-          fi
+        run: make fmt-check
 
       - name: Vet
         run: go vet ./...
 
       - name: Staticcheck
+        # Installed through the Makefile target, which owns the module path and
+        # the version choice, so the local and CI linters are the same one.
         run: |
-          # @latest: the pinned v0.5.1 no longer compiles against current Go
-          # toolchains (stale x/tools). A linter tracking the toolchain is the
-          # right call here over a pin that breaks the build.
-          go install honnef.co/go/tools/cmd/staticcheck@latest
+          make tools-staticcheck
           staticcheck ./...
 
       - name: Test
@@ -82,17 +70,18 @@ jobs:
 
       # Non-Go sources are held to the same bar as the Go tree: the Python
       # dataset helper, the shell smoke script, and this workflow's own YAML.
-      - uses: astral-sh/ruff-action@v3
-        with:
-          version: "0.16.4"
+      # ruff runs through pipx (ephemeral, nothing installed on the runner),
+      # the same way yamllint does below and the same invocations `make lint`
+      # uses, so the pin is stated once for both steps.
+      - name: Ruff lint
+        run: pipx run ruff@"$RUFF_VERSION" check scripts/
 
       - name: Ruff format
-        # The action above only lints. `make fmt` rewrites scripts/ with
+        # Lint alone is not enough: `make fmt` rewrites scripts/ with
         # `ruff format` and `make lint` checks the result, so without this step
         # formatting drift passes CI and turns the contributor's next
-        # `make check` red. Same version pin as the action, same pipx-ephemeral
-        # pattern as yamllint below.
-        run: pipx run ruff@0.16.4 format --check scripts/
+        # `make check` red.
+        run: pipx run ruff@"$RUFF_VERSION" format --check scripts/
 
       - name: Shellcheck
         run: shellcheck test-live.sh
@@ -213,8 +202,9 @@ jobs:
 
       # Scan reachable code against the Go vulnerability DB. The module has no
       # third-party dependencies, so this primarily catches stdlib CVEs tied to
-      # the toolchain version — and guards future dependencies.
+      # the toolchain version — and guards future dependencies. The install
+      # goes through the Makefile so the module path and version live there.
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          make tools-govulncheck
           govulncheck ./...

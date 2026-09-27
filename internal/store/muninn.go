@@ -516,10 +516,7 @@ func retryable(err error) bool {
 		return false
 	}
 	var re *mcpclient.RPCError
-	if errors.As(err, &re) {
-		return false
-	}
-	return true
+	return !errors.As(err, &re)
 }
 
 func buildTags(ex *CapturedExchange) []string {

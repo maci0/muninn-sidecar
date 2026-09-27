@@ -14,8 +14,8 @@ LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DA
 # COMMIT/DATE ldflags above and adds a dirty-tree flag on top.
 BUILDFLAGS = -trimpath -buildvcs=false
 
-.PHONY: help tools check build install test test-fast cover lint vuln fmt fmt-check tidy \
-	tidy-check clean eval eval-models fuzz bench
+.PHONY: help tools tools-staticcheck tools-govulncheck check build install test test-fast \
+	cover lint vuln fmt fmt-check tidy tidy-check clean eval eval-models fuzz bench
 
 # Packages/tests for the `test` target. PKG=./internal/redact narrows the
 # edit-test loop to the package being edited; RUN='^TestFoo$' narrows it to one
@@ -23,6 +23,10 @@ BUILDFLAGS = -trimpath -buildvcs=false
 PKG ?= ./...
 RUN ?=
 
+# @latest, not a pin: staticcheck v0.5.1 no longer compiles against current Go
+# toolchains (stale x/tools), and a linter that does not build is worse than
+# one that tracks the toolchain. govulncheck follows Go releases, so the same
+# argument applies. Override to reproduce a specific release locally.
 STATICCHECK_VERSION ?= latest
 GOVULNCHECK_VERSION ?= latest
 STATICCHECK_PKG = honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
@@ -31,6 +35,8 @@ GOVULNCHECK_PKG = golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 help:
 	@echo 'dev targets:'
 	@echo '  make tools        go install the two CI linters (staticcheck, govulncheck) into GOBIN'
+	@echo '  make tools-staticcheck   just the staticcheck install (what the CI test job runs)'
+	@echo '  make tools-govulncheck   just the govulncheck install (what the CI vuln job runs)'
 	@echo '  make check        everything CI runs locally: tidy-check fmt-check vet lint test build'
 	@echo '  make test         go test -race -count=1 $(PKG)   (override PKG=... or RUN='"'"'^TestFoo$$'"'"')'
 	@echo '  make test-fast    same without -race, for a quicker loop'
@@ -52,11 +58,16 @@ help:
 	@echo '  go install $(GOVULNCHECK_PKG)'
 
 # `go install` puts the linters in $(go env GOBIN): no sudo, no system packages,
-# and the same install CI does.
-tools:
-	go install $(STATICCHECK_PKG)
-	go install $(GOVULNCHECK_PKG)
+# and the same install CI does. Split per tool so a job that needs one linter
+# does not pay to build the other.
+tools: tools-staticcheck tools-govulncheck
 	@echo "installed into $$(go env GOBIN || echo $$(go env GOPATH)/bin); that directory must be on PATH"
+
+tools-staticcheck:
+	go install $(STATICCHECK_PKG)
+
+tools-govulncheck:
+	go install $(GOVULNCHECK_PKG)
 
 # The full local mirror of the CI `test` job, in CI's order. Run this before
 # pushing: anything it misses is a red CI run.
@@ -64,11 +75,17 @@ check: tidy-check fmt-check lint test
 	go build -o /dev/null $(BUILDFLAGS) ./...   # all binaries, matching CI's build step
 
 # CI runs `go mod tidy` and fails if it changes anything, so a stale go.mod
-# only surfaces after a push. Same check, same message, locally.
+# only surfaces after a push. Same check, same message, locally: the workflow
+# calls this target rather than keeping a second copy of the logic. Under
+# GitHub Actions each failure also emits an annotation, which lands on the run
+# summary instead of scrolling past in the step log.
 tidy-check:
 	go mod tidy
 	@if [ -n "$$(git status --porcelain go.mod go.sum)" ]; then \
 	  echo "go mod tidy changed go.mod/go.sum — commit the result" >&2; \
+	  if [ "$$GITHUB_ACTIONS" = "true" ]; then \
+	    echo "::error::go mod tidy changed go.mod/go.sum — commit the result"; \
+	  fi; \
 	  git status --porcelain go.mod go.sum; \
 	  git diff go.mod; \
 	  exit 1; \
@@ -149,10 +166,22 @@ fmt:
 	gofmt -l -w .
 	@if command -v ruff >/dev/null 2>&1; then ruff format scripts/; else echo "ruff not installed, skipping"; fi
 
+# A file gofmt cannot parse makes `gofmt -l` exit non-zero with no stdout, so a
+# bare `unformatted="$(gofmt -l .)"` would find nothing and report the tree
+# clean. Check the command's status, not just its output.
 fmt-check:
-	@unformatted="$$(gofmt -l .)"; \
+	@unformatted="$$(gofmt -l .)" || { \
+	  echo "gofmt could not parse the tree (see the syntax error above)" >&2; \
+	  if [ "$$GITHUB_ACTIONS" = "true" ]; then \
+	    echo "::error::gofmt could not parse the tree"; \
+	  fi; \
+	  exit 1; \
+	}; \
 	if [ -n "$$unformatted" ]; then \
 	  echo "gofmt found unformatted files, run 'make fmt'" >&2; \
+	  if [ "$$GITHUB_ACTIONS" = "true" ]; then \
+	    echo "::error::gofmt found unformatted files — run 'make fmt'"; \
+	  fi; \
 	  echo "$$unformatted" >&2; \
 	  exit 1; \
 	fi

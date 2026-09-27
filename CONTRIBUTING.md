@@ -14,7 +14,9 @@ quality bar so a change lands cleanly.
   ```
 
   Pin versions with `make tools STATICCHECK_VERSION=v0.6.0
-  GOVULNCHECK_VERSION=latest` if you need to match a specific linter release.
+  GOVULNCHECK_VERSION=latest` if you need to match a specific linter release;
+  `make tools-staticcheck` and `make tools-govulncheck` install just one of
+  them, which is what each CI job does.
 
 `make help` lists every target. There are no other system dependencies: no
 database, no C toolchain, no services to start for a build or test run.
