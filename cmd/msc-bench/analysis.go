@@ -1,6 +1,9 @@
 package main
 
-import "hash/fnv"
+import (
+	"hash/fnv"
+	"math"
+)
 
 // --- analysis ---
 
@@ -210,7 +213,7 @@ func topConcept(mems []recalledMemory, field func(recalledMemory) float64) (stri
 func frange(lo, hi, step float64) []float64 {
 	var out []float64
 	for v := lo; v <= hi+1e-9; v += step {
-		out = append(out, float64(int(v*1000+0.5))/1000)
+		out = append(out, math.Round(v*1000)/1000)
 	}
 	return out
 }

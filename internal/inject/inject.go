@@ -106,6 +106,17 @@ const maxWhereLeftOffLabelRunes = 200
 // free-form fallback and leaves the budget for recalled memories.
 const maxGuideRunes = 2000
 
+// maxRecallFallbackTurns is the recency window ExtractRecentContext folds into
+// the query when a request has no single user turn to search with. It only
+// runs on that fallback path, so it trades recall breadth for a bounded query
+// like maxQueryRunes does.
+const maxRecallFallbackTurns = 3
+
+// maxQueryRunes caps the query sent to MuninnDB. 2000 runes balances recall
+// quality against MCP call overhead; longer queries provide diminishing
+// returns for semantic search.
+const maxQueryRunes = 2000
+
 // intentCacheTTL bounds how long a recall result (or a recall miss) may stand in
 // for a fresh query. The sidecar writes memories into the same vault
 // continuously, including ones that answer a question that recalled nothing
@@ -336,7 +347,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	// extractor only when no single user turn is found (some formats).
 	query := apiformat.StripSystemReminders(apiformat.ExtractUserQuery(doc, format))
 	if query == "" {
-		query = apiformat.StripSystemReminders(apiformat.ExtractRecentContext(doc, format, 3))
+		query = apiformat.StripSystemReminders(apiformat.ExtractRecentContext(doc, format, maxRecallFallbackTurns))
 	}
 	if query == "" {
 		slog.Debug("inject: no user query found", reqid.Field, reqid.From(ctx), "format", format)
@@ -356,9 +367,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 
 	slog.Debug("inject: recalling", reqid.Field, reqid.From(ctx), "format", format, "query_len", len(query))
 
-	// 2000 runes balances recall quality against MCP call overhead; longer
-	// queries provide diminishing returns for semantic search.
-	query = apiformat.TruncateQuery(query, 2000)
+	query = apiformat.TruncateQuery(query, maxQueryRunes)
 
 	// Decide *whether to ask* MuninnDB. In a tool-use chain the agent resends the
 	// same user message with new tool results every round; the user's intent
@@ -403,7 +412,6 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 		}
 		merged = nil
 	default:
-		// Recall from MuninnDB with timeout.
 		recallCtx, cancel := context.WithTimeout(ctx, inj.timeout)
 		defer cancel()
 
@@ -463,7 +471,6 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 		return body, 0
 	}
 
-	// Format context block within token budget.
 	block, tokens, droppedByBudget := formatContextBlock(merged, inj.budget)
 	if droppedByBudget > 0 {
 		// The gate passed more memories than the budget fits, so the lowest-scored
