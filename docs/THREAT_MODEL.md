@@ -21,7 +21,7 @@ Ranked by exploitability on a single-user developer machine, then by impact.
 | 4 | Bearer token for MuninnDB crosses the network in the clear on a non-loopback HTTP endpoint | `cmd/msc/main.go:205`, `internal/mcpclient/client.go:79` | Low (user-configured remote endpoint) | Full vault read/write for the token's lifetime | Warn only; `--mcp-url` scheme validated, TLS 1.3 floor for HTTPS |
 | 5 | The MITM CA private key is a machine-wide decryption key for everything the child sends | `internal/mitm/ca.go:118` | Low (requires local file read as another user, or root) | Decryption of any session routed through msc, and minting leaves trusted by anything that imported `msc ca` | `0600` key in a `0700` dir, permission re-check and warn on every load |
 | 6 | Unbounded concurrent buffering on a loopback listener with no connection cap | `internal/proxy/proxy.go:57`, `:61`, `:241` | Low (local, requires many concurrent clients) | msc memory exhaustion, agent outage | Per-body size caps, 30s `ReadHeaderTimeout` against slowloris, timeouts on every leg |
-| 7 | Cross-project memory bleed through the default vault name | `internal/config/config.go:118` | Low (two projects with the same directory base name, or one shared checkout) | Content from one codebase injected into an agent working on another | None; `--vault` / `MSC_VAULT` override |
+| 7 | Cross-project memory bleed through the default vault name | `internal/config/config.go:187` | Low (two projects with the same directory base name, or one shared checkout) | Content from one codebase injected into an agent working on another | None; `--vault` / `MSC_VAULT` override |
 
 ## 1. Attack surface inventory
 
@@ -40,7 +40,7 @@ whatever the launched agent and MuninnDB themselves load.
 | SSE / ndjson response tap | upstream response bodies | `internal/proxy/stream.go:34` |
 | CLI flags and passthrough agent argv | `msc <agent> [args...]` | `cmd/msc/flags.go:76`, `internal/agents/agents.go:482` |
 | `msc` subcommands (`ca`, `status`, `list`, `version`, `completion`) | local process, stdout | `cmd/msc/commands.go:286`, `cmdCA` at `cmd/msc/commands.go:60` |
-| Environment variables | `MUNINN_MCP_URL`, `MUNINN_TOKEN`, `MSC_VAULT`, `MSC_UPSTREAM_<AGENT>`, `GEMINI_API_KEY` (upstream-selector), `MSC_WS_DEBUG`, `OPENAI_API_KEY`, `SSL_CERT_FILE`, `SHELL` | `internal/config/config.go:45`, `:93`, `:122`, `internal/agents/agents.go:213`, `:224`, `:400`, `internal/proxy/wscapture.go:24`, `cmd/msc/main.go:297`, `:151` |
+| Environment variables | `MUNINN_MCP_URL`, `MUNINN_TOKEN`, `MSC_VAULT`, `MSC_UPSTREAM_<AGENT>`, `GEMINI_API_KEY` (upstream-selector), `MSC_WS_DEBUG`, `OPENAI_API_KEY`, `SSL_CERT_FILE`, `SHELL` | `internal/config/config.go:59`, `:145`, `:179`, `internal/agents/agents.go:215`, `:226`, `:428`, `internal/proxy/wscapture.go:25`, `cmd/msc/main.go:302`, `:150` |
 | Config files read from disk | `~/.muninn/mcp.token`, `~/.config/muninn-sidecar/mitm/{ca-key.pem,ca-cert.pem,ca-bundle.pem}` | `internal/config/config.go:28`, `internal/mitm/ca.go:74`, `internal/agents/agents.go:417` |
 | Outbound JSON-RPC client to MuninnDB | `MUNINN_MCP_URL`, default `http://127.0.0.1:8750/mcp` | `internal/mcpclient/client.go:158` |
 | Outbound HTTPS to the LLM provider | resolved upstream, TLS 1.3 floor | `internal/proxy/proxy.go:199` |

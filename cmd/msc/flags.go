@@ -227,12 +227,10 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 				return nil, actionNone, verr
 			}
 			i = ni
-			switch v {
-			case "semantic", "recent", "balanced", "deep":
-				o.recallMode = v
-			default:
-				return nil, actionNone, fmt.Errorf("--recall-mode must be one of: semantic, recent, balanced, deep")
+			if err := config.OneOf(key, v, "semantic", "recent", "balanced", "deep"); err != nil {
+				return nil, actionNone, err
 			}
+			o.recallMode = v
 			i++
 			continue
 		case "--ground-timeout":

@@ -78,6 +78,9 @@ func run() error {
 		if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
 			return err
 		}
+		if w := config.ArgSecretWarning("-token", *token, "MUNINN_TOKEN"); w != "" {
+			fmt.Fprintln(os.Stderr, "warning:", w)
+		}
 		return runLive(*liveFile, *mcpURL, config.Token(*token), *vault, *minScore, *budget, *settle, *timeout, *asJSON)
 	}
 	return runOffline(*file, *minScore, *budget, *sweep, *compare, *asJSON, studyOpts{seed: *studySeed, n: *studyN, folds: *studyFolds})

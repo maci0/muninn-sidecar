@@ -87,15 +87,23 @@ func run() error {
 	if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
 		return err
 	}
-	switch *corpus {
-	case "homogeneous", "diverse", "facts", "squad", "hotpot", "agentmem":
-	default:
-		return fmt.Errorf("invalid -corpus %q: must be one of homogeneous, diverse, facts, squad, hotpot, agentmem", *corpus)
+	if err := config.OneOf("-corpus", *corpus, "homogeneous", "diverse", "facts", "squad", "hotpot", "agentmem"); err != nil {
+		return err
 	}
-	switch *mode {
-	case "", "semantic", "recent", "balanced", "deep":
-	default:
-		return fmt.Errorf("invalid -mode %q: must be one of semantic, recent, balanced, deep (or empty for server default)", *mode)
+	if err := config.OneOf("-mode", *mode, "", "semantic", "recent", "balanced", "deep"); err != nil {
+		return err
+	}
+	// The remaining enum flags select a code path in a switch, so a typo falls
+	// through to the "do nothing" branch and the run reports numbers for a
+	// configuration nobody asked for. Reject the typo instead.
+	if err := config.OneOf("-chunk", *chunk, "paragraph", "sentence"); err != nil {
+		return err
+	}
+	if err := config.OneOf("-query-transform", *qTransform, "none", "distractors", "emphasis", "repeat-last"); err != nil {
+		return err
+	}
+	if err := config.OneOf("-rerank", *rerank, "none", "lexical"); err != nil {
+		return err
 	}
 	for opt, raw := range map[string]string{"-ground-url": *groundURL, "-rewrite-url": *rewriteURL} {
 		if err := config.ValidateURL(opt, raw); err != nil {
@@ -104,6 +112,16 @@ func run() error {
 	}
 	if !*seed && !*doProbe {
 		*doProbe = true
+	}
+
+	for _, sec := range []struct{ flag, val, env string }{
+		{"-token", *token, "MUNINN_TOKEN"},
+		{"-ground-key", *groundKey, "OPENAI_API_KEY"},
+		{"-rewrite-key", *rewriteKey, "OPENAI_API_KEY"},
+	} {
+		if w := config.ArgSecretWarning(sec.flag, sec.val, sec.env); w != "" {
+			fmt.Fprintln(os.Stderr, "warning:", w)
+		}
 	}
 
 	client := mcpclient.New(*mcpURL, config.Token(*token), *timeout)

@@ -22,6 +22,63 @@ func TestEnvOr(t *testing.T) {
 	}
 }
 
+func TestEnvBool(t *testing.T) {
+	for _, off := range []string{"", "0", "false", "FALSE", "off", "No"} {
+		t.Setenv("MSC_TEST_BOOL", off)
+		if EnvBool("MSC_TEST_BOOL") {
+			t.Errorf("EnvBool with %q = true, want false", off)
+		}
+	}
+	for _, on := range []string{"1", "true", "on", "yes", "debug"} {
+		t.Setenv("MSC_TEST_BOOL", on)
+		if !EnvBool("MSC_TEST_BOOL") {
+			t.Errorf("EnvBool with %q = false, want true", on)
+		}
+	}
+	if EnvBool("MSC_TEST_BOOL_UNSET") {
+		t.Error("unset variable must be off")
+	}
+}
+
+func TestOneOf(t *testing.T) {
+	if err := OneOf("-mode", "deep", "", "semantic", "recent", "balanced", "deep"); err != nil {
+		t.Errorf("listed value: %v", err)
+	}
+	if err := OneOf("-mode", "", "", "semantic", "recent", "balanced", "deep"); err != nil {
+		t.Errorf("empty value when allowed: %v", err)
+	}
+	err := OneOf("-mode", "Deep", "", "semantic", "recent", "balanced", "deep")
+	if err == nil {
+		t.Fatal("value outside the set must be rejected")
+	}
+	for _, want := range []string{"-mode", `"Deep"`, "semantic, recent, balanced, deep", "empty value"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must mention %q", err, want)
+		}
+	}
+	if err := OneOf("-corpus", "squad", "homogeneous", "squad"); err != nil {
+		t.Errorf("listed value: %v", err)
+	}
+	if err := OneOf("-corpus", "Squad", "homogeneous", "squad"); err == nil || strings.Contains(err.Error(), "empty") {
+		t.Errorf("set without an empty value must not mention it: %v", err)
+	}
+}
+
+func TestArgSecretWarning(t *testing.T) {
+	if got := ArgSecretWarning("--token", "", "MUNINN_TOKEN"); got != "" {
+		t.Errorf("no flag value must be silent, got %q", got)
+	}
+	got := ArgSecretWarning("--token", "s3cr3t-value", "MUNINN_TOKEN")
+	for _, want := range []string{"--token", "MUNINN_TOKEN", "process list"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning %q must mention %q", got, want)
+		}
+	}
+	if strings.Contains(got, "s3cr3t-value") {
+		t.Errorf("warning must not repeat the secret: %q", got)
+	}
+}
+
 func TestMCPURLPrecedence(t *testing.T) {
 	t.Setenv("MUNINN_MCP_URL", "http://from-env/mcp")
 	if got := MCPURL("http://from-flag/mcp"); got != "http://from-flag/mcp" {

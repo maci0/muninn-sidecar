@@ -505,6 +505,6 @@ Environment (flags take precedence):
   MUNINN_TOKEN     MuninnDB bearer token
   MSC_VAULT        MuninnDB vault name
   OPENAI_API_KEY   Bearer token for --ground-url (required if that endpoint needs auth)
-  MSC_WS_DEBUG     Set to log WebSocket frame types/sizes (debug aid; any non-empty value)
+  MSC_WS_DEBUG     Set to log WebSocket frame types/sizes (debug aid; 0, false, off, no leave it off)
 `)
 }

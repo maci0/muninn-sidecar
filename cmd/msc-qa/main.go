@@ -96,6 +96,11 @@ func run() error {
 	if !(*minScore > 0 && *minScore <= 1) {
 		return fmt.Errorf("invalid -min-score %v: must be in (0,1]", *minScore)
 	}
+	// A typo here selects formatInjected's default branch, so the injected arm
+	// is compared against context formatted a way the run never asked for.
+	if err := config.OneOf("-inject-format", *injectFmt, "bare", "labeled", "scored"); err != nil {
+		return err
+	}
 	if *modelKey == "" {
 		*modelKey = os.Getenv("OPENAI_API_KEY")
 		// The env fallback is an OpenAI key, but -model-url may point anywhere.
@@ -108,6 +113,16 @@ func run() error {
 		}
 	}
 	answerHint = *answerHintF
+
+	for _, sec := range []struct{ flag, val, env string }{
+		{"-token", *token, "MUNINN_TOKEN"},
+		{"-model-key", *modelKey, "OPENAI_API_KEY"},
+		{"-ground-key", *groundKey, "OPENAI_API_KEY"},
+	} {
+		if w := config.ArgSecretWarning(sec.flag, sec.val, sec.env); w != "" {
+			fmt.Fprintln(os.Stderr, "warning:", w)
+		}
+	}
 
 	questions, err := loadDataset(*dataset, *squadFile, *n, *sampleSeed)
 	if err != nil {

@@ -37,6 +37,19 @@ func EnvOr(key, def string) string {
 	return def
 }
 
+// EnvBool reports whether a switch variable is on. Unset and empty are off,
+// and so are the explicit negatives (0, false, off, no, in any case): a shell
+// profile that exports the switch as 0 must be able to turn it off, which
+// "set means on" cannot express. Every other value is on, so a switch stays
+// usable as a bare `MSC_WS_DEBUG=1` in a command prefix.
+func EnvBool(key string) bool {
+	switch strings.ToLower(os.Getenv(key)) {
+	case "", "0", "false", "off", "no":
+		return false
+	}
+	return true
+}
+
 // MCPURL returns the MuninnDB MCP endpoint: the flag value if non-empty, else
 // MUNINN_MCP_URL, else DefaultMCPURL.
 func MCPURL(flagVal string) string {
@@ -44,6 +57,44 @@ func MCPURL(flagVal string) string {
 		return flagVal
 	}
 	return EnvOr("MUNINN_MCP_URL", DefaultMCPURL)
+}
+
+// OneOf rejects a configuration value that is outside a fixed set, so a typo
+// names itself at startup instead of quietly selecting the default branch of a
+// switch further down. Pass "" in allowed for an option where the empty value
+// is itself meaningful; it is left out of the message's list and called out
+// separately.
+func OneOf(option, value string, allowed ...string) error {
+	for _, a := range allowed {
+		if a == value {
+			return nil
+		}
+	}
+	var shown []string
+	for _, a := range allowed {
+		if a != "" {
+			shown = append(shown, a)
+		}
+	}
+	empty := ""
+	if len(shown) < len(allowed) {
+		empty = " (or the empty value)"
+	}
+	return fmt.Errorf("invalid %s %q: must be one of %s%s", option, value, strings.Join(shown, ", "), empty)
+}
+
+// ArgSecretWarning returns the message to print when a secret was supplied as
+// a command-line argument, or "" when there was nothing to warn about. On Unix
+// the argument vector is world-readable through ps and the argument is kept in
+// shell history, so a secret passed as a flag is exposed to every other user on
+// the machine; envName names the variable that keeps it out of both. Callers
+// pass the raw flag value: empty means the secret came from the environment or
+// a file, where the warning does not apply.
+func ArgSecretWarning(flagName, flagVal, envName string) string {
+	if flagVal == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s passes a secret in the process list, readable by other users via ps and kept in shell history; set %s instead", flagName, envName)
 }
 
 // IsLoopbackHost reports whether host names the local machine, so traffic sent

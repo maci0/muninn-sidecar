@@ -5,7 +5,26 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- **Enum options are rejected when they hold something outside their set.**
+  `-chunk`, `-query-transform`, and `-rerank` (`msc-bench`) and `-inject-format`
+  (`msc-qa`) selected a code path in a switch, so a typo silently fell through
+  to the "do nothing" branch and the run reported numbers for a configuration
+  nobody asked for. Each is now checked at startup and names the accepted
+  values, matching `-corpus`, `-mode`, `-dataset`, and `--recall-mode`.
+- **A secret passed as a command-line argument is warned about.** `--token`,
+  `-model-key`, `-ground-key`, and `-rewrite-key` put the value in the argument
+  vector, which every other user on the machine can read through `ps`, and in
+  shell history. `msc` and the three tool binaries now name the environment
+  variable that keeps the secret out of both.
+
 ### Fixed
+
+- **`MSC_WS_DEBUG=0` no longer turns the WebSocket probe on.** The switch was
+  read as "set means on", so a shell profile that exported the variable to
+  disable it kept the probe logging. `0`, `false`, `off`, and `no` now turn it
+  off, as does leaving it empty; any other value turns it on.
 
 - **`msc-bench -seed` is idempotent again.** Seeded memories went out without
   the content-addressed `dedup_key` every other write path carries, so a rerun

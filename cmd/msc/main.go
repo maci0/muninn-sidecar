@@ -200,6 +200,9 @@ func run() int {
 	// non-loopback HTTP connection. Localhost is exempt because the traffic
 	// never leaves the machine.
 	if token != "" {
+		if w := config.ArgSecretWarning("--token", o.token, "MUNINN_TOKEN"); w != "" {
+			slog.Warn(w)
+		}
 		if u, err := url.Parse(mcpURL); err == nil && u.Scheme == "http" && !config.IsLoopbackHost(u.Hostname()) {
 			slog.Warn("bearer token will be sent over unencrypted HTTP; use HTTPS for remote MuninnDB endpoints",
 				"mcp_url", mcpURL)
