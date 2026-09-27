@@ -81,7 +81,7 @@ func main() {
 
 func run() error {
 	var (
-		squadFile   = flag.String("squad-file", "/tmp/squad-dev.json", "dataset JSON path (SQuAD or HotpotQA official format)")
+		squadFile   = flag.String("squad-file", filepath.Join(os.TempDir(), "squad-dev.json"), "dataset JSON path (SQuAD or HotpotQA official format)")
 		dataset     = flag.String("dataset", "squad", "dataset format: squad | hotpot | generic")
 		vault       = flag.String("vault", "msc-squad", "vault to recall from (must be seeded, e.g. by msc-bench)")
 		mcpURL      = flag.String("mcp-url", envOr("MUNINN_MCP_URL", "http://127.0.0.1:8750/mcp"), "MuninnDB MCP endpoint")

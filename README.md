@@ -54,6 +54,22 @@ cd muninn-sidecar
 make build
 ```
 
+### Platforms
+
+`msc` builds for Linux, macOS, and Windows on amd64 and arm64, and CI builds
+and vets each of them. The test suite runs only on Linux, so the other targets
+are compile-verified, not exercised end to end. Two behaviors differ by platform
+and are handled rather than assumed:
+
+- **Signal forwarding to the agent.** msc walks `/proc` to find the agent and
+  skip a Ctrl+C the terminal already delivered. Without `/proc` (macOS, Windows)
+  it signals the agent process handle directly; SIGINT is still left to the
+  kernel, since the agent shares msc's process group either way.
+- **MITM trust.** `SSL_CERT_FILE` and friends need a file to point at, so the
+  combined CA bundle is built from the system bundle msc can find
+  (`/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
+  `/etc/ssl/ca-bundle.pem`, `/etc/ssl/cert.pem`, or `$SSL_CERT_FILE`).
+
 ## Usage
 
 ```bash

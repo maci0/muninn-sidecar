@@ -42,7 +42,7 @@ per-vault auto-calibration:
 | `quora` | informal community Q&A | 0.40 |
 
 ```sh
-python3 scripts/fetch_hf_datasets.py all          # write /tmp/<name>.json for each
+python3 scripts/fetch_hf_datasets.py all          # write <tmpdir>/<name>.json for each
 go run ./cmd/msc-bench -seed -probe -corpus squad -squad-file /tmp/code.json \
     -vault msc-code -squad-articles 250 -n 400 -present 80 -absent 80 -mode semantic
 ```

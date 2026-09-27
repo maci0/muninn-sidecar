@@ -1,0 +1,9 @@
+# Keep every text file LF in the index and in the working tree, on every
+# platform. A CRLF checkout breaks the shell script and the Python script
+# outright: the shebang line becomes `/usr/bin/env bash\r` and neither is
+# executable. Editors that save CRLF are handled by this, not by the author.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+Makefile text eol=lf

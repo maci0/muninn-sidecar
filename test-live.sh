@@ -72,8 +72,8 @@ echo "=== Test 2: Claude (--no-inject) ==="
 echo "--- exit: $? ---"
 echo ""
 
-echo "=== Test 3: Gemini ==="
-./msc $DEBUG --vault "$VAULT" gemini --prompt "What is the capital of Germany? Reply in one word." 2>&1
+echo "=== Test 3: qwen (Gemini-CLI fork) ==="
+./msc $DEBUG --vault "$VAULT" qwen --prompt "What is the capital of Germany? Reply in one word." 2>&1
 echo "--- exit: $? ---"
 echo ""
 
@@ -137,8 +137,8 @@ fi
 echo ""
 
 # --- Inter-agent memory retrieval test ---
-# Ask Claude about "Germany" — it should recall the Gemini memory about Berlin.
-echo "=== Test 5: Cross-agent recall (Claude recalling Gemini memory) ==="
+# Ask Claude about "Germany" — it should recall the qwen memory about Berlin.
+echo "=== Test 5: Cross-agent recall (Claude recalling qwen memory) ==="
 ./msc $DEBUG --vault "$VAULT" claude -p "What do you know about Germany's capital from your context? Just state what you recall." 2>&1
 echo "--- exit: $? ---"
 echo ""

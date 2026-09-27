@@ -49,7 +49,7 @@ func run() error {
 		token      = flag.String("token", "", "bearer token (default ~/.muninn/mcp.token)")
 		vault      = flag.String("vault", "msc-bench", "vault to seed/probe (dedicated; not 'default')")
 		corpus     = flag.String("corpus", "homogeneous", "corpus generator: homogeneous | diverse | facts | squad | hotpot | agentmem")
-		squadFile  = flag.String("squad-file", "/tmp/squad-dev.json", "path to SQuAD JSON (corpus=squad)")
+		squadFile  = flag.String("squad-file", filepath.Join(os.TempDir(), "squad-dev.json"), "path to SQuAD JSON (corpus=squad)")
 		squadArts  = flag.Int("squad-articles", 12, "number of SQuAD articles to seed (rest are held out as absent)")
 		hardNeg    = flag.Bool("hard-neg", false, "squad: draw negatives from held-out paragraphs of SEEDED articles (same-topic hard negatives) instead of disjoint articles")
 		chunk      = flag.String("chunk", "paragraph", "SQuAD chunk granularity: paragraph | sentence")

@@ -19,7 +19,16 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   recall query is scrubbed before it is sent to MuninnDB, and
   `grounding.Prompt` scrubs the query and candidate passages before they reach
   a judge model. Both paths previously carried unredacted text off-process.
-
+- **Signals reach the agent without a `/proc`.** Child discovery walked
+  `/proc`, so on macOS, Windows, or a locked-down `/proc` a `kill`/`docker stop`
+  aimed at msc left the agent running against a dead proxy, and the 3s SIGKILL
+  fallback had nothing to signal. msc now publishes the agent process handle
+  and falls back to it, still leaving SIGINT to the kernel so Ctrl+C is not
+  double-delivered. The Unix-only `syscall.Kill`/`syscall.Getpgrp` calls moved
+  behind `//go:build` shims, so `GOOS=windows go build` compiles again.
+- **No hardcoded `/tmp`.** `msc-bench`/`msc-qa` `-squad-file` and
+  `scripts/fetch_hf_datasets.py` resolve their default dataset path through
+  `os.TempDir()` / `tempfile.gettempdir()`.
 - **Upgrades survive capture.** 101 Switching Protocols responses are no longer
   consumed by capture on the plain proxy path; WebSocket upgrades pass through
   intact.

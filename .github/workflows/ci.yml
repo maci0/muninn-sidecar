@@ -93,6 +93,43 @@ jobs:
         # Ephemeral venv per run: nothing installed onto the runner image.
         run: pipx run yamllint@1.38.0 .
 
+  # `go install` ships whatever the host platform is, so every GOOS users can
+  # install on has to keep compiling. Unix-only syscalls (signals, process
+  # groups) are the usual breakage here, so the matrix covers Windows and both
+  # Unix flavors rather than just the runner's own.
+  build:
+    name: Build (${{ matrix.goos }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: darwin, goarch: arm64}
+          - {goos: darwin, goarch: amd64}
+          - {goos: windows, goarch: amd64}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Build
+        run: go build -o /dev/null ./...
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+
+      - name: Vet
+        run: go vet ./...
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+
   fuzz:
     name: Fuzz smoke
     runs-on: ubuntu-24.04

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/maci0/muninn-sidecar/internal/agents"
 )
 
 // mitmCADir returns the directory holding msc's TLS-MITM certificate authority,
@@ -114,23 +116,55 @@ func shouldForward(sig syscall.Signal, pgrp, fgPgrp int) bool {
 	return sig != syscall.SIGINT || pgrp != fgPgrp
 }
 
-// signalChildren forwards sig to every direct child process (the launched
-// agent) that has not already received it from the kernel via the terminal's
-// foreground process group. Errors other than "process already gone" are
-// logged, not fatal: shutdown must proceed regardless.
+// signalChildren forwards sig to the launched agent. A signal sent to msc's
+// PID alone (kill, docker stop) never reaches the child, so it has to be
+// passed on explicitly. Two paths, in order of fidelity:
+//
+//   - /proc enumeration, which also yields the child's process group and so
+//     can skip children the kernel already signalled through the terminal's
+//     foreground process group (Ctrl+C);
+//   - the process handle the agents package published, for platforms with no
+//     /proc (macOS, Windows, or a restricted /proc).
+//
+// Errors other than "process already gone" are logged, not fatal: shutdown
+// must proceed regardless.
 func signalChildren(sig os.Signal) {
 	s, ok := sig.(syscall.Signal)
 	if !ok {
 		return
 	}
+	children := childProcs()
+	if len(children) == 0 {
+		signalChildHandle(s)
+		return
+	}
 	fgPgrp := termForegroundPgrp()
-	for _, c := range childProcs() {
+	for _, c := range children {
 		if !shouldForward(s, c.pgrp, fgPgrp) {
 			continue
 		}
-		if err := syscall.Kill(c.pid, s); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := signalPID(c.pid, s); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
 			slog.Warn("failed to signal child", "pid", c.pid, "err", err)
 		}
+	}
+}
+
+// signalChildHandle signals the agent through the handle Exec/ExecMITM
+// published, for the case where the process table is not walkable. A
+// terminal-generated SIGINT is already delivered by the kernel to the whole
+// foreground group the agent shares, and without /proc there is no way to tell
+// that apart from `kill -INT msc`, so SIGINT is left to the kernel; every other
+// signal is sent exactly once, since the terminal only ever generates SIGINT.
+func signalChildHandle(sig syscall.Signal) {
+	if sig == syscall.SIGINT {
+		return
+	}
+	p := agents.Child()
+	if p == nil {
+		return
+	}
+	if err := signalAgent(p, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		slog.Warn("failed to signal agent", "pid", p.Pid, "err", err)
 	}
 }
 

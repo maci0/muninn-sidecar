@@ -6,7 +6,7 @@ MuninnDB vaults and measured.
 
 Usage:
     python3 scripts/fetch_hf_datasets.py <name> [out.json] [--pages N]
-    python3 scripts/fetch_hf_datasets.py all            # write /tmp/<name>.json for every dataset
+    python3 scripts/fetch_hf_datasets.py all            # write <tmpdir>/<name>.json for every dataset
 
 Then seed + probe, e.g.:
     go run ./cmd/msc-bench -seed -probe -corpus squad \\
@@ -21,7 +21,9 @@ difficulty and the per-vault gate vary (see docs/model-eval.md, docs/experiments
 """
 
 import json
+import os
 import sys
+import tempfile
 import urllib.request
 from collections.abc import Callable
 from typing import Any
@@ -246,10 +248,10 @@ CONVERTERS = {
 
 
 def _output_path(name: str, argv: list[str]) -> str:
-    """An explicit [out.json] wins; otherwise every dataset goes to /tmp."""
+    """An explicit [out.json] wins; otherwise every dataset goes to the temp dir."""
     if argv[1] != "all" and len(argv) > 2 and not argv[2].startswith("--"):
         return argv[2]
-    return f"/tmp/{name}.json"
+    return os.path.join(tempfile.gettempdir(), f"{name}.json")
 
 
 def main(argv: list[str]) -> int:
