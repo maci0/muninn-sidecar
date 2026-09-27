@@ -87,13 +87,15 @@ func printGate(title string, pts []gatePoint) {
 // reportGroundedGate prints the gate metric after grounding. Because grounding
 // already removes non-answering candidates, the gate is reported at a permissive
 // cosine floor (0.30) — suppression now comes from grounding, not the threshold.
+// A run with no probes measured nothing, so it prints no gate rather than an
+// all-zero one that reads like a score: gateSweep always returns one point per
+// threshold, so emptiness is a property of the inputs, not of the sweep.
 func reportGroundedGate(label string, present, absent []probeResult) {
-	vec := func(m recalledMemory) float64 { return m.VectorScore }
-	pts := gateSweep(present, absent, []float64{0.30}, vec)
-	if len(pts) == 0 {
+	if len(present)+len(absent) == 0 {
 		return
 	}
-	p := pts[0]
+	vec := func(m recalledMemory) float64 { return m.VectorScore }
+	p := gateSweep(present, absent, []float64{0.30}, vec)[0]
 	fmt.Printf("\nGROUNDED GATE (%s, cosine>=0.30 AND model says the passage answers the query)\n", label)
 	fmt.Printf("  acc=%.2f f1=%.2f inject@should=%.2f suppress@absent=%.2f what=%.2f\n",
 		p.GateAcc, p.GateF1, p.InjectWhenS, p.SuppressOK, p.WhatCorrect)

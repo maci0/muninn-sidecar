@@ -78,12 +78,34 @@ func TestDeepCopyResults(t *testing.T) {
 	}
 }
 
+// TestReportGroundedGate: the grounded-gate summary is the number the grounding
+// pass exists to move, so it is asserted rather than smoke-run. The four probes
+// are chosen so every metric lands on 0.50: a gate that stopped discriminating
+// (everything injected, nothing injected, or a threshold that stopped mattering)
+// prints a different line.
 func TestReportGroundedGate(t *testing.T) {
-	// Smoke: must not panic on empty or populated input (it prints a summary).
-	reportGroundedGate("stub", nil, nil)
-	present := []probeResult{{probe: probe{Gold: "g", Present: true}, Recalled: []recalledMemory{{Concept: "g", VectorScore: 0.8}}}}
-	absent := []probeResult{{probe: probe{Present: false}, Recalled: []recalledMemory{{Concept: "x", VectorScore: 0.2}}}}
-	reportGroundedGate("http:test", present, absent)
+	empty := captureStdout(t, func() { reportGroundedGate("stub", nil, nil) })
+	if strings.TrimSpace(empty) != "" {
+		t.Errorf("no probes should print no gate, got:\n%s", empty)
+	}
+
+	present := []probeResult{
+		{probe: probe{Gold: "g", Present: true}, Recalled: []recalledMemory{{Concept: "g", VectorScore: 0.8}}},
+		{probe: probe{Gold: "h", Present: true}, Recalled: []recalledMemory{{Concept: "h", VectorScore: 0.10}}}, // below the 0.30 floor
+	}
+	absent := []probeResult{
+		{probe: probe{Present: false}, Recalled: []recalledMemory{{Concept: "x", VectorScore: 0.2}}},
+		{probe: probe{Present: false}, Recalled: []recalledMemory{{Concept: "y", VectorScore: 0.9}}}, // above it
+	}
+	out := captureStdout(t, func() { reportGroundedGate("http:test", present, absent) })
+	for _, want := range []string{
+		"GROUNDED GATE (http:test, cosine>=0.30",
+		"acc=0.50 f1=0.50 inject@should=0.50 suppress@absent=0.50 what=0.50",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("grounded gate missing %q:\n%s", want, out)
+		}
+	}
 }
 
 func TestApplyGroundingTopK(t *testing.T) {

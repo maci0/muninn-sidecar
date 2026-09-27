@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,20 +97,67 @@ func TestRunRejectsBadEnums(t *testing.T) {
 	}
 }
 
-func TestPrintersSmoke(t *testing.T) {
+// captureStdout returns everything fn writes to os.Stdout, so a printer test can
+// assert on the report a reader would see rather than only that it did not panic.
+// The pipe is drained in a goroutine: it holds far less than a full report, so a
+// synchronous read would deadlock.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
 	old := os.Stdout
-	w, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	os.Stdout = w
-	defer func() { os.Stdout = old; w.Close() }()
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	os.Stdout = old
+	w.Close()
+	out := <-done
+	r.Close()
+	return out
+}
 
+// TestPrintReport: the report is this tool's only output, so the numbers it
+// prints are the result. A printer that emitted an empty body, or a probe that
+// stopped counting toward the totals, would still have "not panicked".
+func TestPrintReport(t *testing.T) {
 	results := []probeResult{
 		{probe: probe{Gold: "g", Present: true}, Recalled: []recalledMemory{{Concept: "g", VectorScore: 0.8}}, RankByVec: 0, RankRerank: 0, RankArtVec: 0},
 		{probe: probe{Present: false}, RankByVec: -1, RankRerank: -1, RankArtVec: -1},
 	}
 	rep := analyze(results)
-	printReport(rep, results)
-	printGate("vector", rep.GateByVec)
-	printGate("score", rep.GateByScore)
+	out := captureStdout(t, func() { printReport(rep, results) })
+	for _, want := range []string{
+		"present probes: 1   absent probes: 1",
+		"BEST gate on vector",
+		"AUTO-CALIBRATED gate:",
+		"ranked by vector     R@1=1.00 R@3=1.00 R@5=1.00 MRR=1.000",
+		"article-level (vec)  R@1=1.00 R@3=1.00 R@5=1.00 MRR=1.000",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestPrintGate: one row per swept threshold, each carrying that threshold's
+// metrics. An empty sweep prints the header and no rows, so a gate table that
+// silently lost its thresholds is visible.
+func TestPrintGate(t *testing.T) {
+	pts := []gatePoint{{Threshold: 0.3, GateAcc: 1, GateF1: 1, InjectWhenS: 1, SuppressOK: 1, WhatCorrect: 1}}
+	out := captureStdout(t, func() { printGate("vector", pts) })
+	if !strings.Contains(out, "thresh") || !strings.Contains(out, "0.300") {
+		t.Errorf("gate table missing header or row:\n%s", out)
+	}
+	empty := captureStdout(t, func() { printGate("vector", nil) })
+	if strings.Contains(empty, "0.300") {
+		t.Errorf("empty sweep printed a threshold row:\n%s", empty)
+	}
 }
 
 func TestRunBench(t *testing.T) {

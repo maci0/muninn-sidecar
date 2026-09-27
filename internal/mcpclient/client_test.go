@@ -248,6 +248,60 @@ func TestContentTextsEmptyResultIsNotAnError(t *testing.T) {
 	}
 }
 
+// TestTextContent: the status path reads the first non-empty text block, and
+// reports false both for a body that does not parse and for one carrying no
+// text block. A non-text block is skipped and an empty text block is not one.
+func TestTextContent(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		body   string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "text block",
+			body:   `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"health\":\"good\"}"}]}}`,
+			want:   `{"health":"good"}`,
+			wantOK: true,
+		},
+		{
+			// TextContent takes the first non-empty text block, so a summary
+			// ahead of the payload is the answer. Callers that cannot rule a
+			// summary out need ContentTexts, which returns every block.
+			name:   "first non-empty text block, ahead of a later one",
+			body:   `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Vault has 47 memories."},{"type":"image","data":"..."},{"type":"text","text":"payload"}]}}`,
+			want:   "Vault has 47 memories.",
+			wantOK: true,
+		},
+		{
+			name: "no text block",
+			body: `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"..."}]}}`,
+		},
+		{
+			name: "empty text block",
+			body: `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":""}]}}`,
+		},
+		{
+			name: "empty result",
+			body: `{"jsonrpc":"2.0","id":1,"result":{}}`,
+		},
+		{
+			name: "unparsable body",
+			body: "<html>502</html>",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := TextContent([]byte(tc.body))
+			if ok != tc.wantOK {
+				t.Fatalf("TextContent ok = %v, want %v (text %q)", ok, tc.wantOK, got)
+			}
+			if got != tc.want {
+				t.Errorf("TextContent = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCheckEnvelopeRejectsUnconfirmedWrites: a 2xx that is not a JSON-RPC
 // response object confirms nothing was stored. A caller that discards the body
 // and reports success on it loses a whole batch silently.

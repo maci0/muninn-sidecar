@@ -387,7 +387,9 @@ func TestDrainBoundedWhenUnreachable(t *testing.T) {
 	}
 	// Server always 500s. Many distinct batches would, unbounded, retry ~6s each
 	// (~18s for 3 batches). Drain must instead be bounded near drainTimeout.
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
 		w.WriteHeader(500)
 	}))
 	defer srv.Close()
@@ -409,6 +411,20 @@ func TestDrainBoundedWhenUnreachable(t *testing.T) {
 	// unbounded ~18s+ a multi-batch backlog would otherwise take.
 	if elapsed > drainTimeout+5*time.Second {
 		t.Fatalf("Drain took %v, expected bounded near drainTimeout (%v)", elapsed, drainTimeout)
+	}
+	// The upper bound alone is satisfied by a Drain that returns without
+	// flushing, which is the same shutdown path. A backlog against a server
+	// that always 500s is only cleared when the cancel releases the retries at
+	// drainTimeout, so a short return means the queue was abandoned. Half the
+	// budget is slack enough to survive a loaded CI runner, where one batch's
+	// retries can overrun the cancel.
+	if elapsed < drainTimeout/2 {
+		t.Errorf("Drain returned after %v, want it to hold the backlog for about %v: the queue was abandoned rather than cancelled mid-retry", elapsed, drainTimeout)
+	}
+	// Bounded, but not bounded by giving up on the writes: the batch must have
+	// reached the server.
+	if n := calls.Load(); n == 0 {
+		t.Error("Drain finished without writing anything to the server")
 	}
 }
 
