@@ -155,12 +155,12 @@ func signalChildren(sig os.Signal) {
 		// and running against a proxy that no longer exists. msc's own group
 		// also holds the shell, so it is signalled per-pid only.
 		if c.pgrp > 0 && c.pgrp != self {
-			if err := signalPIDGroup(c.pgrp, s); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+			if err := signalPIDGroup(c.pgrp, s); err != nil && !errors.Is(err, syscall.ESRCH) {
 				slog.Warn("failed to signal child process group", "pgrp", c.pgrp, "err", err)
 			}
 			continue
 		}
-		if err := signalPID(c.pid, s); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		if err := signalPID(c.pid, s); err != nil && !errors.Is(err, syscall.ESRCH) {
 			slog.Warn("failed to signal child", "pid", c.pid, "err", err)
 		}
 	}

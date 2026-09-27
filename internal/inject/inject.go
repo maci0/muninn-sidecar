@@ -215,12 +215,12 @@ func New(cfg Config) *Injector {
 
 // Enrich parses a request body, recalls relevant memories, and injects them
 // as system-level context. Returns the enriched body and estimated injected
-// token count. Always returns a nil error — all failures are handled
-// gracefully by returning the original body unchanged.
+// token count. Every failure is handled gracefully by returning the
+// original body unchanged.
 //
 // On the first call (session start), it also calls muninn_where_left_off and
 // muninn_guide to provide continuity from the previous session and global guidelines.
-func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, error) {
+func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	// On first call, fetch where_left_off context and guide concurrently (best-effort).
 	// Use context.Background() instead of the request context because sync.Once
 	// never retries — if the request context is cancelled (client disconnect,
@@ -273,7 +273,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return body, 0, nil // not JSON, pass through
+		return body, 0 // not JSON, pass through
 	}
 
 	format := apiformat.DetectFormat(doc)
@@ -286,7 +286,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 			sort.Strings(keys) // map order is per-run random; keep the log replayable
 			slog.DebugContext(ctx, "inject: unknown request format, skipping", "keys", keys)
 		}
-		return body, 0, nil // unknown format, pass through
+		return body, 0 // unknown format, pass through
 	}
 
 	// Query with the LATEST user turn alone. A benchmark (cmd/msc-bench
@@ -302,7 +302,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 	}
 	if query == "" {
 		slog.Debug("inject: no user query found", "format", format)
-		return body, 0, nil // no message to search with
+		return body, 0 // no message to search with
 	}
 
 	// Scrub direct identifiers before the query leaves the process. Everything
@@ -378,7 +378,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 			if inj.stats != nil {
 				inj.stats.InjectionErrors.Add(1)
 			}
-			return body, 0, nil // graceful fallback
+			return body, 0 // graceful fallback
 		}
 		slog.Debug("inject: recall returned", "count", len(memories))
 
@@ -420,7 +420,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		if inj.stats != nil {
 			inj.stats.Suppressed.Add(1)
 		}
-		return body, 0, nil
+		return body, 0
 	}
 
 	// Format context block within token budget.
@@ -443,7 +443,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 
 	block = strings.TrimSpace(block)
 	if block == "" {
-		return body, 0, nil
+		return body, 0
 	}
 
 	// Inject into the document.
@@ -453,7 +453,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		if inj.stats != nil {
 			inj.stats.InjectionErrors.Add(1)
 		}
-		return body, 0, nil
+		return body, 0
 	}
 
 	// Update stats.
@@ -462,7 +462,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		inj.stats.InjectedTokens.Add(int64(tokens))
 	}
 
-	return enriched, tokens, nil
+	return enriched, tokens
 }
 
 // currentMinScore returns the live injection threshold under the lock (it may be

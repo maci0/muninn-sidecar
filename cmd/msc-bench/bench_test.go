@@ -37,8 +37,8 @@ func TestEnvAndToken(t *testing.T) {
 	if config.MCPURL("") != "http://x/mcp" {
 		t.Error("MUNINN_MCP_URL not honored")
 	}
-	if resolveToken("explicit") != "explicit" {
-		t.Error("resolveToken flag precedence")
+	if config.Token("explicit") != "explicit" {
+		t.Error("token flag precedence")
 	}
 }
 

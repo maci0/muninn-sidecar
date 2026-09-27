@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 )
 
@@ -28,8 +29,14 @@ func TestSmallHelpers(t *testing.T) {
 	if safe(1, 0) != 0 || safe(2, 4) != 0.5 {
 		t.Errorf("safe")
 	}
+	if config.MCPURL("") != config.DefaultMCPURL {
+		t.Errorf("mcp url default")
+	}
 	if resolveToken("flagtok") != "flagtok" {
 		t.Errorf("resolveToken")
+	}
+	if config.Token("flagtok") != "flagtok" {
+		t.Errorf("token flag precedence")
 	}
 }
 
@@ -303,10 +310,18 @@ func TestAnswerAndRecallContext(t *testing.T) {
 	}))
 	defer muninn.Close()
 	cl := mcpclient.New(muninn.URL, "", time.Second)
-	got := recallContext(context.Background(), cl, "v", "q", 0.6, false)
-	if got != "relevant fact" {
-		t.Errorf("recallContext should gate at 0.6, got %q", got)
+	if got := contents(recallStructured(context.Background(), cl, "v", "q", 0.6, false)); got != "relevant fact" {
+		t.Errorf("recall should gate at 0.6, got %q", got)
 	}
+}
+
+// contents renders recall candidates the way the prompt does, one per line.
+func contents(cands []cand) string {
+	out := make([]string, len(cands))
+	for i, c := range cands {
+		out[i] = c.Content
+	}
+	return strings.Join(out, "\n")
 }
 
 func readAll(r *http.Request) ([]byte, error) {
@@ -503,9 +518,8 @@ func TestSplitQueryQAAndMultiRecall(t *testing.T) {
 	}))
 	defer muninn.Close()
 	cl := mcpclient.New(muninn.URL, "", time.Second)
-	got := recallContext(context.Background(), cl, "v", "Did Alice and Bob meet?", 0.6, true)
-	if got != "fact A" {
-		t.Errorf("multi recallContext should dedup-merge to 'fact A', got %q", got)
+	if got := contents(recallStructured(context.Background(), cl, "v", "Did Alice and Bob meet?", 0.6, true)); got != "fact A" {
+		t.Errorf("multi recall should dedup-merge to 'fact A', got %q", got)
 	}
 }
 

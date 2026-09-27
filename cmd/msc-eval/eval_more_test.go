@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/inject"
 )
 
@@ -36,15 +37,15 @@ func TestGateMark(t *testing.T) {
 
 func TestDefaultMCPURLAndToken(t *testing.T) {
 	t.Setenv("MUNINN_MCP_URL", "")
-	if defaultMCPURL() != "http://127.0.0.1:8750/mcp" {
+	if config.MCPURL("") != "http://127.0.0.1:8750/mcp" {
 		t.Error("default")
 	}
 	t.Setenv("MUNINN_MCP_URL", "http://z/mcp")
-	if defaultMCPURL() != "http://z/mcp" {
+	if config.MCPURL("") != "http://z/mcp" {
 		t.Error("env")
 	}
-	if resolveToken("tok") != "tok" {
-		t.Error("resolveToken")
+	if config.Token("tok") != "tok" {
+		t.Error("token flag precedence")
 	}
 }
 

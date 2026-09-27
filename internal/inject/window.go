@@ -4,6 +4,7 @@
 package inject
 
 import (
+	"cmp"
 	"log/slog"
 	"slices"
 	"strings"
@@ -16,20 +17,9 @@ import (
 // unreplayable and picking different memories when the budget truncates.
 func byScoreThenID(a, b memory) int {
 	if a.Score != b.Score {
-		return -cmpFloat(a.Score, b.Score)
+		return -cmp.Compare(a.Score, b.Score)
 	}
 	return strings.Compare(a.ID, b.ID)
-}
-
-func cmpFloat(a, b float64) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
-	}
 }
 
 // snapshotWindow returns the current session window decayed at the current turn

@@ -22,16 +22,11 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/mitm"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
-
-// Enricher enriches a request body with recalled context from MuninnDB.
-// A nil Enricher disables injection. Implemented by *inject.Injector.
-type Enricher interface {
-	Enrich(ctx context.Context, body []byte) ([]byte, int, error)
-}
 
 // Storer enqueues a captured exchange for async delivery to MuninnDB.
 // A nil Storer discards captures. Implemented by *store.MuninnStore.
@@ -92,7 +87,7 @@ type Proxy struct {
 	capturePaths   []string               // path substrings to capture; empty = capture all
 	excludePaths   []string               // path substrings to exclude from capture (checked first)
 	filterPatterns []string               // tool name patterns to strip from stored bodies; empty non-nil = no filtering
-	injector       Enricher               // optional memory injector (nil = disabled)
+	injector       *inject.Injector       // optional memory injector (nil = disabled)
 	server         *http.Server           // underlying HTTP server
 	reverseProxy   *httputil.ReverseProxy // stdlib reverse proxy with our hooks
 	ca             *mitm.CA               // non-nil enables TLS-MITM of CONNECT tunnels
@@ -113,18 +108,18 @@ type Proxy struct {
 
 // Config holds the parameters for creating a Proxy.
 type Config struct {
-	ListenAddr     string       // e.g. "127.0.0.1:0" for random port
-	Upstream       string       // real API URL to forward to
-	AgentName      string       // agent name for tagging in MuninnDB
-	Store          Storer       // MuninnDB writer; nil = discard captures
-	CapturePaths   []string     // path substrings to capture; empty = capture all
-	ExcludePaths   []string     // path substrings to exclude from capture (checked first)
-	FilterPatterns []string     // tool name patterns to strip; nil = defaultFilterPatterns; []string{} = disable all filtering
-	Injector       Enricher     // optional memory injector; nil = disabled
-	CA             *mitm.CA     // non-nil enables TLS-MITM: CONNECT tunnels are terminated and intercepted
-	MITMHosts      []string     // extra hosts to TLS-terminate (besides the upstream host); "*" intercepts all. Others are blind-tunneled untouched.
-	Stats          *stats.Stats // optional session counters (e.g. MITM upgraded-stream count)
-	Clock          Clock        // source of capture timestamps/durations; nil = SystemClock
+	ListenAddr     string           // e.g. "127.0.0.1:0" for random port
+	Upstream       string           // real API URL to forward to
+	AgentName      string           // agent name for tagging in MuninnDB
+	Store          Storer           // MuninnDB writer; nil = discard captures
+	CapturePaths   []string         // path substrings to capture; empty = capture all
+	ExcludePaths   []string         // path substrings to exclude from capture (checked first)
+	FilterPatterns []string         // tool name patterns to strip; nil = defaultFilterPatterns; []string{} = disable all filtering
+	Injector       *inject.Injector // optional memory injector; nil = disabled
+	CA             *mitm.CA         // non-nil enables TLS-MITM: CONNECT tunnels are terminated and intercepted
+	MITMHosts      []string         // extra hosts to TLS-terminate (besides the upstream host); "*" intercepts all. Others are blind-tunneled untouched.
+	Stats          *stats.Stats     // optional session counters (e.g. MITM upgraded-stream count)
+	Clock          Clock            // source of capture timestamps/durations; nil = SystemClock
 }
 
 // New creates a Proxy. Use ListenAddr "127.0.0.1:0" in Config to bind to a
@@ -396,10 +391,7 @@ func (p *Proxy) instrument(w http.ResponseWriter, r *http.Request, start time.Ti
 	// Enrich with recalled memories if injector is enabled.
 	forwardBody := reqBody
 	if p.injector != nil && len(reqBody) > 0 {
-		enriched, _, err := p.injector.Enrich(r.Context(), reqBody)
-		if err != nil {
-			slog.Warn("inject enrichment failed, using original body", "request_id", id, "path", r.URL.Path, "err", err)
-		} else if len(enriched) > 0 {
+		if enriched, _ := p.injector.Enrich(r.Context(), reqBody); len(enriched) > 0 {
 			forwardBody = enriched
 		}
 	}

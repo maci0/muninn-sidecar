@@ -204,24 +204,6 @@ func TestResolveConfig(t *testing.T) {
 	}
 }
 
-func TestDefaultMCPURL(t *testing.T) {
-	t.Setenv("MUNINN_MCP_URL", "")
-	if got := defaultMCPURL(); got != "http://127.0.0.1:8750/mcp" {
-		t.Errorf("default mcp url %q", got)
-	}
-	t.Setenv("MUNINN_MCP_URL", "http://custom/mcp")
-	if got := defaultMCPURL(); got != "http://custom/mcp" {
-		t.Errorf("env mcp url %q", got)
-	}
-}
-
-func TestDefaultToken(t *testing.T) {
-	t.Setenv("MUNINN_TOKEN", "envtok")
-	if got := defaultToken(); got != "envtok" {
-		t.Errorf("env token %q", got)
-	}
-}
-
 // FuzzParseFlags: parsing arbitrary arg lists must never panic.
 func FuzzParseFlags(f *testing.F) {
 	f.Add("--vault v --debug claude")

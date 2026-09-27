@@ -45,10 +45,8 @@ func neutralizedLen(s string) int {
 // two separating newlines, and the data-not-instructions notice. Shared by the
 // budget estimator and the formatter so the token count the injector reports
 // matches the bytes it actually writes.
-func contextOverheadBytes() int {
-	return len(apiformat.ContextPrefix) + len(apiformat.ContextNotice) +
-		len(apiformat.ContextSuffix) + 3
-}
+const contextOverheadBytes = len(apiformat.ContextPrefix) + len(apiformat.ContextNotice) +
+	len(apiformat.ContextSuffix) + 3
 
 // minOversizedMemoryBytes is the floor for an over-budget memory's truncated
 // content. A budget below this would otherwise make the first memory
@@ -113,7 +111,7 @@ func withinBudget(memories []memory, budget int) []memory {
 	} else {
 		budgetBytes *= charPerToken
 	}
-	totalBytes := contextOverheadBytes()
+	totalBytes := contextOverheadBytes
 
 	kept := make([]memory, 0, len(memories))
 	for _, m := range memories {
@@ -172,7 +170,7 @@ func formatContextBlock(memories []memory, budget int) (string, int, int) {
 	sb.WriteString(apiformat.ContextNotice)
 	sb.WriteString("\n")
 
-	totalBytes := contextOverheadBytes()
+	totalBytes := contextOverheadBytes
 	for _, m := range kept {
 		// Defense in depth: scrub secrets from recalled content before it is
 		// injected into the outgoing request. A memory stored by another client

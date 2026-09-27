@@ -106,7 +106,7 @@ func run() error {
 		*doProbe = true
 	}
 
-	client := mcpclient.New(*mcpURL, resolveToken(*token), *timeout)
+	client := mcpclient.New(*mcpURL, config.Token(*token), *timeout)
 	var items []item
 	var presentProbes, absentProbes []probe
 	var err error

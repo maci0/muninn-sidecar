@@ -315,7 +315,3 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 func resolveConfig(o *opts) (mcpURL, token, vault string) {
 	return config.MCPURL(o.mcpURL), config.Token(o.token), config.Vault(o.vault)
 }
-
-func defaultMCPURL() string { return config.MCPURL("") }
-
-func defaultToken() string { return config.Token("") }

@@ -16,8 +16,10 @@
 package inject
 
 import (
+	"cmp"
 	"math"
 	"math/rand"
+	"slices"
 )
 
 // windowMemory is one memory in a simulated session: recalled once at Intro with
@@ -141,10 +143,6 @@ func RunWindowStudy(seed int64, n int) []WindowParams {
 		p, r, f := scoreWindow(sessions, d, gate)
 		out = append(out, WindowParams{Decay: d, Gate: gate, Precision: p, Recall: r, F1: f})
 	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].F1 > out[j-1].F1; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	slices.SortFunc(out, func(a, b WindowParams) int { return cmp.Compare(b.F1, a.F1) })
 	return out
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -92,15 +93,8 @@ func containsAnswer(text string, golds []string) bool {
 
 // hasTokenSeq reports whether seq occurs as a contiguous run within toks.
 func hasTokenSeq(toks, seq []string) bool {
-	for i := 0; i+len(seq) <= len(toks); i++ {
-		match := true
-		for j, s := range seq {
-			if toks[i+j] != s {
-				match = false
-				break
-			}
-		}
-		if match {
+	for i := range len(toks) - len(seq) + 1 {
+		if slices.Equal(toks[i:i+len(seq)], seq) {
 			return true
 		}
 	}

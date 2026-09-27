@@ -271,7 +271,7 @@ func filterMCPToolsDoc(doc map[string]any, patterns []string) bool {
 
 	// Anthropic response: filter top-level content array.
 	if content, ok := doc["content"].([]any); ok {
-		filtered, _ := filterContentBlocks(content, patterns, nil)
+		filtered := filterContentBlocks(content, patterns, nil)
 		if len(filtered) != len(content) {
 			doc["content"] = filtered
 			changed = true
@@ -387,7 +387,7 @@ func filterMessages(messages []any, patterns []string) ([]any, bool) {
 
 		// Anthropic: filter content blocks array.
 		if content, ok := m["content"].([]any); ok {
-			kept, _ := filterContentBlocks(content, patterns, removedIDs)
+			kept := filterContentBlocks(content, patterns, removedIDs)
 			if len(kept) == 0 {
 				continue // drop empty message
 			}
@@ -461,9 +461,10 @@ func collectMatchingToolIDs(messages []any, patterns []string) map[string]bool {
 }
 
 // filterContentBlocks removes tool_use and tool_result blocks from an
-// Anthropic content array. Returns the kept blocks and a set of removed
-// tool_use IDs (which may extend the passed-in removedIDs).
-func filterContentBlocks(content []any, patterns []string, removedIDs map[string]bool) ([]any, map[string]bool) {
+// Anthropic content array. removedIDs accumulates the tool_use IDs dropped
+// along the way, so a caller filtering several messages in one pass sees the
+// ids collected by the earlier ones.
+func filterContentBlocks(content []any, patterns []string, removedIDs map[string]bool) []any {
 	if removedIDs == nil {
 		removedIDs = map[string]bool{}
 	}
@@ -489,7 +490,7 @@ func filterContentBlocks(content []any, patterns []string, removedIDs map[string
 	}
 
 	if len(removedIDs) == 0 && !hasNameMatch {
-		return content, removedIDs
+		return content
 	}
 
 	kept, _ := filterArray(content, func(b map[string]any) bool {
@@ -513,7 +514,7 @@ func filterContentBlocks(content []any, patterns []string, removedIDs map[string
 		}
 		return true
 	})
-	return kept, removedIDs
+	return kept
 }
 
 // filterOpenAIToolCalls removes matching tool_calls entries from an

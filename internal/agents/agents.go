@@ -4,11 +4,11 @@ package agents
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -300,6 +300,23 @@ func (a Agent) EnvOverrides(proxyURL, upstream string) map[string]string {
 	return replace
 }
 
+// applyOverrides returns env with every key in replace dropped and re-added
+// with the override's value, so an inherited setting never wins over ours.
+func applyOverrides(env []string, replace map[string]string) []string {
+	filtered := make([]string, 0, len(env)+len(replace))
+	for _, e := range env {
+		key, _, _ := strings.Cut(e, "=")
+		if _, ok := replace[key]; ok {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	for k, v := range replace {
+		filtered = append(filtered, k+"="+v)
+	}
+	return filtered
+}
+
 func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 	env := os.Environ()
 
@@ -308,19 +325,7 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 	// which internal code path it takes (e.g. Gemini OAuth vs API key).
 	replace := a.EnvOverrides(proxyURL, upstream)
 
-	filtered := make([]string, 0, len(env)+len(replace))
-	for _, e := range env {
-		key, _, _ := strings.Cut(e, "=")
-		if _, ok := replace[key]; ok {
-			continue // will be re-added below
-		}
-		filtered = append(filtered, e)
-	}
-	for k, v := range replace {
-		filtered = append(filtered, k+"="+v)
-	}
-
-	return filtered
+	return applyOverrides(env, replace)
 }
 
 // MITMOverrides is the child-environment override set for TLS-MITM mode, shared
@@ -381,18 +386,7 @@ func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath, caBundlePath string)
 	// child must still be able to verify.
 	replace := a.MITMOverrides(proxyURL, upstream, caCertPath, caBundlePath)
 
-	filtered := make([]string, 0, len(env)+len(replace))
-	for _, e := range env {
-		key, _, _ := strings.Cut(e, "=")
-		if _, ok := replace[key]; ok {
-			continue
-		}
-		filtered = append(filtered, e)
-	}
-	for k, v := range replace {
-		filtered = append(filtered, k+"="+v)
-	}
-	return filtered
+	return applyOverrides(env, replace)
 }
 
 // buildArgs assembles the child argv: WaitArgs, then ProxyArgs (with the
@@ -529,10 +523,5 @@ func (a Agent) runArgv(env []string, argv []string) error {
 
 // ListSorted returns all registered agent names in sorted order.
 func ListSorted() []string {
-	names := make([]string, 0, len(Registry))
-	for k := range Registry {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(Registry))
 }

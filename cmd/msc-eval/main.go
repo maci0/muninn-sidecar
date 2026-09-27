@@ -53,7 +53,7 @@ func run() error {
 		asJSON     = flag.Bool("json", false, "emit machine-readable JSON instead of a table")
 		live       = flag.Bool("live", false, "run live end-to-end evaluation against a real MuninnDB")
 		liveFile   = flag.String("live-file", "", "live scenario JSON file (required with -live)")
-		mcpURL     = flag.String("mcp-url", defaultMCPURL(), "MuninnDB MCP endpoint (live mode)")
+		mcpURL     = flag.String("mcp-url", config.MCPURL(""), "MuninnDB MCP endpoint (live mode)")
 		token      = flag.String("token", "", "MuninnDB bearer token (live mode; default ~/.muninn/mcp.token)")
 		vault      = flag.String("vault", "msc-eval", "vault to seed/probe (live mode)")
 		settle     = flag.Duration("settle", 750*time.Millisecond, "delay after seeding before probing (live mode)")
@@ -75,7 +75,7 @@ func run() error {
 		if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
 			return err
 		}
-		return runLive(*liveFile, *mcpURL, resolveToken(*token), *vault, *minScore, *budget, *settle, *timeout, *asJSON)
+		return runLive(*liveFile, *mcpURL, config.Token(*token), *vault, *minScore, *budget, *settle, *timeout, *asJSON)
 	}
 	return runOffline(*file, *minScore, *budget, *sweep, *compare, *asJSON, studyOpts{seed: *studySeed, n: *studyN, folds: *studyFolds})
 }
@@ -291,7 +291,3 @@ func trunc(s string, n int) string {
 }
 
 // --- MuninnDB config resolution (shared with the other msc binaries) ---
-
-func defaultMCPURL() string { return config.MCPURL("") }
-
-func resolveToken(flagVal string) string { return config.Token(flagVal) }

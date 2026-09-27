@@ -118,7 +118,7 @@ func run() error {
 	}
 	fmt.Fprintf(os.Stderr, "loaded %d %s questions\n", len(questions), *dataset)
 
-	mcp := mcpclient.New(*mcpURL, resolveToken(*token), *timeout)
+	mcp := mcpclient.New(*mcpURL, config.Token(*token), *timeout)
 	ctx := context.Background()
 
 	// Optional answer-grounding rerank: a 4th "grounded" arm filters the injected

@@ -203,10 +203,7 @@ func TestEnrichAnthropic(t *testing.T) {
 	})
 
 	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
-	enriched, tokens, err := inj.Enrich(t.Context(), body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	enriched, tokens := inj.Enrich(t.Context(), body)
 	if tokens <= 0 {
 		t.Error("expected positive token count")
 	}
@@ -256,10 +253,7 @@ func TestEnrichOpenAI(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"system","content":"You are helpful"},{"role":"user","content":"hello"}]}`)
-	enriched, _, err := inj.Enrich(t.Context(), body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	enriched, _ := inj.Enrich(t.Context(), body)
 
 	var doc map[string]any
 	if err := json.Unmarshal(enriched, &doc); err != nil {
@@ -292,10 +286,7 @@ func TestEnrichGemini(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
 
 	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
-	enriched, _, err := inj.Enrich(t.Context(), body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	enriched, _ := inj.Enrich(t.Context(), body)
 
 	var doc map[string]any
 	if err := json.Unmarshal(enriched, &doc); err != nil {
@@ -327,10 +318,7 @@ func TestEnrichTimeout(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 50 * time.Millisecond})
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-	result, tokens, err := inj.Enrich(t.Context(), body)
-	if err != nil {
-		t.Fatal("expected no error on timeout (graceful fallback)")
-	}
+	result, tokens := inj.Enrich(t.Context(), body)
 	if tokens != 0 {
 		t.Error("expected 0 tokens on timeout")
 	}
@@ -349,7 +337,7 @@ func TestEnrichEmptyResults(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-	result, tokens, _ := inj.Enrich(t.Context(), body)
+	result, tokens := inj.Enrich(t.Context(), body)
 	if tokens != 0 {
 		t.Error("expected 0 tokens for empty results")
 	}
@@ -375,22 +363,16 @@ func TestNegativeCacheExpires(t *testing.T) {
 	inj.now = func() time.Time { return clock }
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"how do we deploy"}]}`)
-	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
-		t.Fatal(err)
-	}
+	inj.Enrich(t.Context(), body)
 	// Within the TTL the repeated intent is served from the negative cache.
-	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
-		t.Fatal(err)
-	}
+	inj.Enrich(t.Context(), body)
 	if got := recalls.Load(); got != 1 {
 		t.Fatalf("recall fired %d times inside the TTL, want 1 (negative cache)", got)
 	}
 
 	// Past it, the vault is re-queried.
 	clock = clock.Add(intentCacheTTL + time.Second)
-	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
-		t.Fatal(err)
-	}
+	inj.Enrich(t.Context(), body)
 	if got := recalls.Load(); got != 2 {
 		t.Errorf("recall fired %d times, want 2 after the intent cache expired", got)
 	}
@@ -413,20 +395,14 @@ func TestIntentWindowReuseExpires(t *testing.T) {
 	inj.now = func() time.Time { return clock }
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"how do we deploy"}]}`)
-	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
-		t.Fatal(err)
-	}
+	inj.Enrich(t.Context(), body)
+	inj.Enrich(t.Context(), body)
 	if got := recalls.Load(); got != 1 {
 		t.Fatalf("recall fired %d times for a continuation, want 1 (window reuse)", got)
 	}
 
 	clock = clock.Add(intentCacheTTL + time.Second)
-	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
-		t.Fatal(err)
-	}
+	inj.Enrich(t.Context(), body)
 	if got := recalls.Load(); got != 2 {
 		t.Errorf("recall fired %d times, want 2 after the intent cache expired", got)
 	}
@@ -456,9 +432,7 @@ func TestEnrichRedactsQueryBeforeRecall(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
 
 	body := []byte(`{"model":"claude-3","messages":[{"role":"user","content":"email alice at 415-555-0132 about the invoice"}]}`)
-	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
-		t.Fatal(err)
-	}
+	inj.Enrich(t.Context(), body)
 
 	if sent == "" {
 		t.Fatal("recall server received no query")
@@ -485,7 +459,7 @@ func TestEnrichServerError(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-	result, tokens, _ := inj.Enrich(t.Context(), body)
+	result, tokens := inj.Enrich(t.Context(), body)
 	if tokens != 0 {
 		t.Error("expected 0 tokens on server error")
 	}
@@ -498,7 +472,7 @@ func TestEnrichUnrecognizedFormat(t *testing.T) {
 	inj := New(Config{MCPURL: "http://unused", Timeout: 2 * time.Second})
 
 	body := []byte(`{"prompt":"hello","max_tokens":100}`)
-	result, tokens, _ := inj.Enrich(t.Context(), body)
+	result, tokens := inj.Enrich(t.Context(), body)
 	if tokens != 0 {
 		t.Error("expected 0 tokens for unrecognized format")
 	}
@@ -523,7 +497,7 @@ func TestTokenBudget(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 200})
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-	result, _, _ := inj.Enrich(t.Context(), body)
+	result, _ := inj.Enrich(t.Context(), body)
 
 	resultStr := string(result)
 	if !strings.Contains(resultStr, "high score") {
@@ -541,7 +515,7 @@ func TestEnrichInvalidJSON(t *testing.T) {
 	inj := New(Config{MCPURL: "http://unused", Timeout: 2 * time.Second})
 
 	body := []byte(`not json at all`)
-	result, tokens, _ := inj.Enrich(t.Context(), body)
+	result, tokens := inj.Enrich(t.Context(), body)
 	if tokens != 0 {
 		t.Error("expected 0 tokens for invalid JSON")
 	}
@@ -607,10 +581,7 @@ func TestWhereLeftOffInjection(t *testing.T) {
 	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
 
 	// First call should include where_left_off context.
-	enriched, tokens, err := inj.Enrich(t.Context(), body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	enriched, tokens := inj.Enrich(t.Context(), body)
 	if tokens <= 0 {
 		t.Error("expected positive token count")
 	}
@@ -624,7 +595,7 @@ func TestWhereLeftOffInjection(t *testing.T) {
 	}
 
 	// Second call should NOT contain session-context (only injected once).
-	enriched2, _, _ := inj.Enrich(t.Context(), body)
+	enriched2, _ := inj.Enrich(t.Context(), body)
 	if strings.Contains(string(enriched2), "session-context") {
 		t.Error("second enrichment should NOT contain session-context")
 	}
@@ -672,10 +643,7 @@ func TestSessionContextEntryCapWellFormed(t *testing.T) {
 
 	inj := New(Config{MCPURL: srv.URL, Vault: "default", Budget: 2048, Timeout: 2 * time.Second})
 	body := []byte(`{"model":"claude-3","system":"s","messages":[{"role":"user","content":"hi"}]}`)
-	enriched, _, err := inj.Enrich(t.Context(), body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	enriched, _ := inj.Enrich(t.Context(), body)
 	s := string(enriched)
 	if !strings.Contains(s, "fact number 0") {
 		t.Error("expected the start of the session context to survive")
@@ -729,7 +697,7 @@ func TestWhereLeftOffEmpty(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-	result, tokens, _ := inj.Enrich(t.Context(), body)
+	result, tokens := inj.Enrich(t.Context(), body)
 
 	if tokens != 0 {
 		t.Error("expected 0 tokens when both where_left_off and recall are empty")
@@ -864,10 +832,7 @@ func TestWhereLeftOffWithOpenAI(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"system","content":"You are helpful"},{"role":"user","content":"hello"}]}`)
-	enriched, tokens, err := inj.Enrich(t.Context(), body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	enriched, tokens := inj.Enrich(t.Context(), body)
 	if tokens <= 0 {
 		t.Error("expected positive token count")
 	}
@@ -940,10 +905,7 @@ func TestWhereLeftOffWithGemini(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
 
 	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
-	enriched, tokens, err := inj.Enrich(t.Context(), body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	enriched, tokens := inj.Enrich(t.Context(), body)
 	if tokens <= 0 {
 		t.Error("expected positive token count")
 	}
@@ -1005,11 +967,7 @@ func TestConcurrentEnrichment(t *testing.T) {
 		go func(idx int) {
 			defer func() { done <- struct{}{} }()
 			body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"concurrent test"}]}`)
-			result, _, err := inj.Enrich(t.Context(), body)
-			if err != nil {
-				t.Errorf("goroutine %d: unexpected error: %v", idx, err)
-				return
-			}
+			result, _ := inj.Enrich(t.Context(), body)
 			if len(result) == 0 {
 				t.Errorf("goroutine %d: got empty result", idx)
 			}
@@ -1042,7 +1000,7 @@ func TestMalformedRecallResponse(t *testing.T) {
 
 		inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
 		body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-		result, tokens, _ := inj.Enrich(t.Context(), body)
+		result, tokens := inj.Enrich(t.Context(), body)
 		if tokens != 0 {
 			t.Error("expected 0 tokens for empty recall content")
 		}
@@ -1068,7 +1026,7 @@ func TestMalformedRecallResponse(t *testing.T) {
 
 		inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
 		body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-		result, tokens, _ := inj.Enrich(t.Context(), body)
+		result, tokens := inj.Enrich(t.Context(), body)
 		if tokens != 0 {
 			t.Error("expected 0 tokens for non-text content")
 		}
@@ -1094,7 +1052,7 @@ func TestMalformedRecallResponse(t *testing.T) {
 
 		inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
 		body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-		result, tokens, _ := inj.Enrich(t.Context(), body)
+		result, tokens := inj.Enrich(t.Context(), body)
 		if tokens != 0 {
 			t.Error("expected 0 tokens for garbled recall response")
 		}
@@ -1151,10 +1109,7 @@ func TestSessionContextOnlyInjection(t *testing.T) {
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
 
 	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
-	enriched, tokens, err := inj.Enrich(t.Context(), body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	enriched, tokens := inj.Enrich(t.Context(), body)
 	if tokens <= 0 {
 		t.Fatal("expected positive token count for session-context-only injection")
 	}
@@ -1385,14 +1340,14 @@ func TestSessionMemoryWindow(t *testing.T) {
 	}
 
 	// Turn 1: Should contain auth rules.
-	enriched1, _, _ := inj.Enrich(t.Context(), turnBody("how does auth work"))
+	enriched1, _ := inj.Enrich(t.Context(), turnBody("how does auth work"))
 	r1 := string(enriched1)
 	if !strings.Contains(r1, "auth rules") {
 		t.Error("turn 1: should contain auth rules")
 	}
 
 	// Turn 2: Should contain BOTH test patterns (new) AND auth rules (decayed but present).
-	enriched2, _, _ := inj.Enrich(t.Context(), turnBody("how should I write tests"))
+	enriched2, _ := inj.Enrich(t.Context(), turnBody("how should I write tests"))
 	r2 := string(enriched2)
 	if !strings.Contains(r2, "test patterns") {
 		t.Error("turn 2: should contain test patterns")
@@ -1405,7 +1360,7 @@ func TestSessionMemoryWindow(t *testing.T) {
 	// two turns (0.90 * 0.7^2 = 0.441), dropping below the 0.6 injection
 	// threshold — it remains in the window (above the 0.2 eviction floor, so a
 	// re-recall could revive it) but is no longer confident enough to inject.
-	enriched3, _, _ := inj.Enrich(t.Context(), turnBody("remind me about testing again"))
+	enriched3, _ := inj.Enrich(t.Context(), turnBody("remind me about testing again"))
 	r3 := string(enriched3)
 	if !strings.Contains(r3, "test patterns") {
 		t.Error("turn 3: should contain test patterns")
@@ -1431,7 +1386,7 @@ func TestRecallReuseOnUnchangedQuery(t *testing.T) {
 	body := []byte(`{"model":"claude-3","system":"x","messages":[{"role":"user","content":"how does auth work"}]}`)
 
 	for i := 0; i < 4; i++ {
-		enriched, _, _ := inj.Enrich(t.Context(), body)
+		enriched, _ := inj.Enrich(t.Context(), body)
 		if !strings.Contains(string(enriched), "auth rules") {
 			t.Fatalf("call %d: expected auth rules injected (from window)", i)
 		}
@@ -1467,7 +1422,7 @@ func TestAutoCalibrateLowersGate(t *testing.T) {
 	}
 
 	// Early on (threshold 0.6) nothing is injected.
-	if out, _, _ := inj.Enrich(t.Context(), mk(0)); strings.Contains(string(out), "useful answer") {
+	if out, _ := inj.Enrich(t.Context(), mk(0)); strings.Contains(string(out), "useful answer") {
 		t.Fatal("turn 0: should suppress at the default 0.6 gate")
 	}
 	// Drive enough distinct-query recalls to trigger calibration.
@@ -1478,7 +1433,7 @@ func TestAutoCalibrateLowersGate(t *testing.T) {
 		t.Fatalf("auto-calibration should drop minScore below 0.45, got %.3f", ms)
 	}
 	// Now the relevant (0.45) memory clears the calibrated gate.
-	out, _, _ := inj.Enrich(t.Context(), mk(20))
+	out, _ := inj.Enrich(t.Context(), mk(20))
 	if !strings.Contains(string(out), "useful answer") {
 		t.Error("after calibration the relevant memory should be injected")
 	}
@@ -1498,7 +1453,7 @@ func TestNegativeCache(t *testing.T) {
 	body := []byte(`{"model":"claude-3","system":"x","messages":[{"role":"user","content":"obscure thing not in memory"}]}`)
 
 	for i := 0; i < 5; i++ {
-		out, tok, _ := inj.Enrich(t.Context(), body)
+		out, tok := inj.Enrich(t.Context(), body)
 		if tok != 0 || strings.Contains(string(out), apiformat.ContextPrefix) {
 			t.Fatalf("call %d: expected no injection", i)
 		}
@@ -1555,7 +1510,7 @@ func TestSessionMemoryEviction(t *testing.T) {
 	}
 
 	// Turn 1: Contains old context.
-	enriched1, _, _ := inj.Enrich(t.Context(), turnBody(1))
+	enriched1, _ := inj.Enrich(t.Context(), turnBody(1))
 	if !strings.Contains(string(enriched1), "old context") {
 		t.Error("turn 1: should contain old context")
 	}
@@ -1563,7 +1518,7 @@ func TestSessionMemoryEviction(t *testing.T) {
 	// Turns 2-5: Keep calling (distinct queries) to decay.
 	var last string
 	for i := 2; i <= 5; i++ {
-		enriched, _, _ := inj.Enrich(t.Context(), turnBody(i))
+		enriched, _ := inj.Enrich(t.Context(), turnBody(i))
 		last = string(enriched)
 	}
 
@@ -1851,7 +1806,7 @@ func TestEnrichDropsWeakTail(t *testing.T) {
 
 	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 4096})
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
-	enriched, _, _ := inj.Enrich(t.Context(), body)
+	enriched, _ := inj.Enrich(t.Context(), body)
 	s := string(enriched)
 	if !strings.Contains(s, "primary topic") {
 		t.Error("strong memory should be injected")
