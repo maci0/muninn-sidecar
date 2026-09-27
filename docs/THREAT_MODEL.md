@@ -73,8 +73,9 @@ in the tree, so msc has no admin port, no container-exposed listener, and no
 default service to account for. The only deployment-adjacent surface is
 `.github/workflows/ci.yml` (test, lint, build, repro, fuzz, and vuln jobs), which
 runs untrusted build input, the repository's own code, with no secrets beyond
-the default `GITHUB_TOKEN` and read-only `contents: permission`
-(`.github/workflows/ci.yml:12`). Developer tooling that reaches the network:
+the default `GITHUB_TOKEN` and read-only permissions (a workflow-level
+`permissions: contents: read`, `.github/workflows/ci.yml:15`). Developer
+tooling that reaches the network:
 `scripts/fetch_hf_datasets.py` downloads third-party corpora over
 `urllib.request` for `msc-bench` / `msc-qa` to consume; that content is
 third-party text and reaches a judge model through the fenced prompt described

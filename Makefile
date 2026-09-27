@@ -28,7 +28,8 @@ BUILDFLAGS = -trimpath -buildvcs=false
 CGO = CGO_ENABLED=0
 
 .PHONY: help doctor tools tools-staticcheck tools-govulncheck check build build-all build-matrix install \
-	test test-short test-fast cover lint lint-go lint-non-go lint-ci lint-available check-race check-release vet vuln fmt \
+	test test-short test-fast cover lint lint-go lint-non-go lint-ci lint-available check-race check-release \
+	go-version-check vet vuln fmt \
 	fmt-check tidy tidy-check clean eval eval-models fuzz bench versions
 
 # Packages/tests for the `test` target. PKG=./internal/redact narrows the
@@ -54,9 +55,10 @@ GOVULNCHECK_PKG = golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 # The non-Go linters CI runs through pipx, pinned per run. A pin that lives only
 # in ci.yml is one no local command can name, and an unpinned local copy is how
 # a green `make check` turns into a red push: new rules land in every ruff
-# release. `make lint-ci` is what ci.yml runs, so this is the only copy CI and a
-# contributor can read, and `make versions` prints the two values in a form any
-# shell can eval to reproduce the CI lint job.
+# release. The pins therefore live here and `make lint-ci` (what ci.yml runs)
+# passes them down, so this is the only copy CI and a contributor can read;
+# `make versions` prints both values in a form any shell can eval to reproduce
+# the CI lint job.
 RUFF_VERSION ?= 0.16.4
 YAMLLINT_VERSION ?= 1.38.0
 
@@ -72,7 +74,7 @@ help:
 	@echo '  make tools        go install the two CI linters (staticcheck, govulncheck) into GOBIN'
 	@echo '  make tools-staticcheck   just the staticcheck install (what the CI test job runs)'
 	@echo '  make tools-govulncheck   just the govulncheck install (what the CI vuln job runs)'
-	@echo '  make check        everything CI runs locally: tidy-check fmt-check lint-available lint test build-all check-release'
+	@echo '  make check        everything CI runs locally: tidy-check go-version-check fmt-check lint-available lint test build-all check-release'
 	@echo '                   (the matrix, repro, fuzz and vuln jobs have their own targets, listed below)'
 	@echo '  make check-release  the changelog matches the tag: sections in version order, every version linked, (with TAG=vX.Y.Z) the tagged version documented'
 	@echo '  make test         go test -race -count=1 $(PKG)   (override PKG=... or RUN='"'"'^TestFoo$$'"'"')'
@@ -87,6 +89,7 @@ help:
 	@echo '  make lint-non-go  shellcheck + ruff + yamllint only, the three CI runs'
 	@echo '  make lint-ci      lint-non-go with the pinned ruff/yamllint (what the CI lint job runs)'
 	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
+	@echo '  make go-version-check  fail if CI installs an older Go than the go.mod directive requires'
 	@echo '  make cover        race + coverage report'
 	@echo '  make fuzz         brief campaign over every fuzz target (FUZZTIME=60s for longer)'
 	@echo '  make vuln         govulncheck against the Go vulnerability DB (govulncheck required)'
@@ -181,7 +184,29 @@ tools-govulncheck:
 # pushing: anything it misses is a red CI run. lint-available is in the list
 # because CI installs the non-Go linters and fails without them, so a local
 # `make check` that skipped one would report green and turn red after the push.
-check: tidy-check fmt-check lint-available lint test build-all check-release
+check: tidy-check go-version-check fmt-check lint-available lint test build-all check-release
+
+# ci.yml installs the Go release line named by its GO_VERSION; go.mod's directive
+# is the floor the tree needs. Bump one without the other and CI builds with the
+# wrong toolchain: a raised directive fails late as a "note: module requires Go X"
+# under an unrelated build error, and a lowered one compiles silently against a
+# toolchain nobody chose. Compare them here so the mismatch is one clear message
+# before the push rather than a confusing build after it.
+go-version-check:
+	@ci=$$(sed -n 's/^  GO_VERSION: *"\([^"]*\)"$$/\1/p' .github/workflows/ci.yml); \
+	 mod=$$(awk '/^go /{print $$2}' go.mod); \
+	 if [ -z "$$ci" ]; then \
+	   echo "go-version-check: no GO_VERSION in .github/workflows/ci.yml" >&2; exit 1; \
+	 fi; \
+	 if ! awk -v ci="$$ci" -v mod="$$mod" 'BEGIN{ \
+	     n=split(mod,m,"."); nc=split(ci,c,"."); \
+	     for (i=1; i<=n; i++) { if ((i<=nc ? c[i] : 0)+0 < m[i]+0) exit 1 } \
+	     exit 0 }'; then \
+	   echo "go-version-check: CI installs Go $$ci, but go.mod requires $$mod or newer" >&2; \
+	   echo "  bump GO_VERSION in .github/workflows/ci.yml to match" >&2; \
+	   exit 1; \
+	 fi; \
+	 echo "go-version-check: ok (CI $$ci, go.mod $${mod:-unset})"
 
 # CI runs `go mod tidy` and fails if it changes anything, so a stale go.mod
 # only surfaces after a push. Same check, same message, locally: the workflow
@@ -307,8 +332,8 @@ fuzz:
 # are spelled out: the CI `lint` job calls it too, with RUFF and YAMLLINT
 # pointed at the pinned ephemeral runners (pipx, nothing installed onto the
 # runner), so the rule set a contributor checks is the one CI enforces instead
-# of a second copy of these four commands drifting in ci.yml. The pins live in
-# ci.yml's env, which is what it passes down.
+# of a second copy of these four commands drifting in ci.yml. The pins are the
+# Makefile variables above; ci.yml passes nothing down.
 SHELLCHECK ?= shellcheck
 RUFF        ?= ruff
 YAMLLINT    ?= yamllint
@@ -339,7 +364,7 @@ lint-non-go:
 lint: lint-go lint-non-go
 
 # The lint job's invocation, pins and all. CI runs this rather than repeating
-# the versions, so a pin bumped here is the pin CI enforces: the copy in
+# the versions, so a pin bumped here is the pin CI enforces: a second copy in
 # ci.yml is what made `make lint` and CI able to disagree about which ruff
 # release the rule set is written against. Nothing is installed onto the
 # runner: ruff and yamllint go through pipx at the versions above.

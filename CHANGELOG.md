@@ -116,6 +116,12 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
   ring window is also rolled before each flush rather than after, so a delivered
   memory occupies the full ~16s window instead of being cleared by the same tick
   that stored it.
+- **A `go.mod` bump cannot leave CI on an older Go.** `ci.yml` installs the
+  release line in its own `GO_VERSION` and `go.mod` names the floor the module
+  needs, with nothing comparing them: raise the directive and the build fails
+  late as a `note: module requires Go X.Y` under an unrelated error, lower it and
+  the tree compiles silently against a toolchain nobody chose. `make
+  go-version-check`, part of `make check`, fails with both versions named.
 - **Reader output and judge scope are capped at startup.** `-max-tokens`
   (`msc-qa`) and `-ground-topk` (`msc-qa`, `msc-bench`) were the only things
   bounding a model call, and neither rejected a zero: providers that honor

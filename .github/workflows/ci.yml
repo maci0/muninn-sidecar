@@ -17,10 +17,11 @@ permissions:
 
 # One place for every pinned tool version, shared by the steps that use it.
 # GO_VERSION is the 1.25 release line, not a fixed patch: it is declared once
-# here and read by every setup-go step, so the line cannot drift between jobs,
-# and `make doctor` checks it against the go directive in go.mod. The non-Go
-# linter pins live in the Makefile and reach this workflow through `make
-# lint-ci`, so there is no second copy of them here to fall behind.
+# here and read by every setup-go step, so the line cannot drift between jobs.
+# It can still drift from the go directive in go.mod, which is why `make
+# go-version-check` (part of `make check`) fails when this line sits below it.
+# The non-Go linter pins live in the Makefile and reach this workflow through
+# `make lint-ci`, so there is no second copy of them here to fall behind.
 env:
   GO_VERSION: "1.25"
 
