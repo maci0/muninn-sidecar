@@ -220,3 +220,69 @@ func TestDedupKeyIsContentAddressed(t *testing.T) {
 		t.Fatal("a field separator inside content produced the same dedup key")
 	}
 }
+
+// A server that quotes the memory it refused would otherwise hand the captured
+// conversation straight back to the caller's log line, past the redaction the
+// write path applies. Both error shapes (JSON-RPC error object and tool-level
+// isError) go through the same scrub.
+func TestServerErrorTextIsScrubbed(t *testing.T) {
+	const secret = "ada.lovelace@example.com"
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"rpc error object", `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"rejected: ` + secret + `"}}`},
+		{"tool isError", `{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"rejected: ` + secret + `"}]}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			_, err := New(srv.URL, "", 5*time.Second).Call(context.Background(), "muninn_remember", map[string]any{})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("server error text carried personal data into the error: %v", err)
+			}
+			if !strings.Contains(err.Error(), "rejected:") {
+				t.Errorf("scrub dropped the diagnostic text: %v", err)
+			}
+		})
+	}
+}
+
+// An error message long enough to be a payload rather than a sentence is
+// truncated, so a server echoing a whole memory cannot fill a log line.
+func TestServerErrorTextIsBounded(t *testing.T) {
+	_, err := classifyResponse(200, []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"`+
+		strings.Repeat("x", maxErrorRunes*2)+`"}}`))
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("expected *RPCError, got %T: %v", err, err)
+	}
+	if n := len([]rune(rpcErr.Message)); n > maxErrorRunes+1 {
+		t.Errorf("message not bounded: %d runes", n)
+	}
+	if !strings.HasSuffix(rpcErr.Message, "…") {
+		t.Error("truncation is not marked")
+	}
+}
+
+// Truncation must not land mid-rune: a message ending in a multi-byte character
+// has to come back intact or as U+FFFD-free text, not a replacement char.
+func TestServerErrorTextTruncationKeepsRunes(t *testing.T) {
+	msg := strings.Repeat("é", maxErrorRunes+50)
+	_, err := classifyResponse(200, []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"`+msg+`"}}`))
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("expected *RPCError, got %T: %v", err, err)
+	}
+	if strings.ContainsRune(rpcErr.Message, '�') {
+		t.Errorf("truncation split a rune: %q", rpcErr.Message[maxErrorRunes-3:])
+	}
+}

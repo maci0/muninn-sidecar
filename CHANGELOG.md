@@ -25,7 +25,13 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   read as "set means on", so a shell profile that exported the variable to
   disable it kept the probe logging. `0`, `false`, `off`, and `no` now turn it
   off, as does leaving it empty; any other value turns it on.
-
+- **A memory server's rejection text no longer reaches the log unscrubbed.**
+  `muninn_remember` and `muninn_remember_batch` failures are reported at error
+  level with the concept and content deliberately omitted, but the error itself
+  carried the server's own message, which quotes the memory it refused. The
+  text is now scrubbed of direct identifiers and capped before it becomes an
+  error value, so no call site can leak captured conversation into a log line, a
+  stderr warning, or an `err` field by way of the transport.
 - **`msc-bench -seed` is idempotent again.** Seeded memories went out without
   the content-addressed `dedup_key` every other write path carries, so a rerun
   of `-seed` stored a second copy of the whole corpus. The duplicates crowd

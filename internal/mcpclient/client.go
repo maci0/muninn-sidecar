@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
 // maxResponseSize caps MCP response body reads to prevent a misbehaving
@@ -151,6 +153,27 @@ type ClientError struct{ Status int }
 
 func (e *ClientError) Error() string { return fmt.Sprintf("client error: HTTP %d", e.Status) }
 
+// maxErrorRunes caps the server-supplied text carried in an RPCError. A
+// rejection message is a sentence; anything past this is a server echoing a
+// whole payload, which would otherwise be pasted into a log line verbatim.
+const maxErrorRunes = 300
+
+// scrubServerText prepares server-supplied error text for use in an error
+// value. The text crosses a trust boundary: it is authored by the memory server
+// about the request it just refused, and a rejection that quotes the offending
+// memory ("content too long: <the content>") hands back exactly the captured
+// conversation the write path redacts everywhere else. Every call site treats
+// the error as safe to log or print, so the scrub belongs here rather than at
+// the log lines, where one new call site would undo it.
+func scrubServerText(s string) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) > maxErrorRunes {
+		return string(r[:maxErrorRunes]) + "…"
+	}
+	return redact.Secrets(s)
+}
+
 // RPCError is a non-retryable error for JSON-RPC protocol-level failures
 // (HTTP 200 with {"error": {...}} in the response body).
 type RPCError struct {
@@ -248,7 +271,7 @@ func classifyResponse(status int, body []byte) ([]byte, error) {
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &rpcResp) == nil && rpcResp.Error != nil {
-		return nil, &RPCError{Code: rpcResp.Error.Code, Message: rpcResp.Error.Message}
+		return nil, &RPCError{Code: rpcResp.Error.Code, Message: scrubServerText(rpcResp.Error.Message)}
 	}
 
 	// The MCP tool-level failure is the other in-band signal: HTTP 200 with
@@ -271,7 +294,7 @@ func classifyResponse(status int, body []byte) ([]byte, error) {
 				texts = append(texts, c.Text)
 			}
 		}
-		msg := strings.Join(texts, "; ")
+		msg := scrubServerText(strings.Join(texts, "; "))
 		if msg == "" {
 			msg = "tool reported an error without a message"
 		}

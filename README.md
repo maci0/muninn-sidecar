@@ -311,8 +311,9 @@ To inspect the resolved configuration without launching anything, run `msc --dry
                       trust msc's CA via NODE_EXTRA_CA_CERTS / SSL_CERT_FILE
     --mitm-host HOST  Scope MITM to HOST (repeatable/comma-separated; implies --mitm). Only
                       upstream + listed hosts are terminated; others blind-tunnel. Default: all
-    --no-redact       Disable secret redaction of captured content (full-fidelity capture;
-                      trusted environments only — secrets will be stored verbatim)
+    --no-redact       Disable secret and personal-data redaction of captured content
+                      (full-fidelity capture; trusted environments only — credentials and
+                      personal data will be stored verbatim)
     --log-json        Emit logs as JSON (for log aggregation pipelines)
     --vault NAME      MuninnDB vault name
     --mcp-url URL     MuninnDB MCP endpoint
