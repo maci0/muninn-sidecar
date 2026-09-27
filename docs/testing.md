@@ -18,7 +18,7 @@ surfaces) has a Go fuzz target.
 
 ## Fuzzing
 
-60 fuzz targets cover the untrusted-input surfaces:
+62 fuzz targets cover the untrusted-input surfaces:
 
 - **apiformat** — request/response extraction, recent-context, system-reminder
   strip, truncation (UTF-8 + length invariants), SSE delta/tool-name.
@@ -37,7 +37,12 @@ surfaces) has a Go fuzz target.
   reader, and the codex message-pairing parsers.
 - **mitm** — CONNECT host normalization (`normalizeHost`) and per-host leaf
   minting (`LeafFor`).
-- **mcpclient** — health URL derivation.
+- **mcpclient** — health URL derivation, and the response-classification
+  boundary (`classifyResponse`: 5xx/4xx/JSON-RPC error, body passed through
+  unaltered on success).
+- **store** — captured-exchange format + dedup pipeline, and the MCP retry
+  decision (`retryable`: 4xx and JSON-RPC errors permanent, 5xx and transport
+  failures transient, verdict stable under wrapping).
 - **cmd/msc** — flag parsing, Levenshtein, closest-match.
 - **cmd/msc-bench** — recall parse, query transforms, string/number helpers
   (`itoa`), corpus generators, query-rewrite sub-query parsing + prompt build.

@@ -2,9 +2,12 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -67,6 +70,53 @@ func FuzzFormatAndDedup(f *testing.F) {
 		// content, so the concept is never blank.
 		if fm.concept == "" {
 			t.Fatalf("non-nil memory has empty concept (req=%q resp=%q)", req, resp)
+		}
+	})
+}
+
+// FuzzRetryable covers the MCP retry decision: which failures justify another
+// attempt at the same logical write. 4xx responses and JSON-RPC error objects
+// are permanent rejections and must never be retried (each attempt would
+// re-push an exchange the server already refused, delaying the drain deadline);
+// transport failures and 5xx are transient. Wrapping must not change the
+// verdict, since callers add context on the way up.
+func FuzzRetryable(f *testing.F) {
+	f.Add("client", "")
+	f.Add("rpc", "no such tool")
+	f.Add("server", "")
+	f.Add("net", "connection reset")
+	f.Add("none", "")
+
+	f.Fuzz(func(t *testing.T, class, msg string) {
+		// Each class pairs the error with the verdict it must produce, so the
+		// expectation cannot drift from the input the way a separate bool seed
+		// would under mutation.
+		var err error
+		var wantRetry bool
+		switch class {
+		case "client":
+			err, wantRetry = &mcpclient.ClientError{Status: 400}, false
+		case "rpc":
+			err, wantRetry = &mcpclient.RPCError{Code: -32602, Message: msg}, false
+		case "server":
+			err, wantRetry = &mcpclient.ServerError{Status: 503}, true
+		case "net":
+			err, wantRetry = errors.New(msg), true
+		case "none":
+			// A nil error is not a failure to retry against: callTool only
+			// consults retryable after a failed attempt.
+			err, wantRetry = nil, true
+		default:
+			t.Skip()
+		}
+		// Callers add context on the way up, so the verdict must survive wrapping.
+		// fmt.Errorf cannot wrap nil, so that case is checked as-is.
+		target := err
+		if err != nil {
+			target = fmt.Errorf("flush batch: %w", err)
+		}
+		if got := retryable(target); got != wantRetry {
+			t.Fatalf("retryable(%T(%q)) = %v, want %v", err, msg, got, wantRetry)
 		}
 	})
 }

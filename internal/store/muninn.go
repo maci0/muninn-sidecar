@@ -496,17 +496,29 @@ func (s *MuninnStore) callTool(name string, args map[string]any) error {
 		}
 		// Don't retry client errors (4xx) or RPC-level errors — they
 		// indicate a permanent rejection that won't succeed on retry.
-		var ce *mcpclient.ClientError
-		if errors.As(lastErr, &ce) {
-			return lastErr
-		}
-		var re *mcpclient.RPCError
-		if errors.As(lastErr, &re) {
+		if !retryable(lastErr) {
 			return lastErr
 		}
 	}
 
 	return lastErr
+}
+
+// retryable reports whether another attempt at the same logical write could
+// plausibly succeed. 4xx responses and JSON-RPC error objects are permanent
+// rejections; everything else (transport failures, 5xx) is treated as
+// transient. Errors wrapped in context still classify through errors.As, so
+// the decision survives a caller adding context on the way up.
+func retryable(err error) bool {
+	var ce *mcpclient.ClientError
+	if errors.As(err, &ce) {
+		return false
+	}
+	var re *mcpclient.RPCError
+	if errors.As(err, &re) {
+		return false
+	}
+	return true
 }
 
 func buildTags(ex *CapturedExchange) []string {

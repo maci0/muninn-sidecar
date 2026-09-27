@@ -103,6 +103,11 @@ func healthURLFrom(mcpURL string) (string, error) {
 	return u.String(), nil
 }
 
+// ServerError is a retryable error for 5xx responses.
+type ServerError struct{ Status int }
+
+func (e *ServerError) Error() string { return fmt.Sprintf("server error: HTTP %d", e.Status) }
+
 // ClientError is a non-retryable error for 4xx responses.
 type ClientError struct{ Status int }
 
@@ -180,14 +185,21 @@ func (c *Client) CallWithID(ctx context.Context, id int64, toolName string, args
 		return nil, fmt.Errorf("MCP response exceeds %d-byte limit", maxResponseSize)
 	}
 
-	if resp.StatusCode >= 500 {
-		return nil, fmt.Errorf("server error: HTTP %d", resp.StatusCode)
+	return classifyResponse(resp.StatusCode, respBody)
+}
+
+// classifyResponse turns an HTTP status and body into either the raw success
+// body or the error the caller must see. A 5xx is transient, a 4xx or a
+// JSON-RPC error object is permanent: retrying either wastes a flush cycle or
+// delays shutdown.
+func classifyResponse(status int, body []byte) ([]byte, error) {
+	if status >= 500 {
+		return nil, &ServerError{Status: status}
 	}
-	if resp.StatusCode >= 400 {
-		return nil, &ClientError{Status: resp.StatusCode}
+	if status >= 400 {
+		return nil, &ClientError{Status: status}
 	}
 
-	// Check for JSON-RPC protocol-level errors (HTTP 200 with error body).
 	// A misbehaving or overloaded server can return HTTP 200 with
 	// {"jsonrpc":"2.0","error":{"message":"..."},"id":1} — this must not
 	// be treated as success or the memory is silently lost.
@@ -197,9 +209,9 @@ func (c *Client) CallWithID(ctx context.Context, id int64, toolName string, args
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(respBody, &rpcResp) == nil && rpcResp.Error != nil {
+	if json.Unmarshal(body, &rpcResp) == nil && rpcResp.Error != nil {
 		return nil, &RPCError{Code: rpcResp.Error.Code, Message: rpcResp.Error.Message}
 	}
 
-	return respBody, nil
+	return body, nil
 }
