@@ -137,13 +137,19 @@ func (s *Stats) Snapshot() Snapshot {
 // "other".
 const maxTrackedModels = 16
 
-// maxModelNameRunes caps one model name's length, counted in runes. A name is
+// maxModelNameRunes is the number of characters a tracked model name holds when
+// every one of them is a single byte, the case the rune cap and the byte cap
+// agree on. clipBytes enforces the name against maxModelNameLen and backs off to
+// a rune boundary, so a multi-byte name comes in under its character cap.
+const maxModelNameRunes = 64
+
+// maxModelNameLen caps one model name's length, counted in bytes. A name is
 // client-supplied text copied verbatim from the request body, so without this a
 // single multi-megabyte "model" string is retained for the session and printed
-// into the summary. Runes, not bytes: the name is a map key and lands in the
-// summary, and a byte cut would split a multi-byte character and leave invalid
-// UTF-8 in both.
-const maxModelNameRunes = 64
+// into the summary. clipBytes keeps the cut on a character boundary, because the
+// name is a map key and lands in the summary, where a split character would
+// leave invalid UTF-8 in both.
+const maxModelNameLen = 64
 
 // RecordModel increments the usage count for a model. Names past
 // maxTrackedModels are counted in ModelsDropped rather than tracked
@@ -152,9 +158,7 @@ func (s *Stats) RecordModel(model string) {
 	if model == "" {
 		return
 	}
-	if utf8.RuneCountInString(model) > maxModelNameRunes {
-		model = string([]rune(model)[:maxModelNameRunes])
-	}
+	model = clipBytes(model, maxModelNameLen)
 	if v, loaded := s.models.Load(model); loaded {
 		v.(*atomic.Int64).Add(1)
 		return
@@ -168,6 +172,30 @@ func (s *Stats) RecordModel(model string) {
 		s.modelNames.Add(1)
 	}
 	v.(*atomic.Int64).Add(1)
+}
+
+// clipBytes truncates s to at most max bytes without splitting a multi-byte
+// character. A byte count alone would leave a replacement character at the end
+// of a long non-ASCII model name, and that broken string is what gets retained
+// as the map key and printed in the session summary — the one place a name is
+// shown to a human. The same guard the SSE text accumulator and the context
+// budget packer apply to their own byte caps.
+func clipBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	s = s[:max]
+	for len(s) > 0 {
+		// A last rune decoding to RuneError at width 1 is either the tail of a
+		// sequence the cap cut in half or a stray invalid byte; both go, and
+		// only those: a valid character ending inside the cap ends the trim.
+		if r, size := utf8.DecodeLastRuneInString(s); r == utf8.RuneError && size <= 1 {
+			s = s[:len(s)-1]
+			continue
+		}
+		break
+	}
+	return s
 }
 
 // ModelsDropped returns the number of requests whose model was not tracked

@@ -205,40 +205,63 @@ func formatContextBlock(memories []memory, budget int) (string, int, int) {
 
 // InjectContext injects a context block into the request document based on
 // the API format. Returns the modified JSON body.
+//
+// Every per-format injector extends the field it knows; none of them overwrites
+// a value whose shape it does not recognize. An unrecognized shape returns an
+// error, and the caller forwards the agent's original body unchanged, because
+// the one outcome msc may never produce is a request that has quietly lost the
+// agent's own system prompt on its way upstream.
 func InjectContext(doc map[string]any, format, block string) ([]byte, error) {
 	switch format {
 	case apiformat.Anthropic:
-		injectAnthropicContext(doc, block)
+		if err := injectAnthropicContext(doc, block); err != nil {
+			return nil, err
+		}
 	case apiformat.OpenAI:
-		injectOpenAIContext(doc, block)
+		if err := injectOpenAIContext(doc, block); err != nil {
+			return nil, err
+		}
 	case apiformat.Gemini:
-		injectGeminiContext(doc, block)
+		if err := injectGeminiContext(doc, block); err != nil {
+			return nil, err
+		}
 	case apiformat.GeminiCloudCode:
 		req, ok := doc["request"].(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("gemini-cloudcode missing request field")
 		}
-		injectGeminiContext(req, block)
+		if err := injectGeminiContext(req, block); err != nil {
+			return nil, err
+		}
 	case apiformat.OpenAIResponses:
-		injectOpenAIResponsesContext(doc, block)
+		if err := injectOpenAIResponsesContext(doc, block); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", format)
 	}
 	return json.Marshal(doc)
 }
 
+// unexpectedShape names a value msc cannot extend without destroying it. The
+// %T keeps the actual type in the message, since the whole point is that msc
+// did not expect it.
+func unexpectedShape(field string, v any) error {
+	return fmt.Errorf("cannot inject: %s has unrecognized shape %T", field, v)
+}
+
 // injectAnthropicContext appends a text block to the system array.
 // Converts string system to array if needed, creates if absent.
-func injectAnthropicContext(doc map[string]any, block string) {
+func injectAnthropicContext(doc map[string]any, block string) error {
 	contextBlock := map[string]any{
 		"type": "text",
 		"text": block,
 	}
 
 	sys, exists := doc["system"]
-	if !exists {
+	if !exists || sys == nil { // nil is a JSON null: carries no content to lose
 		doc["system"] = []any{contextBlock}
-		return
+		return nil
 	}
 
 	switch v := sys.(type) {
@@ -250,20 +273,24 @@ func injectAnthropicContext(doc map[string]any, block string) {
 	case []any:
 		doc["system"] = append(v, contextBlock)
 	default:
-		// Unexpected type, create new array.
-		doc["system"] = []any{contextBlock}
+		return unexpectedShape("system", v)
 	}
+	return nil
 }
 
 // injectOpenAIContext inserts a system message after existing system messages,
 // or at position 0 if none exist. Creates the messages array if absent.
-func injectOpenAIContext(doc map[string]any, block string) {
-	messages, ok := doc["messages"].([]any)
-	if !ok {
+func injectOpenAIContext(doc map[string]any, block string) error {
+	raw, exists := doc["messages"]
+	if !exists || raw == nil {
 		doc["messages"] = []any{
 			map[string]any{"role": "system", "content": block},
 		}
-		return
+		return nil
+	}
+	messages, ok := raw.([]any)
+	if !ok {
+		return unexpectedShape("messages", raw)
 	}
 
 	insertAt := 0
@@ -284,44 +311,53 @@ func injectOpenAIContext(doc map[string]any, block string) {
 	result = append(result, sysMsg)
 	result = append(result, messages[insertAt:]...)
 	doc["messages"] = result
+	return nil
 }
 
 // injectGeminiContext appends a text part to systemInstruction.parts,
 // creating the structure if absent.
-func injectGeminiContext(doc map[string]any, block string) {
+func injectGeminiContext(doc map[string]any, block string) error {
 	part := map[string]any{"text": block}
 
 	si, exists := doc["systemInstruction"]
-	if !exists {
+	if !exists || si == nil {
 		doc["systemInstruction"] = map[string]any{
 			"parts": []any{part},
 		}
-		return
+		return nil
 	}
 
 	siMap, ok := si.(map[string]any)
 	if !ok {
-		doc["systemInstruction"] = map[string]any{
-			"parts": []any{part},
-		}
-		return
+		return unexpectedShape("systemInstruction", si)
 	}
 
-	parts, ok := siMap["parts"].([]any)
-	if !ok {
+	rawParts, hasParts := siMap["parts"]
+	if !hasParts || rawParts == nil {
 		siMap["parts"] = []any{part}
-		return
+		return nil
+	}
+	parts, ok := rawParts.([]any)
+	if !ok {
+		return unexpectedShape("systemInstruction.parts", rawParts)
 	}
 
 	siMap["parts"] = append(parts, part)
+	return nil
 }
 
 // injectOpenAIResponsesContext appends a context block to the instructions
 // field used by the OpenAI Responses API as the system prompt.
-func injectOpenAIResponsesContext(doc map[string]any, block string) {
-	if instructions, ok := doc["instructions"].(string); ok {
-		doc["instructions"] = instructions + "\n\n" + block
-	} else {
+func injectOpenAIResponsesContext(doc map[string]any, block string) error {
+	raw, exists := doc["instructions"]
+	if !exists || raw == nil {
 		doc["instructions"] = block
+		return nil
 	}
+	instructions, ok := raw.(string)
+	if !ok {
+		return unexpectedShape("instructions", raw)
+	}
+	doc["instructions"] = instructions + "\n\n" + block
+	return nil
 }

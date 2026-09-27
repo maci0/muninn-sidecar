@@ -164,6 +164,8 @@ The `apiformat` package detects whether a request uses Anthropic, OpenAI, Gemini
 
 Detection priority: Gemini (`contents` key) > Gemini Cloud Code (`request.contents`) > Anthropic (`system` key or content blocks with `type`) > OpenAI Responses (`input` key) > OpenAI (`messages` key, fallback).
 
+**Injection never destroys the agent's own prompt.** Each per-format injector *extends* the system field it knows (`InjectContext` in `format.go`): a string becomes a two-element array, an array gains an element, an absent or JSON-`null` field is created. A shape it does not recognize — a `system` object, a `messages` value that is not an array — is refused, `InjectContext` returns an error, and `Enrich` forwards the original body and injects nothing for that turn. Overwriting would have been the shorter path, and it is exactly the one msc may not take: the sidecar's central promise is that the request reaching the provider is the agent's request, so silently replacing an unrecognized system field would strip the agent's instructions on the way upstream and change what the model sees, with nothing in the log saying so. Losing one turn's recall is recoverable; losing the agent's prompt is not.
+
 ### Session Memory Window with Exponential Decay
 
 Rather than treating each turn as independent (recalling fresh memories and discarding previous ones), the injector maintains a rolling window of memories across turns. When a memory is recalled, it enters the window at its original relevance score. On subsequent turns where it isn't re-recalled, its effective score decays by 0.7x per turn. When it drops below 0.2, it's evicted.

@@ -223,6 +223,40 @@ func TestRecordModelCapKeepsNonASCIIWhole(t *testing.T) {
 	}
 }
 
+// A byte-count cap alone would leave a broken UTF-8 sequence at the end of a
+// long non-ASCII model name, and that broken string is both the map key and
+// what the session summary prints — a replacement character on the one line an
+// operator reads to identify the model in use. The clip must back off to a rune
+// boundary, at the cost of being a few bytes under the cap.
+func TestRecordModelTruncatesOnRuneBoundary(t *testing.T) {
+	s := &Stats{}
+	// Every rune is 3 bytes, so the cap lands mid-rune for any length here.
+	name := strings.Repeat("模", maxModelNameLen)
+	s.RecordModel(name + strings.Repeat("型", 40))
+	s.Requests.Add(1) // Summary reports nothing without session activity
+
+	models := s.Models()
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	got := models[0].Name
+	if len(got) > maxModelNameLen {
+		t.Errorf("model name length = %d, over the %d-byte cap", len(got), maxModelNameLen)
+	}
+	if len(got) == 0 {
+		t.Fatal("clipping a multibyte name produced nothing")
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("clip left invalid UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(name, got) {
+		t.Errorf("clip is not a prefix of the name: %q", got)
+	}
+	if !strings.Contains(s.Summary(), got) {
+		t.Errorf("summary %q does not carry the clipped name %q", s.Summary(), got)
+	}
+}
+
 func TestModelsSortedByCount(t *testing.T) {
 	s := &Stats{}
 	s.RecordModel("a")

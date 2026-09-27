@@ -427,8 +427,9 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 
 	// Read and clear session context under the lock so only one concurrent
 	// enrichment injects it. Clearing eagerly is safe because InjectContext
-	// failures are extremely rare (format is already validated) and the
-	// context is ephemeral (available in MuninnDB for future recall).
+	// failures are rare (a system field whose JSON shape the injector does not
+	// recognize, which it refuses rather than overwrite) and the context is
+	// ephemeral (available in MuninnDB for future recall).
 	inj.mu.Lock()
 	sessCtx := inj.sessionCtx
 	inj.sessionCtx = ""
@@ -470,7 +471,10 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	// Inject into the document.
 	enriched, err := InjectContext(doc, format, block)
 	if err != nil {
-		slog.Warn("inject context failed after format validation",
+		// The format was recognized; what failed is a system field's shape. The
+		// injector refused rather than overwrite it, so the turn forwards the
+		// agent's own request untouched and injects nothing this time.
+		slog.Warn("inject context declined, forwarding the original request",
 			reqid.Field, reqid.From(ctx), "vault", inj.vault, "format", format, "err", err)
 		if inj.stats != nil {
 			inj.stats.InjectionErrors.Add(1)

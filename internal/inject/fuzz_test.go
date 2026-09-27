@@ -61,17 +61,46 @@ var fuzzFormats = []string{
 	apiformat.Gemini, apiformat.GeminiCloudCode, "bogus",
 }
 
+// injectTouchedFields are the system-prompt fields the per-format injectors
+// extend. Whatever the agent put in one of them must still be in the forwarded
+// request afterwards.
+var injectTouchedFields = []string{"system", "messages", "instructions", "systemInstruction"}
+
 func FuzzInjectContext(f *testing.F) {
 	f.Add([]byte(`{"system":"x","messages":[]}`), 0, "ctx")
 	f.Add([]byte(`{"messages":[{"role":"system","content":"s"}]}`), 1, "ctx")
 	f.Add([]byte(`{"contents":[]}`), 3, "ctx")
 	f.Add([]byte(`{"request":{"contents":[]}}`), 4, "ctx")
 	f.Add([]byte(`{"input":"hi"}`), 2, "ctx")
+	f.Add([]byte(`{"system":{"type":"text","text":"prompt"}}`), 0, "ctx")
+	f.Add([]byte(`{"messages":{"role":"user","content":"prompt"}}`), 1, "ctx")
+	f.Add([]byte(`{"systemInstruction":"prompt"}`), 3, "ctx")
+	f.Add([]byte(`{"instructions":{"text":"prompt"}}`), 2, "ctx")
+	f.Add([]byte(`{"system":null}`), 0, "ctx")
+	f.Add([]byte(`{"messages":null}`), 1, "ctx")
+	f.Add([]byte(`{"systemInstruction":null}`), 3, "ctx")
+	f.Add([]byte(`{"instructions":null}`), 2, "ctx")
 	f.Fuzz(func(t *testing.T, data []byte, fi int, block string) {
 		var doc map[string]any
 		if err := json.Unmarshal(data, &doc); err != nil || doc == nil {
 			return
 		}
+		// Snapshot the text the agent sent in every system-prompt field. The
+		// injectors only append, so a successful injection must still carry it
+		// verbatim; a field whose shape is not recognized must be refused rather
+		// than overwritten, so the text is only checked on the success path.
+		before := map[string]string{}
+		for _, k := range injectTouchedFields {
+			if v, ok := doc[k].(string); ok {
+				before[k] = v
+			}
+		}
+		if req, ok := doc["request"].(map[string]any); ok {
+			if v, ok := req["systemInstruction"].(string); ok {
+				before["request.systemInstruction"] = v
+			}
+		}
+
 		format := fuzzFormats[((fi%len(fuzzFormats))+len(fuzzFormats))%len(fuzzFormats)]
 		out, err := InjectContext(doc, format, block)
 		if err != nil {
@@ -80,6 +109,32 @@ func FuzzInjectContext(f *testing.F) {
 		var check map[string]any
 		if jerr := json.Unmarshal(out, &check); jerr != nil {
 			t.Fatalf("InjectContext returned invalid JSON for format %q: %v", format, jerr)
+		}
+		for k, want := range before {
+			scope := check
+			if k == "request.systemInstruction" {
+				req, ok := check["request"].(map[string]any)
+				if !ok {
+					t.Fatalf("format %q: request field lost", format)
+				}
+				scope = req
+				k = "systemInstruction"
+			}
+			// The field's type may legitimately change (Anthropic turns a
+			// string `system` into a two-element array), so the invariant is
+			// that the agent's own text survives in whatever shape came out,
+			// not that the shape is unchanged.
+			got, ok := scope[k]
+			if !ok {
+				t.Fatalf("format %q: field %q is gone after injection", format, k)
+			}
+			encoded, jerr := json.Marshal(got)
+			if jerr != nil {
+				t.Fatalf("format %q: field %q unmarshalable: %v", format, k, jerr)
+			}
+			if !strings.Contains(string(encoded), want) {
+				t.Fatalf("format %q: injection dropped the agent's own %q:\n got %s", format, want, encoded)
+			}
 		}
 	})
 }

@@ -259,33 +259,47 @@ func TestInjectContextOpenAIResponses(t *testing.T) {
 
 func TestInjectGeminiContext(t *testing.T) {
 	const block = "CTX"
-	partsOf := func(doc map[string]any) []any {
-		si := doc["systemInstruction"].(map[string]any)
-		return si["parts"].([]any)
+	partsOf := func(t *testing.T, doc map[string]any) []any {
+		t.Helper()
+		si, ok := doc["systemInstruction"].(map[string]any)
+		if !ok {
+			t.Fatalf("systemInstruction is %T, want a map: %v", doc["systemInstruction"], doc)
+		}
+		parts, ok := si["parts"].([]any)
+		if !ok {
+			t.Fatalf("parts is %T, want an array: %v", si["parts"], si)
+		}
+		return parts
 	}
 
 	t.Run("no systemInstruction creates one", func(t *testing.T) {
 		doc := map[string]any{}
-		injectGeminiContext(doc, block)
-		p := partsOf(doc)
+		if err := injectGeminiContext(doc, block); err != nil {
+			t.Fatal(err)
+		}
+		p := partsOf(t, doc)
 		if len(p) != 1 || p[0].(map[string]any)["text"] != block {
 			t.Fatalf("expected one part with block, got %v", p)
 		}
 	})
 
-	t.Run("non-map systemInstruction overwritten", func(t *testing.T) {
-		doc := map[string]any{"systemInstruction": "a string"}
-		injectGeminiContext(doc, block)
-		p := partsOf(doc)
+	t.Run("null systemInstruction is created over", func(t *testing.T) {
+		doc := map[string]any{"systemInstruction": nil}
+		if err := injectGeminiContext(doc, block); err != nil {
+			t.Fatal(err)
+		}
+		p := partsOf(t, doc)
 		if len(p) != 1 || p[0].(map[string]any)["text"] != block {
-			t.Fatalf("expected overwrite to parts, got %v", doc["systemInstruction"])
+			t.Fatalf("expected one part with block, got %v", p)
 		}
 	})
 
 	t.Run("map without parts gets parts", func(t *testing.T) {
 		doc := map[string]any{"systemInstruction": map[string]any{"role": "system"}}
-		injectGeminiContext(doc, block)
-		p := partsOf(doc)
+		if err := injectGeminiContext(doc, block); err != nil {
+			t.Fatal(err)
+		}
+		p := partsOf(t, doc)
 		if len(p) != 1 || p[0].(map[string]any)["text"] != block {
 			t.Fatalf("expected parts set, got %v", p)
 		}
@@ -295,12 +309,116 @@ func TestInjectGeminiContext(t *testing.T) {
 		doc := map[string]any{"systemInstruction": map[string]any{
 			"parts": []any{map[string]any{"text": "orig"}},
 		}}
-		injectGeminiContext(doc, block)
-		p := partsOf(doc)
+		if err := injectGeminiContext(doc, block); err != nil {
+			t.Fatal(err)
+		}
+		p := partsOf(t, doc)
 		if len(p) != 2 || p[0].(map[string]any)["text"] != "orig" || p[1].(map[string]any)["text"] != block {
 			t.Fatalf("expected append after orig, got %v", p)
 		}
 	})
+}
+
+// TestInjectionNeverDiscardsTheAgentsSystemPrompt pins the transparent-proxy
+// invariant on the injection path. msc sits between the agent and its provider,
+// so the request it forwards must be the agent's own request plus the context
+// block — never the agent's request *minus* something. A field whose JSON shape
+// the injector does not recognize is therefore refused outright (the caller
+// forwards the original body and the turn injects nothing) rather than
+// overwritten, which would silently strip the agent's system prompt on its way
+// upstream and change what the model sees.
+func TestInjectionNeverDiscardsTheAgentsSystemPrompt(t *testing.T) {
+	const original = "You are a careful assistant. Answer in the user's language."
+
+	for _, tc := range []struct {
+		name   string
+		format string
+		body   string
+		// original is the substring that must survive into the forwarded body.
+		original string
+	}{
+		{"anthropic system object", apiformat.Anthropic,
+			`{"model":"claude","system":{"type":"text","text":` + `"` + original + `"}}`, original},
+		{"anthropic system number", apiformat.Anthropic,
+			`{"model":"claude","system":42}`, "42"},
+		{"openai messages not an array", apiformat.OpenAI,
+			`{"model":"gpt-4o","messages":{"role":"user","content":` + `"` + original + `"}}`, original},
+		{"gemini systemInstruction string", apiformat.Gemini,
+			`{"systemInstruction":` + `"` + original + `"}`, original},
+		{"gemini parts not an array", apiformat.Gemini,
+			`{"systemInstruction":{"parts":` + `"` + original + `"}}`, original},
+		{"gemini cloudcode parts not an array", apiformat.GeminiCloudCode,
+			`{"request":{"systemInstruction":{"parts":` + `"` + original + `"}}}`, original},
+		{"openai responses instructions object", apiformat.OpenAIResponses,
+			`{"input":"hi","instructions":{"text":` + `"` + original + `"}}`, original},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(tc.body), &doc); err != nil {
+				t.Fatalf("invalid test JSON: %v", err)
+			}
+			before, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatalf("marshal input: %v", err)
+			}
+
+			result, err := InjectContext(doc, tc.format, "INJECTED BLOCK")
+			if err == nil {
+				t.Fatalf("expected an error, got body %s", result)
+			}
+			// The document the caller still holds must be untouched, so the
+			// fallback path (forward the original body) has something intact
+			// to forward.
+			after, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatalf("marshal doc: %v", err)
+			}
+			if string(after) != string(before) {
+				t.Errorf("document mutated despite the error:\n before %s\n after  %s", before, after)
+			}
+			if !strings.Contains(string(after), tc.original) {
+				t.Errorf("the agent's own prompt %q is gone from %s", tc.original, after)
+			}
+		})
+	}
+}
+
+// TestInjectionStillWorksOnNullFields covers the shape that carries no content
+// to protect: a JSON null is not an unrecognized prompt, so the injector fills
+// it in rather than refusing the turn.
+func TestInjectionStillWorksOnNullFields(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		format string
+		body   string
+		field  string
+	}{
+		{"anthropic", apiformat.Anthropic, `{"system":null}`, "system"},
+		{"openai", apiformat.OpenAI, `{"messages":null}`, "messages"},
+		{"gemini", apiformat.Gemini, `{"systemInstruction":null}`, "systemInstruction"},
+		{"openai responses", apiformat.OpenAIResponses, `{"instructions":null}`, "instructions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(tc.body), &doc); err != nil {
+				t.Fatalf("invalid test JSON: %v", err)
+			}
+			result, err := InjectContext(doc, tc.format, "INJECTED BLOCK")
+			if err != nil {
+				t.Fatalf("a null field should be filled in, got %v", err)
+			}
+			var out map[string]any
+			if err := json.Unmarshal(result, &out); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			if _, ok := out[tc.field]; !ok {
+				t.Errorf("field %q missing from %s", tc.field, result)
+			}
+			if !strings.Contains(string(result), "INJECTED BLOCK") {
+				t.Errorf("block not injected: %s", result)
+			}
+		})
+	}
 }
 
 func TestWithinBudgetHugeBudget(t *testing.T) {
