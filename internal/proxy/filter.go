@@ -145,18 +145,8 @@ func stripInjectedContextDoc(doc map[string]any) bool {
 
 	// Gemini Cloud Code: request.systemInstruction.parts — remove parts with marker.
 	if req, ok := doc["request"].(map[string]any); ok {
-		if si, ok := req["systemInstruction"].(map[string]any); ok {
-			if parts, ok := si["parts"].([]any); ok {
-				kept, removed := filterArray(parts, textPartClean)
-				if removed {
-					changed = true
-					if len(kept) == 0 {
-						delete(req, "systemInstruction")
-					} else {
-						si["parts"] = kept
-					}
-				}
-			}
+		if stripMarkedParts(req) {
+			changed = true
 		}
 	}
 
@@ -185,21 +175,37 @@ func stripInjectedContextDoc(doc map[string]any) bool {
 	}
 
 	// Gemini: systemInstruction.parts — remove parts with marker.
-	if si, ok := doc["systemInstruction"].(map[string]any); ok {
-		if parts, ok := si["parts"].([]any); ok {
-			kept, removed := filterArray(parts, textPartClean)
-			if removed {
-				changed = true
-				if len(kept) == 0 {
-					delete(doc, "systemInstruction")
-				} else {
-					si["parts"] = kept
-				}
-			}
-		}
+	if stripMarkedParts(doc) {
+		changed = true
 	}
 
 	return changed
+}
+
+// stripMarkedParts removes injected-context parts from container's
+// systemInstruction.parts, dropping the whole systemInstruction when no part
+// survives. Returns true if anything was removed. Shared by the top-level
+// Gemini body and the Cloud Code body wrapped in "request", which are the same
+// shape one level apart.
+func stripMarkedParts(container map[string]any) bool {
+	si, ok := container["systemInstruction"].(map[string]any)
+	if !ok {
+		return false
+	}
+	parts, ok := si["parts"].([]any)
+	if !ok {
+		return false
+	}
+	kept, removed := filterArray(parts, textPartClean)
+	if !removed {
+		return false
+	}
+	if len(kept) == 0 {
+		delete(container, "systemInstruction")
+	} else {
+		si["parts"] = kept
+	}
+	return true
 }
 
 // defaultFilterPatterns matches tool names containing these substrings
@@ -311,12 +317,9 @@ func filterMCPToolsDoc(doc map[string]any, patterns []string) bool {
 		}
 		if len(removedCallIDs) > 0 {
 			filtered, _ := filterArray(input, func(item map[string]any) bool {
-				if item["type"] == "function_call" {
-					if id, _ := item["call_id"].(string); removedCallIDs[id] {
-						return false
-					}
-				}
-				if item["type"] == "function_call_output" {
+				// Drop the matched call and the output paired with it; both
+				// carry the call_id collected above.
+				if t, _ := item["type"].(string); t == "function_call" || t == "function_call_output" {
 					if id, _ := item["call_id"].(string); removedCallIDs[id] {
 						return false
 					}

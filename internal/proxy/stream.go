@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
 )
@@ -141,7 +142,7 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 			if delta := apiformat.ExtractSSEDelta(sseDoc); delta != "" && sc.textAccum.Len() < maxTextAccum {
 				remaining := maxTextAccum - sc.textAccum.Len()
 				if len(delta) > remaining {
-					delta = delta[:remaining]
+					delta = clampBytes(delta, remaining)
 				}
 				sc.textAccum.WriteString(delta)
 			}
@@ -230,6 +231,23 @@ func (sc *streamCapture) buildSyntheticResp() json.RawMessage {
 
 	b, _ := json.Marshal(resp)
 	return json.RawMessage(b)
+}
+
+// clampBytes truncates s to at most max bytes without splitting a UTF-8
+// sequence, so a cap landing mid-rune cannot leave a partial rune (which would
+// marshal as a replacement character) in the accumulated text.
+func clampBytes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	s = s[:max]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // parseSSEDoc parses a single SSE data line as JSON. Returns nil if the data

@@ -611,17 +611,20 @@ func hashQuery(query string) uint64 {
 func (inj *Injector) snapshotWindow() []memory {
 	inj.mu.Lock()
 	defer inj.mu.Unlock()
+	return inj.decayedWindowLocked(inj.turn)
+}
 
-	cur := inj.turn
+// decayedWindowLocked returns the session window with each memory's score
+// decayed by the turns elapsed since it was last seen, sorted by effective
+// score descending. Callers must hold mu.
+func (inj *Injector) decayedWindowLocked(currentTurn int) []memory {
 	out := make([]memory, 0, len(inj.recentMemories))
 	for _, tm := range inj.recentMemories {
 		m := tm.memory
-		m.Score = decayedScore(m.Score, cur-tm.lastSeen)
+		m.Score = decayedScore(m.Score, currentTurn-tm.lastSeen)
 		out = append(out, m)
 	}
-	if len(out) > 1 {
-		sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
-	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out
 }
 
@@ -659,20 +662,7 @@ func (inj *Injector) mergeMemories(recalled []memory) []memory {
 	}
 
 	// Build sorted output from the merged window.
-	merged := make([]memory, 0, len(inj.recentMemories))
-	for _, tm := range inj.recentMemories {
-		turnsAgo := currentTurn - tm.lastSeen
-		m := tm.memory
-		m.Score = decayedScore(m.Score, turnsAgo)
-		merged = append(merged, m)
-	}
-	if len(merged) > 1 {
-		sort.Slice(merged, func(i, j int) bool {
-			return merged[i].Score > merged[j].Score
-		})
-	}
-
-	return merged
+	return inj.decayedWindowLocked(currentTurn)
 }
 
 // Calibration bounds: a wide clamp so the gate can adapt to low-cosine
@@ -1030,17 +1020,23 @@ func (inj *Injector) fetchGuide(ctx context.Context) string {
 	return parseGuide(respBody)
 }
 
+// mcpToolResponse is the JSON-RPC envelope MuninnDB's MCP tools reply with: the
+// tool result arrives as a list of content blocks, each carrying a type and
+// (for text blocks) the payload. Shared by parseMCPTextContent, parseGuide,
+// parseWhereLeftOff and parseRecallResponse so the envelope cannot drift.
+type mcpToolResponse struct {
+	Result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"result"`
+}
+
 // parseMCPTextContent extracts the text from the first text-typed content block
 // in a JSON-RPC response. Both parseGuide and parseWhereLeftOff share this structure.
 func parseMCPTextContent(body []byte) string {
-	var rpcResp struct {
-		Result struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
-	}
+	var rpcResp mcpToolResponse
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
 		return ""
 	}
@@ -1161,14 +1157,7 @@ func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error)
 // JSON-RPC protocol errors are handled by mcpclient.Client.Call before
 // this function is called, so this function only receives success responses.
 func parseRecallResponse(body []byte) ([]memory, error) {
-	var rpcResp struct {
-		Result struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
-	}
+	var rpcResp mcpToolResponse
 
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
 		return nil, fmt.Errorf("parse JSON-RPC response: %w", err)
