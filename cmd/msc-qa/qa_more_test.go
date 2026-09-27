@@ -539,6 +539,27 @@ func TestRunRejectsNonPositiveN(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUncappedOrUnboundedReader(t *testing.T) {
+	// A non-positive -max-tokens leaves the reader's output length to the
+	// provider, and a non-positive -ground-topk grades every recalled passage
+	// in one judge call. Both are caps, so both fail loud at startup.
+	for _, args := range [][]string{
+		{"-max-tokens", "0"},
+		{"-max-tokens", "-8"},
+		{"-ground-topk", "0"},
+		{"-ground-topk", "-2"},
+	} {
+		oldArgs, oldFS := os.Args, flag.CommandLine
+		flag.CommandLine = flag.NewFlagSet("msc-qa", flag.ContinueOnError)
+		os.Args = append([]string{"msc-qa"}, args...)
+		err := run()
+		os.Args, flag.CommandLine = oldArgs, oldFS
+		if err == nil {
+			t.Errorf("run should reject %v", args)
+		}
+	}
+}
+
 func runWith(t *testing.T, args ...string) {
 	t.Helper()
 	oldArgs, oldFS := os.Args, flag.CommandLine

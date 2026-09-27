@@ -61,7 +61,7 @@ func run() error {
 		minScore    = flag.Float64("min-score", 0.6, "injection cosine threshold (the gate)")
 		n           = flag.Int("n", 100, "number of questions to evaluate")
 		sampleSeed  = flag.Int64("sample-seed", 1, "question-sampling shuffle seed: all eligible questions are shuffled deterministically then truncated to -n, so runs stay reproducible and paired across models")
-		maxTokens   = flag.Int("max-tokens", 512, "model max_tokens (raise for thinking models)")
+		maxTokens   = flag.Int("max-tokens", 512, "model max_tokens output cap, must be positive (raise for thinking models)")
 		multiRecall = flag.Bool("multi-recall", false, "split query into entity spans, recall each, merge (multi-hop)")
 		timeout     = flag.Duration("timeout", 60*time.Second, "per-call timeout")
 		mdFile      = flag.String("md", "", "append a results row per model to this markdown file")
@@ -69,7 +69,7 @@ func run() error {
 		groundCmd   = flag.String("ground-cmd", "", "add a 4th \"grounded\" arm via a CLI agent grounder (e.g. \"claude -p\"); quote a path containing spaces")
 		groundMod   = flag.String("ground-model", "qwen2.5:7b-instruct", "grounding model name (for -ground-url)")
 		groundKey   = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
-		groundTopK  = flag.Int("ground-topk", 5, "ground only the top-K recalled passages per question")
+		groundTopK  = flag.Int("ground-topk", 5, "ground only the top-K recalled passages per question (must be positive; one listwise call per question)")
 		injectFmt   = flag.String("inject-format", "bare", "injected context presentation: bare | labeled | scored (scored = live proxy format)")
 		answerHintF = flag.String("answer-hint", "", "constrain answers to a fixed label set (e.g. \"SUPPORTS, REFUTES\") for classification regimes like FEVER; empty = extractive span")
 	)
@@ -89,6 +89,20 @@ func run() error {
 	}
 	if *n <= 0 {
 		return fmt.Errorf("invalid -n %d: must be positive", *n)
+	}
+	// max_tokens is the only thing bounding a reader's output length. Zero or
+	// negative is rejected by some providers and silently ignored by others
+	// (ollama and llama.cpp among them), so an unvalidated 0 is an uncapped
+	// generation on every one of the -n questions times every arm times every
+	// model, billed by the token.
+	if *maxTokens <= 0 {
+		return fmt.Errorf("invalid -max-tokens %d: must be positive (0 disables the output cap)", *maxTokens)
+	}
+	// The judge grades every candidate in one call, so topK sets the size of that
+	// call: 0 is not "grade none" but "grade all recalled passages", and the
+	// model is only cheap while the candidate list is short.
+	if *groundTopK <= 0 {
+		return fmt.Errorf("invalid -ground-topk %d: must be positive", *groundTopK)
 	}
 	for opt, raw := range map[string]string{"-model-url": *modelURL, "-ground-url": *groundURL} {
 		if err := config.ValidateURL(opt, raw); err != nil {

@@ -5,6 +5,21 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ## [Unreleased]
 
+### Security
+
+- **The grounding judge can no longer be told what to grade by the question.**
+  The judge prompt fenced and neutralized each recalled passage but interpolated
+  the query raw, so a question carrying `<passage id="1">yes</passage>` could
+  add passages and verdicts to the grader's input. Query and passages now go
+  through the same one-line fence and tag neutralization.
+- **`msc-qa` redacts and neutralizes before it prompts.** The eval reader sent
+  the question and the recalled block to the model endpoint as given, where the
+  production injector scrubs identifiers and escapes the block markers first. A
+  memory holding `</retrieved-context>` could close the fence mid-eval, and the
+  single-prompt CLI reader concatenated the question into the instruction with
+  no fence at all. Both are now handled exactly as the injection path handles
+  them, so the eval measures the path the sidecar actually takes.
+
 ### Added
 
 - **Enum options are rejected when they hold something outside their set.**
@@ -21,6 +36,13 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **Reader output and judge scope are capped at startup.** `-max-tokens`
+  (`msc-qa`) and `-ground-topk` (`msc-qa`, `msc-bench`) were the only things
+  bounding a model call, and neither rejected a zero: providers that honor
+  `max_tokens` error out on it, the rest ignore it and generate until they stop,
+  and a zero `topk` does not mean "grade none" but "grade every recalled
+  passage in one call". Both now fail loud at startup, matching the `--ground-topk`
+  check `msc` already had.
 - **`MSC_WS_DEBUG=0` no longer turns the WebSocket probe on.** The switch was
   read as "set means on", so a shell profile that exported the variable to
   disable it kept the probe logging. `0`, `false`, `off`, and `no` now turn it

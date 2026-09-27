@@ -66,13 +66,13 @@ func run() error {
 		groundURL  = flag.String("ground-url", "", "LLM answer-grounding rerank via an OpenAI-compatible URL (e.g. http://127.0.0.1:11434/v1)")
 		groundMod  = flag.String("ground-model", "qwen2.5:1.5b-instruct", "grounding model name (for -ground-url)")
 		groundKey  = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
-		groundTopK = flag.Int("ground-topk", 5, "ground only the top-K candidates by cosine per probe (bounds model calls)")
+		groundTopK = flag.Int("ground-topk", 5, "ground only the top-K candidates by cosine per probe (bounds model calls; must be positive)")
 		groundTO   = flag.Duration("ground-timeout", 60*time.Second, "per grounding-call timeout")
 		rewriteCmd = flag.String("rewrite-cmd", "", "LLM query rewrite/decomposition before recall via a CLI agent (e.g. \"claude -p\"); the prompt is delivered on stdin (quote a path containing spaces)")
 		rewriteURL = flag.String("rewrite-url", "", "LLM query rewrite via an OpenAI-compatible URL")
 		rewriteMod = flag.String("rewrite-model", "qwen2.5:7b-instruct", "rewrite model name (for -rewrite-url)")
 		rewriteKey = flag.String("rewrite-key", "", "rewrite model API key (for -rewrite-url)")
-		rewriteN   = flag.Int("rewrite-n", 4, "max sub-queries per probe (including the original)")
+		rewriteN   = flag.Int("rewrite-n", 4, "max sub-queries per probe, must be positive (including the original; each one costs a recall)")
 		rewriteTO  = flag.Duration("rewrite-timeout", 60*time.Second, "per rewrite-call timeout")
 		multiRec   = flag.Bool("multi-recall", false, "split query into entity spans, recall each, merge (helps multi-hop)")
 		n          = flag.Int("n", 300, "number of labeled memories to seed")
@@ -127,6 +127,17 @@ func run() error {
 	for opt, raw := range map[string]string{"-ground-url": *groundURL, "-rewrite-url": *rewriteURL} {
 		if err := config.ValidateURL(opt, raw); err != nil {
 			return err
+		}
+	}
+	// Both flags bound one model call: the judge grades every candidate it is
+	// given in a single request, and the rewriter recalls each sub-query
+	// separately. Zero is not "none" in either case, it is "all of them".
+	for _, c := range []struct {
+		opt string
+		val int
+	}{{"-ground-topk", *groundTopK}, {"-rewrite-n", *rewriteN}} {
+		if c.val <= 0 {
+			return fmt.Errorf("invalid %s %d: must be positive", c.opt, c.val)
 		}
 	}
 	if !*seed && !*doProbe {

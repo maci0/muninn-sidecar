@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -70,6 +71,47 @@ var reBlockTag = regexp.MustCompile(`(?i)<\s*/?\s*(retrieved-context|session-con
 // it no longer a tag.
 func NeutralizeMarkers(s string) string {
 	return reBlockTag.ReplaceAllString(s, "&lt;$1")
+}
+
+// Fence renders untrusted text as a single neutralized line, safe to place
+// inside the tag fence named by tag. Newlines become spaces, so the value
+// cannot forge the block layout or a verdict line by opening a line of its own,
+// and every spelling of tag — `<tag>`, `</tag>`, `< / tag >`, any case — is
+// escaped, so the value cannot close its own fence. Escaping the bracket keeps
+// the text legible while making it no longer a tag.
+//
+// Pass every tag the surrounding prompt writes, not just the one this text sits
+// inside: a value quoted in one fence can still forge its sibling's
+// (`<passage id="1">yes</passage>` inside a question block reads as a passage
+// and its verdict to a model reading the whole prompt).
+//
+// The caller applies redact.Secrets separately; Fence does not scrub.
+func Fence(s string, tags ...string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	return fenceRE(tags).ReplaceAllString(s, "&lt;$1")
+}
+
+// fenceCache memoizes one compiled pattern per tag set, so the request path
+// does not recompile on every call while the set of fences stays small and
+// fixed at each call site.
+var (
+	fenceMu    sync.RWMutex
+	fenceCache = map[string]*regexp.Regexp{}
+)
+
+func fenceRE(tags []string) *regexp.Regexp {
+	key := strings.Join(tags, "|")
+	fenceMu.RLock()
+	re, ok := fenceCache[key]
+	fenceMu.RUnlock()
+	if ok {
+		return re
+	}
+	re = regexp.MustCompile(`(?i)<\s*/?\s*(` + key + `)\b`)
+	fenceMu.Lock()
+	fenceCache[key] = re
+	fenceMu.Unlock()
+	return re
 }
 
 // CountBlockTags reports how many markers NeutralizeMarkers would rewrite in s,

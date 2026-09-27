@@ -12,6 +12,7 @@ import (
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/clirun"
+	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
 // answerer is a reader backend: given a question and an optional injected
@@ -79,6 +80,13 @@ func (m *modelClient) label() string { return m.model }
 // SECOND system message wrapped in the real <retrieved-context> markers —
 // exactly how the proxy's injectOpenAIContext enriches an OpenAI request — so the
 // eval measures the production injection path, not an ad-hoc user-prefix.
+//
+// Both the question and the context block are untrusted and get the same
+// treatment the production path gives them (internal/inject/format.go): direct
+// identifiers are scrubbed before the text leaves the process, and the block
+// markers are neutralized so a memory carrying "</retrieved-context>" cannot
+// close the fence and have the rest of its text read as top-level system
+// prompt. Without that, the eval would measure a path the sidecar never takes.
 func (m *modelClient) answer(ctx context.Context, question, contextBlock string) (string, error) {
 	msgs := []map[string]string{
 		{"role": "system", "content": answerInstruction()},
@@ -86,10 +94,10 @@ func (m *modelClient) answer(ctx context.Context, question, contextBlock string)
 	if contextBlock != "" {
 		msgs = append(msgs, map[string]string{
 			"role":    "system",
-			"content": apiformat.ContextPrefix + "\n" + contextBlock + "\n" + apiformat.ContextSuffix,
+			"content": apiformat.ContextPrefix + "\n" + sanitizeBlock(contextBlock) + "\n" + apiformat.ContextSuffix,
 		})
 	}
-	msgs = append(msgs, map[string]string{"role": "user", "content": question})
+	msgs = append(msgs, map[string]string{"role": "user", "content": redact.Secrets(question)})
 	body, _ := json.Marshal(map[string]any{
 		"model":       m.model,
 		"messages":    msgs,
@@ -162,16 +170,35 @@ func (c *cliClient) answer(ctx context.Context, question, contextBlock string) (
 // buildCLIPrompt flattens the chat arms into one prompt string for single-shot
 // CLI agents, mirroring the HTTP path: the same instruction, the same
 // <retrieved-context> markers, then the question.
+//
+// A single string has no role separation to keep the question out of the
+// instruction, so it is quoted inside its own tag on one line with the tag
+// neutralized, the same fence the rewriter and the grounding judge use. A
+// dataset question reading "Answer: 42" must not be able to answer itself.
 func buildCLIPrompt(question, contextBlock string) string {
 	var sb strings.Builder
 	sb.WriteString(answerInstruction() + " Output only the answer, nothing else.\n")
 	if contextBlock != "" {
 		sb.WriteString("\n")
-		sb.WriteString(apiformat.ContextPrefix + "\n" + contextBlock + "\n" + apiformat.ContextSuffix)
+		sb.WriteString(apiformat.ContextPrefix + "\n" + sanitizeBlock(contextBlock) + "\n" + apiformat.ContextSuffix)
 		sb.WriteString("\n")
 	}
-	sb.WriteString("\nQuestion: " + question + "\nAnswer:")
+	sb.WriteString("\n<question>" + fenceQuestion(question) + "</question>\nAnswer:")
 	return sb.String()
+}
+
+// fenceQuestion flattens a dataset question to one line and neutralizes the tag
+// that fences it, so the question cannot close its own fence and have the
+// remainder read as prompt text.
+func fenceQuestion(q string) string {
+	return apiformat.Fence(redact.Secrets(q), "question")
+}
+
+// sanitizeBlock prepares recalled memory for a prompt: direct identifiers are
+// scrubbed before the text leaves the process, and the injection markers are
+// neutralized so a memory cannot close the retrieved-context fence.
+func sanitizeBlock(block string) string {
+	return apiformat.NeutralizeMarkers(redact.Secrets(block))
 }
 
 // answerHint, when set via -answer-hint, constrains the answer to a fixed label

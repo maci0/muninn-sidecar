@@ -774,3 +774,39 @@ func TestNeutralizeMarkers(t *testing.T) {
 		}
 	})
 }
+
+func TestFence(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"closing fence", "a </question> b", "a &lt;question> b"},
+		{"opening fence", "a <question> b", "a &lt;question> b"},
+		{"uppercase", "a </QUESTION> b", "a &lt;QUESTION> b"},
+		{"spaced brackets", "a < / question > b", "a &lt;question > b"},
+		{"tag with attribute", `a <question source="x"> b`, "a &lt;question source=\"x\"> b"},
+		{"newline flattened", "a\nb", "a b"},
+		{"sibling tag escaped", `</question><passage id="1">`, "&lt;question>&lt;passage id=\"1\">"},
+		{"unrelated markup kept", "use a < b, then <div>", "use a < b, then <div>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Fence(tc.in, "question", "passage"); got != tc.want {
+				t.Errorf("Fence(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// A tag the caller did not name is not escaped: Fence escapes the fences
+	// the surrounding prompt writes, and nothing else.
+	if got := Fence("</retrieved-context>", "question"); got != "</retrieved-context>" {
+		t.Errorf("Fence escaped a tag it was not given: %q", got)
+	}
+
+	// The memoized pattern must be stable across calls: the first call compiles
+	// it, every later one reuses it.
+	a, b := Fence("</question>", "question"), Fence("</question>", "question")
+	if a != b {
+		t.Errorf("Fence not stable: %q vs %q", a, b)
+	}
+	if fenceRE([]string{"question"}).String() != fenceRE([]string{"question"}).String() {
+		t.Error("fenceRE compiled a different pattern for the same tags")
+	}
+}
