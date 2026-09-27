@@ -23,8 +23,14 @@ func mitmCADir() (string, error) {
 	if err != nil || base == "" {
 		home, herr := os.UserHomeDir()
 		if herr != nil {
+			if err != nil {
+				return "", fmt.Errorf("cannot locate a config directory for the MITM CA (%v) and no home directory either: %w", err, herr)
+			}
 			return "", fmt.Errorf("cannot locate a config directory for the MITM CA: %w", herr)
 		}
+		// Say why the fallback was taken: an unset XDG_CONFIG_HOME and an
+		// unreadable config dir are different faults for the operator.
+		slog.Debug("config dir unavailable, falling back to ~/.config for the MITM CA", "err", err)
 		base = filepath.Join(home, ".config")
 	}
 	dir := filepath.Join(base, "muninn-sidecar", "mitm")

@@ -184,20 +184,33 @@ func New(cfg Config) (*Proxy, error) {
 		}
 	}
 
+	// Upstream transport timeouts. ResponseHeaderTimeout only bounds the wait
+	// for the response headers, never the body, so a long SSE/stream response is
+	// unaffected; without it an upstream that accepts the connection and then
+	// goes quiet pins the agent's turn and the proxy's connection forever.
+	// 5 minutes covers a slow-to-first-byte LLM endpoint while still failing
+	// instead of hanging.
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
-		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS13},
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS13},
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
 	}
 	// Separate transport for MITM forwarding to arbitrary real hosts. TLS1.2 floor
 	// (some upstreams still require it) with normal cert verification of the real
 	// server — msc only forges the agent-facing side, never trusts a bad upstream.
 	p.mitmTransport = &http.Transport{
-		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
 	}
 
 	// Hand the store its capture-side normalization so the heavy body parsing
@@ -612,6 +625,11 @@ func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
 // captured: stripping injected context and muninn tool traffic, and deriving
 // model/usage, all parse bodies that reach tens of MiB, so they run on the
 // store's worker goroutine (see prepareExchange) rather than here.
+//
+// DurationMs is measured here, at the one point every exchange passes through,
+// so both paths time the same interval: arrival to the last response byte. The
+// streaming path reaches this after the last delta, so its sample covers the
+// whole stream rather than just the first byte.
 func buildExchange(clock Clock, ctx *captureCtx, statusCode int, respBody json.RawMessage) *store.CapturedExchange {
 	clock = clockOrSystem(clock)
 	return &store.CapturedExchange{
@@ -620,6 +638,7 @@ func buildExchange(clock Clock, ctx *captureCtx, statusCode int, respBody json.R
 		ReqBody:    ctx.reqBody,
 		StatusCode: statusCode,
 		RespBody:   respBody,
+		DurationMs: clock.Since(ctx.start).Milliseconds(),
 	}
 }
 

@@ -89,6 +89,14 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 			}
 			return ca, nil
 		}
+		// Say why the on-disk CA was replaced: regenerating silently would make a
+		// recurring "every agent re-trusts the CA" cycle look like a fresh install.
+		if err != nil {
+			slog.Debug("mitm: existing CA is unreadable, regenerating", "err", err)
+		} else {
+			slog.Debug("mitm: existing CA is expiring, regenerating",
+				"not_after", ca.cert.NotAfter.Format(time.RFC3339))
+		}
 	}
 
 	ca, err := generateCA()

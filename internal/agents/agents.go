@@ -485,11 +485,14 @@ func (a Agent) runArgv(env []string, argv []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("start agent %q: %w", a.Command, err)
 	}
 	setChild(cmd.Process)
 	defer setChild(nil)
-	return cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("agent %q exited with an error: %w", a.Command, err)
+	}
+	return nil
 }
 
 // ListSorted returns all registered agent names in sorted order.

@@ -258,6 +258,7 @@ func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, back
 		return
 	}
 	if _, err := client.Write(hdr); err != nil {
+		slog.Debug("ws capture: could not forward upgrade response to client", "target", target, "err", err)
 		return
 	}
 	// The handshake is done; the splice below is a long-lived tunnel whose reads

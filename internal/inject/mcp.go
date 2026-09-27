@@ -56,10 +56,14 @@ type mcpResponse struct {
 }
 
 // parseMCPTextContent extracts the text from the first text-typed content block
-// in a JSON-RPC response.
+// in a JSON-RPC response. A body that does not parse is a broken response, not
+// an empty one, so the cause is logged (never the body: it carries memory
+// content) before returning "" — otherwise a corrupt reply is indistinguishable
+// from a server with no session context.
 func parseMCPTextContent(body []byte) string {
 	var rpcResp mcpResponse
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		slog.Warn("inject: MCP response is not valid JSON; treating as empty", "err", err, "bytes", len(body))
 		return ""
 	}
 	for _, c := range rpcResp.Result.Content {

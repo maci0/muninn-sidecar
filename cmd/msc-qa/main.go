@@ -65,10 +65,19 @@ func doJSON(req *http.Request, timeout time.Duration, out any) error {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("call model endpoint %s: %w", req.URL, err)
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxModelResponse))
+	// Read one byte past the cap so an oversized body is reported as such
+	// instead of failing later as invalid JSON. A failed read is the real
+	// cause, so keep it rather than reporting a parse error for a truncated body.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxModelResponse+1))
+	if err != nil {
+		return fmt.Errorf("read model response from %s: %w", req.URL, err)
+	}
+	if int64(len(data)) > maxModelResponse {
+		return fmt.Errorf("model response exceeds %d-byte limit (HTTP %d)", maxModelResponse, resp.StatusCode)
+	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("model HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}

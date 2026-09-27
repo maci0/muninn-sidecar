@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -150,7 +151,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		ReadTimeout:       5 * time.Minute,
 		WriteTimeout:      10 * time.Minute,
 	}
-	_ = srv.Serve(newSingleConnListener(tlsConn)) // returns once the tunnel conn closes
+	// Serve returns once the tunnel conn closes, so the returned error is
+	// always a shutdown outcome rather than a fault. Log anything else (an
+	// accept or parse failure) at debug: the tunnel is torn down either way,
+	// but a dropped reason here is the only trace of a failed MITM exchange.
+	if err := srv.Serve(newSingleConnListener(tlsConn)); err != nil && !errors.Is(err, net.ErrClosed) {
+		slog.Debug("mitm: tunnel server stopped", "target", target, "err", err)
+	}
 }
 
 // isUpgradeRequest reports whether req is an HTTP protocol upgrade (WebSocket
@@ -249,7 +256,12 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
 	// and a half-closing client still receives the server's full response.
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
-		io.Copy(dst, src)
+		// A copy error here is the normal end of one direction (a peer closing
+		// mid-stream); log it so a tunnel that dies for any other reason leaves
+		// a trace instead of ending silently.
+		if _, err := io.Copy(dst, src); err != nil {
+			slog.Debug("mitm: tunnel copy ended with an error", "target", target, "err", err)
+		}
 		// Unblock the peer copy: a half-close lets the other direction drain.
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()

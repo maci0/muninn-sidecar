@@ -388,7 +388,12 @@ func run() int {
 	// Graceful shutdown: stop proxy, flush pending captures.
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutCancel()
-	p.Shutdown(shutCtx)
+	// A failed Shutdown means requests were still in flight when the deadline
+	// hit, so their captures never arrive. Report it instead of letting the
+	// session summary read as a clean exit.
+	if err := p.Shutdown(shutCtx); err != nil {
+		slog.Warn("proxy shutdown did not complete; in-flight requests were cut off", "err", err)
+	}
 	muninn.Drain()
 
 	if !o.quiet {

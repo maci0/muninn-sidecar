@@ -218,9 +218,20 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 		return allTrue(len(passages))
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxGroundResponse))
+	// Read one byte past the cap: a truncated read and an oversized body both
+	// reach the parser as invalid JSON, and the read error (a dropped
+	// connection, say) is the actual cause worth reporting.
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxGroundResponse+1))
 	if resp.StatusCode >= 300 {
 		slog.Debug("grounding: non-2xx response, failing open", "judge", g.Label(), "status", resp.StatusCode)
+		return allTrue(len(passages))
+	}
+	if readErr != nil {
+		slog.Debug("grounding: response read failed, failing open", "judge", g.Label(), "err", readErr)
+		return allTrue(len(passages))
+	}
+	if int64(len(data)) > maxGroundResponse {
+		slog.Debug("grounding: response exceeds size limit, failing open", "judge", g.Label(), "limit", maxGroundResponse)
 		return allTrue(len(passages))
 	}
 	var out struct {
@@ -228,8 +239,8 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 			Message struct{ Content string } `json:"message"`
 		} `json:"choices"`
 	}
-	if json.Unmarshal(data, &out) != nil || len(out.Choices) == 0 {
-		slog.Debug("grounding: unparseable or empty response, failing open", "judge", g.Label())
+	if err := json.Unmarshal(data, &out); err != nil || len(out.Choices) == 0 {
+		slog.Debug("grounding: unparseable or empty response, failing open", "judge", g.Label(), "err", err)
 		return allTrue(len(passages))
 	}
 	return ParseMask(out.Choices[0].Message.Content, len(passages))

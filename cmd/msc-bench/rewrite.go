@@ -105,9 +105,18 @@ func (r *httpRewriter) Rewrite(ctx context.Context, query string, max int) []str
 	// Bound the read so a misbehaving model endpoint can't exhaust memory,
 	// matching the caps used by mcpclient and grounding. Rewrite replies are
 	// a handful of subqueries, so 4 MiB is far more than a real response needs.
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxRewriteResponse))
+	// One byte past the cap distinguishes a truncated read (reported as
+	// unparseable) from a genuinely oversized body; the read error itself is
+	// kept so a dropped connection is not misreported as a parse failure.
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRewriteResponse+1))
 	if resp.StatusCode >= 300 {
 		return failOpen("HTTP "+resp.Status, query)
+	}
+	if readErr != nil {
+		return failOpen("read response: "+readErr.Error(), query)
+	}
+	if int64(len(data)) > maxRewriteResponse {
+		return failOpen(fmt.Sprintf("response exceeds %d-byte limit", maxRewriteResponse), query)
 	}
 	var out struct {
 		Choices []struct {

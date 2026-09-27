@@ -100,6 +100,7 @@ type CapturedExchange struct {
 	TokensOut  int             `json:"tokens_out,omitempty"`  // output/completion token count
 	CacheWrite int             `json:"cache_write,omitempty"` // Anthropic cache_creation_input_tokens
 	CacheRead  int             `json:"cache_read,omitempty"`  // Anthropic cache_read_input_tokens
+	DurationMs int64           `json:"duration_ms,omitempty"` // request arrival to last response byte, in ms
 }
 
 // New creates a MuninnStore and starts its background flush goroutine.
