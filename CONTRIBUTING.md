@@ -49,8 +49,14 @@ go run ./cmd/msc status # quick smoke against a local MuninnDB
 `http://127.0.0.1:8750/mcp`, override with `MUNINN_MCP_URL`). The tests use
 `httptest` fakes, so no MuninnDB is needed to run them.
 
-Builds are reproducible: the same source at the same commit produces
-bit-identical binaries regardless of checkout path, wall-clock time, or locale.
+Builds are reproducible: the same source at the same commit, built with the same
+Go toolchain, produces bit-identical binaries regardless of checkout path,
+wall-clock time, or locale. The Go toolchain is part of that input, not an
+assumption: the Go runtime stamps its own version into the binary, so two
+patches of the same release line do not produce the same bytes. `msc version`
+prints the toolchain the binary was built with, which is how you check two
+artifacts before comparing them.
+
 `make build` passes `-trimpath` and `-buildvcs=false`, stamps the build date
 from `SOURCE_DATE_EPOCH`, which defaults to the commit's own timestamp, and sets
 `CGO_ENABLED=0`, so the result is a static binary that does not vary with the

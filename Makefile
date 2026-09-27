@@ -81,9 +81,13 @@ help:
 # last line of an unrelated build error, and a missing compiler reports only
 # "-race requires cgo", which names the wrong knob (the fix is a compiler, not
 # an env var). Run this before `make check` when a command fails oddly.
+# The Go and C-compiler lines decide the exit status: a preflight that prints
+# "you need a newer Go" and returns 0 is a check nobody can gate on. The
+# optional-tool lines stay advisory, because `make check` already fails hard on
+# those through lint-available and lint-go.
 doctor:
 	@required=$$(awk '/^go /{print $$2}' go.mod); \
-	 have=$$(go env GOVERSION); have=$${have#go}; \
+	 have=$$(go env GOVERSION); have=$${have#go}; status=0; \
 	 if awk -v req="$$required" -v have="$$have" 'BEGIN{ \
 	       n=split(req,r,"."); m=split(have,h,"."); \
 	       for (i=1; i<=n; i++) { hv=(i<=m?h[i]:0)+0; if (hv != r[i]+0) exit (hv>r[i]+0 ? 0 : 1) } \
@@ -91,6 +95,7 @@ doctor:
 	   echo "go:      ok ($$have, go.mod requires $$required)"; \
 	 else \
 	   echo "go:      go$$have installed, go.mod requires $$required or newer" >&2; \
+	   status=1; \
 	 fi; \
 	 cgo=$$(go env CGO_ENABLED); cc=$$(go env CC); \
 	 if [ "$$cgo" != "1" ]; then \
@@ -99,6 +104,7 @@ doctor:
 	   echo "cc:      ok ($$cc, for -race)"; \
 	 else \
 	   echo "cc:      '$$cc' not on PATH; 'make test' needs it for -race ('make test-fast' does not)" >&2; \
+	   status=1; \
 	 fi; \
 	 for t in staticcheck govulncheck; do \
 	   command -v $$t >/dev/null 2>&1 || echo "$$t: missing; CI installs it, run 'make tools'" >&2; \
@@ -106,7 +112,9 @@ doctor:
 	 for t in shellcheck ruff yamllint; do \
 	   command -v $$t >/dev/null 2>&1 || echo "$$t: not installed; 'make lint' skips it, CI runs it" >&2; \
 	 done; \
-	 echo "doctor: done"
+	 if [ "$$status" -eq 0 ]; then echo "doctor: done"; \
+	 else echo "doctor: the toolchain above is not usable" >&2; fi; \
+	 exit $$status
 
 # The `-race` half of the preflight, run on its own by the targets that need
 # it so the failure arrives before the compile rather than inside it.
@@ -148,7 +156,11 @@ check: tidy-check fmt-check lint-available lint test build-all
 # GitHub Actions each failure also emits an annotation, which lands on the run
 # summary instead of scrolling past in the step log.
 tidy-check:
-	go mod tidy
+	@go mod tidy || { echo "go mod tidy failed; go.mod/go.sum are unverified" >&2; \
+	  if [ "$$GITHUB_ACTIONS" = "true" ]; then \
+	    echo "::error::go mod tidy failed; go.mod/go.sum are unverified"; \
+	  fi; \
+	  exit 1; }
 	@if [ -n "$$(git status --porcelain go.mod go.sum)" ]; then \
 	  echo "go mod tidy changed go.mod/go.sum — commit the result" >&2; \
 	  if [ "$$GITHUB_ACTIONS" = "true" ]; then \
@@ -214,14 +226,20 @@ bench:
 
 # Run every fuzz target in the tree for a few seconds each (smoke regression of
 # all parsing/transform surfaces). FUZZTIME overrides the per-target budget.
+# `go test -list` keeps its stderr and its exit status. A package that fails to
+# compile, or a `go test` that errors, would otherwise print nothing on stdout,
+# match no target, and leave the campaign reporting "all fuzz targets clean"
+# with that package's targets silently uncovered. A package that simply has no
+# fuzz target still exits 0, so that case stays a no-op rather than a failure.
 FUZZTIME ?= 5s
 # A package whose listing fails aborts the run (set -e on the assignment), and a
 # campaign that found no target at all fails at the end: a silently empty list
 # would turn the CI fuzz job green without fuzzing anything.
 fuzz:
 	@set -e; ran=0; for pkg in $$(go list ./...); do \
-	  fns="$$(go test -list '^Fuzz' $$pkg)"; \
-	  for fn in $$(printf '%s\n' "$$fns" | grep '^Fuzz'); do \
+	  targets=$$(go test -list '^Fuzz' $$pkg) || \
+	    { echo "go test -list failed for $$pkg" >&2; exit 1; }; \
+	  for fn in $$(printf '%s\n' "$$targets" | grep '^Fuzz' || true); do \
 	    ran=$$((ran + 1)); \
 	    echo "== $$pkg $$fn =="; \
 	    go test $$pkg -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) && continue; \
