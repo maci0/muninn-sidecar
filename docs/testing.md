@@ -81,6 +81,7 @@ make test-fast PKG=./internal/inject                # no -race, quicker
 ```
 
 `make check` runs the full CI `test` job locally (tidy, gofmt, vet,
-staticcheck, `go test -race`, build) so nothing waits for a push to fail.
+staticcheck, `go test -race`, `make build-all`) so nothing waits for a push to
+fail.
 `make fuzz` and `make vuln` are the two CI jobs that stay separate, being slow
 and network-bound.

@@ -79,7 +79,10 @@ cleanup() {
 trap cleanup EXIT
 
 echo "=== Building msc ==="
-if ! go build -trimpath -buildvcs=false -o msc ./cmd/msc/; then
+# `make build`, not a hand-rolled go build: this has to exercise the binary the
+# Makefile ships, same flags and same version stamp, or the script drifts into
+# testing something nobody releases.
+if ! make build; then
     echo "FAIL: build failed"
     exit 1
 fi

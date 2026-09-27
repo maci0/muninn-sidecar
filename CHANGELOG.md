@@ -47,6 +47,29 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   "command not found" code, so a script can tell a mistyped agent name apart
   from an agent that ran and failed. The exit-code table is documented in
   `msc --help` and the README.
+- **The shipped binary no longer depends on the build host's libc.** Nothing
+  here imports `C`, but the builds ran with cgo on, so `msc` linked against
+  whatever glibc the build machine had, needed a working C toolchain to build
+  at all, and produced different bytes on different hosts. `make build`,
+  `make build-all` and `make install` now set `CGO_ENABLED=0` and emit static
+  binaries.
+- **The build date stamp silently went back to wall-clock time on macOS.** The
+  `date -d @N` fallback is GNU-only, so on the BSD `date` every macOS in the
+  release matrix has, the second candidate failed too and the stamp fell
+  through to `date -u` with no argument. The Makefile now tries the BSD
+  spelling as well, and reports `unknown` rather than a moving date if neither
+  works.
+- **CI never built with the flags that ship.** The `Build` steps ran a bare
+  `go build -o /dev/null ./...`, so `-trimpath`, `-buildvcs=false` and the
+  version stamp were untested there, and the same command was written out three
+  more times across the workflow. CI now calls `make build-all`, `make vet`,
+  `make tidy-check`, `make fmt-check`, `make test` and `make lint-go`, so the
+  Makefile is the only place the build is described.
+- **The reproducibility job could fail for the wrong reason.** It built a copy
+  of the tree and compared hashes, but both builds ran `git describe` in a
+  directory whose index had just been copied. The job now pins `VERSION`,
+  `COMMIT` and `SOURCE_DATE_EPOCH`, so a hash mismatch means a leaked path or
+  timestamp and nothing else.
 - **Builds are reproducible.** `make build` passed no `-trimpath`, so the
   checkout path was embedded in every binary, and the stamped build date came
   from the wall clock, so no two builds of one commit matched. Builds now use

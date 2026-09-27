@@ -5,7 +5,12 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 # Overridable with SOURCE_DATE_EPOCH, the standard knob packagers set. Falling
 # back to wall-clock time would make every build differ from the last.
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --pretty=%ct 2>/dev/null || echo 0)
-DATE    ?= $(shell date -u -d "@$(SOURCE_DATE_EPOCH)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+# `date -d @N` is GNU; BSD date (every macOS the release matrix builds for)
+# spells it `-r N`, and neither failing must fall through to wall-clock time or
+# two builds of one commit disagree. Probe the flag, not the platform.
+DATE    ?= $(shell date -u -d "@$(SOURCE_DATE_EPOCH)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                  || date -u -r "$(SOURCE_DATE_EPOCH)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                  || echo unknown)
 LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 # -trimpath keeps the checkout directory out of the binary, so the same source
@@ -14,8 +19,16 @@ LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DA
 # COMMIT/DATE ldflags above and adds a dirty-tree flag on top.
 BUILDFLAGS = -trimpath -buildvcs=false
 
-.PHONY: help tools tools-staticcheck tools-govulncheck check build install test test-fast \
-	cover lint vuln fmt fmt-check tidy tidy-check clean eval eval-models fuzz bench
+# No package in this module imports "C", so cgo buys nothing and costs two
+# things: the build needs a working host C toolchain to be installed at all,
+# and the resolver ties the binary to the build host's libc. Pinning it off
+# makes the build hermetic and the binary statically linked, so the artifact
+# is the same bytes whatever libc happens to sit on the machine. Scoped to the
+# build targets, not exported: `go test -race` needs cgo to link the runtime.
+CGO = CGO_ENABLED=0
+
+.PHONY: help tools tools-staticcheck tools-govulncheck check build build-all install test test-fast \
+	cover lint lint-go vet vuln fmt fmt-check tidy tidy-check clean eval eval-models fuzz bench
 
 # Packages/tests for the `test` target. PKG=./internal/redact narrows the
 # edit-test loop to the package being edited; RUN='^TestFoo$' narrows it to one
@@ -37,18 +50,20 @@ help:
 	@echo '  make tools        go install the two CI linters (staticcheck, govulncheck) into GOBIN'
 	@echo '  make tools-staticcheck   just the staticcheck install (what the CI test job runs)'
 	@echo '  make tools-govulncheck   just the govulncheck install (what the CI vuln job runs)'
-	@echo '  make check        everything CI runs locally: tidy-check fmt-check vet lint test build'
+	@echo '  make check        everything CI runs locally: tidy-check fmt-check lint test build-all'
 	@echo '  make test         go test -race -count=1 $(PKG)   (override PKG=... or RUN='"'"'^TestFoo$$'"'"')'
 	@echo '  make test-fast    same without -race, for a quicker loop'
 	@echo '  make fmt          gofmt -w over the tree'
 	@echo '  make fmt-check    fail on unformatted files (what CI does)'
 	@echo '  make lint         go vet + staticcheck (both required, like CI) + shellcheck, ruff, yamllint where installed'
+	@echo '  make lint-go      go vet + staticcheck only, the pair CI runs'
 	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
 	@echo '  make cover        race + coverage report'
 	@echo '  make fuzz         brief campaign over every fuzz target (FUZZTIME=60s for longer)'
 	@echo '  make vuln         govulncheck against the Go vulnerability DB (govulncheck required)'
 	@echo '  make bench        all benchmarks with allocation stats'
 	@echo '  make build        build msc, msc-bench, msc-eval, msc-qa'
+	@echo '  make build-all    compile every package with the shipped flags, no artifacts left'
 	@echo '  make install      go install ./cmd/msc'
 	@echo '  make eval         offline selection-quality report + MinScore threshold sweep'
 	@echo '  make eval-models  downstream answer quality over local models (needs ollama + a seeded vault)'
@@ -71,8 +86,7 @@ tools-govulncheck:
 
 # The full local mirror of the CI `test` job, in CI's order. Run this before
 # pushing: anything it misses is a red CI run.
-check: tidy-check fmt-check lint test
-	go build -o /dev/null $(BUILDFLAGS) ./...   # all binaries, matching CI's build step
+check: tidy-check fmt-check lint test build-all
 
 # CI runs `go mod tidy` and fails if it changes anything, so a stale go.mod
 # only surfaces after a push. Same check, same message, locally: the workflow
@@ -94,10 +108,16 @@ tidy-check:
 # Build all binaries. Version ldflags only resolve in cmd/msc (the others have
 # no main.version symbol, so -X is a harmless no-op there).
 build:
-	go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc       ./cmd/msc/
-	go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc-bench ./cmd/msc-bench/
-	go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc-eval  ./cmd/msc-eval/
-	go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc-qa    ./cmd/msc-qa/
+	$(CGO) go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc       ./cmd/msc/
+	$(CGO) go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc-bench ./cmd/msc-bench/
+	$(CGO) go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc-eval  ./cmd/msc-eval/
+	$(CGO) go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc-qa    ./cmd/msc-qa/
+
+# Compile every package and command without leaving artifacts behind. This is
+# the build CI runs, so the flags above are the ones CI actually checks: a copy
+# of the command in ci.yml is a second source of truth that drifts.
+build-all:
+	$(CGO) go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o /dev/null ./...
 
 eval:
 	go run ./cmd/msc-eval -sweep
@@ -110,7 +130,7 @@ eval-models:
 	go run ./cmd/msc-qa -vault msc-squad -model-url $(MODEL_URL) -model "$(MODELS)" -n 20 -min-score 0.1 -max-tokens 256 -md docs/model-eval.md
 
 install:
-	go install $(BUILDFLAGS) -ldflags '$(LDFLAGS)' ./cmd/msc/
+	$(CGO) go install $(BUILDFLAGS) -ldflags '$(LDFLAGS)' ./cmd/msc/
 
 test:
 	go test -race -count=1 $(if $(RUN),-run '$(RUN)') $(PKG)
@@ -141,20 +161,25 @@ fuzz:
 	  done; \
 	done; echo "all fuzz targets clean"
 
-# CI runs staticcheck and fails the build, so a missing local copy must fail
-# here too: skipping it silently reports green and turns into a red CI run.
 # The non-Go linters are optional, so they skip when missing. Gate presence with
 # `if` and run the tool in a separate statement: `command -v X && X ... || echo
 # skip` also fires the skip on the tool's non-zero exit, so a real finding would
 # print "not installed" and the target would still succeed.
-lint:
-	go vet ./...
-	@command -v staticcheck >/dev/null 2>&1 || { \
-	  echo "staticcheck is required (CI runs it): go install $(STATICCHECK_PKG)" >&2; exit 1; }
-	staticcheck ./...
+lint: lint-go
 	@if command -v shellcheck >/dev/null 2>&1; then shellcheck test-live.sh; else echo "shellcheck not installed, skipping"; fi
 	@if command -v ruff >/dev/null 2>&1; then ruff check scripts/ && ruff format --check scripts/; else echo "ruff not installed, skipping"; fi
 	@if command -v yamllint >/dev/null 2>&1; then yamllint .; else echo "yamllint not installed, skipping"; fi
+
+vet:
+	go vet ./...
+
+# CI runs staticcheck and fails the build, so a missing local copy must fail
+# here too: skipping it silently reports green and turns into a red CI run.
+# The optional non-Go linters stay out of this target, which is the pair CI runs.
+lint-go: vet
+	@command -v staticcheck >/dev/null 2>&1 || { \
+	  echo "staticcheck is required (CI runs it): go install $(STATICCHECK_PKG)" >&2; exit 1; }
+	staticcheck ./...
 
 # Scan reachable code against the Go vulnerability DB (CI runs this too).
 vuln:
@@ -190,4 +215,4 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -f msc msc-bench msc-eval msc-qa testmsc cover.out coverage.html
+	rm -f msc msc-bench msc-eval msc-qa cover.out coverage.html

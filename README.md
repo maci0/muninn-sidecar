@@ -57,7 +57,9 @@ make build
 ### Platforms
 
 `msc` builds for Linux and macOS on amd64 and arm64, plus Windows on amd64,
-and CI builds and vets each of them. The test suite runs only on Linux, so the
+and CI builds and vets each of them. The binaries are statically linked
+(`CGO_ENABLED=0`), so a Linux build runs on any libc rather than only the one
+on the machine that produced it. The test suite runs only on Linux, so the
 other targets are compile-verified, not exercised end to end. Two behaviors
 differ by platform and are handled rather than assumed:
 

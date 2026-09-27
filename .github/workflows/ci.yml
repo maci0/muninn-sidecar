@@ -39,27 +39,35 @@ jobs:
 
       - name: Tidy
         # `make tidy-check` is the single copy of this logic, so CI and a
-        # contributor's `make check` cannot drift apart.
+        # contributor's `make check` cannot drift apart. It uses
+        # `git status --porcelain` rather than `git diff go.mod go.sum` because
+        # this module has no dependencies and thus no go.sum — `git diff` errors
+        # on the missing path, while status handles an absent file and still
+        # catches a newly-created one.
         run: make tidy-check
 
       - name: Format
         run: make fmt-check
 
       - name: Vet
-        run: go vet ./...
+        run: make vet
 
       - name: Staticcheck
         # Installed through the Makefile target, which owns the module path and
-        # the version choice, so the local and CI linters are the same one.
+        # the version choice (STATICCHECK_VERSION, currently @latest: the
+        # pinned v0.5.1 no longer compiles against current Go toolchains, stale
+        # x/tools), so the local and CI linters are the same one.
         run: |
           make tools-staticcheck
           staticcheck ./...
 
       - name: Test
-        run: go test -race -count=1 ./...
+        run: make test
 
       - name: Build
-        run: go build -o /dev/null ./...   # all binaries: msc, msc-bench, msc-qa, msc-eval
+        # The Makefile's BUILDFLAGS/CGO_ENABLED, so CI checks the flags that
+        # ship rather than a bare `go build` that shares none of them.
+        run: make build-all
 
   lint:
     name: Lint
@@ -116,13 +124,13 @@ jobs:
           cache: false
 
       - name: Build
-        run: go build -o /dev/null ./...
+        run: make build-all
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
 
       - name: Vet
-        run: go vet ./...
+        run: make vet
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -146,6 +154,12 @@ jobs:
       - name: Build twice from different paths
         run: |
           set -euo pipefail
+          # Pin the stamps: this step is here to catch paths, timestamps and VCS
+          # state leaking into the binary, and `git describe` in a copied tree
+          # can legitimately read differently (a refreshed index, a missing
+          # .git). Fixing VERSION/COMMIT/SOURCE_DATE_EPOCH leaves exactly the
+          # leak this step is meant to find, and makes it fail on that alone.
+          export VERSION=repro-test COMMIT=repro-test SOURCE_DATE_EPOCH=1700000000
           make build
           mkdir -p "$RUNNER_TEMP/elsewhere"
           cp -r . "$RUNNER_TEMP/elsewhere/src"

@@ -35,13 +35,19 @@ go run ./cmd/msc status # quick smoke against a local MuninnDB
 
 Builds are reproducible: the same source at the same commit produces
 bit-identical binaries regardless of checkout path, wall-clock time, or locale.
-`make build` passes `-trimpath` and `-buildvcs=false`, and stamps the build date
-from `SOURCE_DATE_EPOCH`, which defaults to the commit's own timestamp. Set it
-explicitly to build as of a different point in time:
+`make build` passes `-trimpath` and `-buildvcs=false`, stamps the build date
+from `SOURCE_DATE_EPOCH`, which defaults to the commit's own timestamp, and sets
+`CGO_ENABLED=0`, so the result is a static binary that does not vary with the
+build host's libc. Set the epoch explicitly to build as of a different point in
+time:
 
 ```sh
 SOURCE_DATE_EPOCH=1700000000 make build
 ```
+
+`make build-all` compiles every package with those same flags and leaves no
+artifacts; it is what CI runs, so a flag added to the Makefile reaches CI on the
+next push instead of living in a second copy in `ci.yml`.
 
 The `Reproducible build` CI job builds twice from two different directories and
 compares the hashes, so a regression here fails the build.
@@ -62,12 +68,12 @@ make test-fast PKG=./internal/inject       # same, without -race
 One command runs everything the CI `test` job runs, in the same order:
 
 ```sh
-make check   # tidy-check, fmt-check, lint (go vet + staticcheck + shellcheck + ruff + yamllint), go test -race, build
+make check   # tidy-check, fmt-check, lint (go vet + staticcheck + shellcheck + ruff + yamllint), go test -race, build-all
 ```
 
 The remaining CI jobs are separate: the `lint` job (ruff, shellcheck, yamllint —
 `make lint` runs the same tools when they are installed), the cross-platform
-`build` matrix (windows/amd64, both unix flavors, both arches — `make build`
+`build` matrix (windows/amd64, both unix flavors, both arches — `make build-all`
 covers the host), and the two slow or networked ones:
 
 ```sh
