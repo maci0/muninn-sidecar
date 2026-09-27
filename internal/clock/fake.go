@@ -84,7 +84,7 @@ func (f *Fake) Advance(d time.Duration) {
 // After returns a channel that receives once the scripted clock has advanced d.
 func (f *Fake) After(d time.Duration) <-chan time.Time {
 	ch := make(chan time.Time, 1)
-	f.add(&fakeTimer{deadline: f.Now().Add(d), ch: ch})
+	f.arm(&fakeTimer{ch: ch}, d)
 	return ch
 }
 
@@ -108,24 +108,33 @@ func (f *Fake) PendingOneShots() int {
 // NewTicker returns a ticker that ticks once per period of scripted time.
 func (f *Fake) NewTicker(d time.Duration) Ticker {
 	t := &fakeTimer{
-		deadline: f.Now().Add(d),
-		period:   d,
-		ch:       make(chan time.Time, 1),
+		period: d,
+		ch:     make(chan time.Time, 1),
 	}
-	f.add(t)
+	f.arm(t, d)
 	return &fakeTicker{f: f, t: t}
 }
 
 // AfterFunc returns a timer that runs fn once the scripted clock has advanced d.
 func (f *Fake) AfterFunc(d time.Duration, fn func()) Timer {
-	t := &fakeTimer{deadline: f.Now().Add(d), fn: fn}
-	f.add(t)
+	t := &fakeTimer{fn: fn}
+	f.arm(t, d)
 	return &fakeTimerHandle{f: f, t: t}
 }
 
-func (f *Fake) add(t *fakeTimer) {
+// arm sets t's deadline from the scripted time and registers it in one critical
+// section. A caller arms from its own goroutine (the store's worker arms a
+// retry backoff) while the script advances from another, and splitting the two
+// steps across two lock acquisitions left a window between them: an Advance
+// landing there scanned a list the timer was not yet in, so the timer was
+// registered with a deadline already past and missed the advance meant to
+// release it. Armed atomically, a timer is either wholly visible to the scan
+// that follows or wholly after it, with its deadline measured from the advanced
+// time.
+func (f *Fake) arm(t *fakeTimer, d time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	t.deadline = f.now.Add(d)
 	f.timers = append(f.timers, t)
 }
 

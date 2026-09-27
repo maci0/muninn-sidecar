@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -48,8 +49,12 @@ func waitForPIDFile(t *testing.T, path string) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		// The shell's `echo $! > file` truncates before it writes, so a read can
+		// land in between and see an empty or half-written file. Parse what is
+		// there and keep polling instead of indexing into a possibly empty
+		// buffer.
 		if b, err := os.ReadFile(path); err == nil {
-			if pid, err := strconv.Atoi(string(b[:len(b)-1])); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
 				return pid
 			}
 		}
