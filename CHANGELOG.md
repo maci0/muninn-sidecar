@@ -11,6 +11,8 @@ minor bump is safe.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-27
+
 ### Added
 
 - **A CONNECT tunnel and a spliced upgrade now report one outcome line.** Both
@@ -1177,7 +1179,8 @@ and injecting relevant recalled context — with zero agent configuration.
   race-clean; CI builds all binaries, runs `go vet`/staticcheck/race tests, and a
   short fuzz campaign on every push.
 
-[unreleased]: https://github.com/maci0/muninn-sidecar/compare/v0.4.4...HEAD
+[unreleased]: https://github.com/maci0/muninn-sidecar/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.5.0
 [0.4.4]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.4
 [0.4.3]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.3
 [0.4.2]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.2
