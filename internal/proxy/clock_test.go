@@ -40,10 +40,18 @@ func TestCaptureIsReplayableFromClock(t *testing.T) {
 	defer upstream.Close()
 
 	// Two runs of the same request sequence against the same scripted clock must
-	// produce identical exchange bytes: timestamps and durations come from the
+	// produce identical exchange bytes, and the clock must end up exactly where
+	// the script puts it: every time read on the capture path comes from the
 	// injected clock, not the host wall clock.
-	run := func() string {
+	//
+	// CapturedExchange carries no wall-clock field of its own (see
+	// store.CapturedExchange), so the clock's own position is what proves the
+	// capture path is reading it: three requests, each preceded by a 10s jump
+	// taken at request start and followed by the upstream's 1500ms advance while
+	// the request is in flight.
+	run := func() (string, time.Duration) {
 		clock = newFakeClock()
+		base := clock.now
 		rec := &recordStore{}
 		p, err := New(Config{
 			ListenAddr: "127.0.0.1:0",
@@ -77,15 +85,15 @@ func TestCaptureIsReplayableFromClock(t *testing.T) {
 			out.Write(b)
 			out.WriteByte('\n')
 		}
-		return out.String()
+		return out.String(), clock.now.Sub(base)
 	}
 
-	first := run()
-	second := run()
+	first, firstElapsed := run()
+	second, secondElapsed := run()
 	if first != second {
 		t.Fatalf("replay diverged:\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
-	if !strings.Contains(first, `"duration_ms":1500`) {
-		t.Errorf("expected scripted 1500ms durations in %s", first)
+	if want := 3 * (10*time.Second + 1500*time.Millisecond); firstElapsed != want || secondElapsed != want {
+		t.Errorf("scripted clock advanced %s and %s, want %s each", firstElapsed, secondElapsed, want)
 	}
 }
