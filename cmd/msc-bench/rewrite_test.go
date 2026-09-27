@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,18 @@ func TestParseSubqueriesDedupAndCap(t *testing.T) {
 	}
 	if seen["orig"] != 1 {
 		t.Errorf("original duplicated: %v", subs)
+	}
+}
+
+// A sub-query that starts with digits is a value, not a list marker: the model
+// answering "1989" to a year question, or "2004年の…" in Japanese, must keep
+// them. Stripping a bare run of leading digits mangled both and dropped the
+// all-digit one entirely.
+func TestParseSubqueriesKeepsNumericContent(t *testing.T) {
+	subs := parseSubqueries("orig", "1989\n2004年のRegexエンジン", 5)
+	want := []string{"orig", "1989", "2004年のRegexエンジン"}
+	if !slices.Equal(subs, want) {
+		t.Errorf("sub-queries = %q, want %q", subs, want)
 	}
 }
 

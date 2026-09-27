@@ -43,6 +43,17 @@ func TestSplitNonASCIIUppercase(t *testing.T) {
 	}
 }
 
+// An entity span ends with the sentence terminator of its own script, not
+// necessarily an ASCII one: a span closed by "。" is the same entity as the span
+// closed by "?", and keeping the full-width terminator made two different recall
+// keys out of one name.
+func TestSplitTrimsCJTTrailingPunctuation(t *testing.T) {
+	subs := Split("Did Scott Derrickson direct Sinister?。")
+	if len(subs) != 3 || subs[1] != "Did Scott Derrickson" || subs[2] != "Sinister" {
+		t.Errorf("Split = %q, want the entity spans with the 。 trimmed", subs)
+	}
+}
+
 func FuzzSplit(f *testing.F) {
 	f.Add("Were Scott Derrickson and Ed Wood here?")
 	f.Add("")

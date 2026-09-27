@@ -345,3 +345,24 @@ func TestServerErrorTextTruncationKeepsRunes(t *testing.T) {
 		t.Errorf("truncation split a rune: %q", rpcErr.Message[maxErrorRunes-3:])
 	}
 }
+
+// A message long enough to be capped is long because the server quoted the
+// memory it refused. The cap must come after the scrub, or the truncated error
+// hands back the first maxErrorRunes of the very content every call site
+// treats as loggable.
+func TestServerErrorTextScrubsBeforeCapping(t *testing.T) {
+	secret := "sk-ant-" + strings.Repeat("a", 40)
+	// The secret sits at the head, so a cap taken before the scrub would keep it.
+	msg := "content too long: " + secret + ", " + strings.Repeat("and more prose after it ", 20)
+	_, err := classifyResponse(200, []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"`+msg+`"}}`))
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("expected *RPCError, got %T: %v", err, err)
+	}
+	if strings.Contains(rpcErr.Message, secret) {
+		t.Errorf("capped error text carried the secret through unredacted: %q", rpcErr.Message)
+	}
+	if n := len([]rune(rpcErr.Message)); n > maxErrorRunes+1 {
+		t.Errorf("message not bounded: %d runes", n)
+	}
+}

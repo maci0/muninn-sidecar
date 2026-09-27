@@ -13,6 +13,13 @@ import (
 // a name.
 const minEntityBytes = 3
 
+// trailingPunct is the set of trailing punctuation trimmed off an entity span.
+// Beyond ASCII "?.,", the terminators a CJK sentence actually ends with: a
+// question written in Japanese or Chinese ends in "。", and keeping it made the
+// sub-query ("北京大学。") a different recall key from the same entity written
+// without it ("北京大学"), for a difference no one typed.
+const trailingPunct = "?.,。、！？；：…!?;:"
+
 // Split returns the sub-queries for q: q first, then each maximal run of
 // capitalized words, deduped and trimmed of trailing punctuation. Runs shorter
 // than minEntityBytes are dropped.
@@ -24,7 +31,7 @@ func Split(q string) []string {
 		if len(cur) == 0 {
 			return
 		}
-		s := strings.Trim(strings.Join(cur, " "), "?.,")
+		s := strings.Trim(strings.Join(cur, " "), trailingPunct)
 		if len(s) >= minEntityBytes && !seen[s] {
 			seen[s] = true
 			subs = append(subs, s)

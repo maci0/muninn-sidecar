@@ -47,6 +47,26 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
   and a zero `topk` does not mean "grade none" but "grade every recalled
   passage in one call". Both now fail loud at startup, matching the `--ground-topk`
   check `msc` already had.
+- **A capped server error message no longer bypasses redaction.** The RPC
+  error text was capped at 300 runes *before* the scrub, so a rejection long
+  enough to hit the cap (exactly the kind that quotes the memory it refused)
+  returned its first 300 runes unredacted, putting the secret at the head of
+  every log line the error reached. It is scrubbed first and capped second.
+- **A judge CLI's output capture starts on a character boundary.**
+  `internal/clirun` carried its own tail buffer that kept the last 4 MiB of
+  bytes with no UTF-8 check, so a child that overran the cap mid-character (a
+  CJK or emoji verdict) handed every caller invalid UTF-8 to parse. It now uses
+  the shared `internal/tailbuf`, whose buffer is rune-aware.
+- **A response body quoted into an error is cut on a character boundary.** The
+  200-byte summary of an untrusted response could land inside a multi-byte
+  character and put a replacement character in the log line for the rest of it.
+- **A sub-query that begins with digits keeps them.** The list-marker strip
+  removed a bare run of leading digits, so a rewriter answering "1989" to a
+  year question lost the sub-query entirely and "2004年の…" became "年の…". A
+  marker is now a bullet, or an index with its separator, and nothing else.
+- **An entity span ends with its own script's punctuation.** `querysplit`
+  trimmed only `?.,` off a capitalized run, so a span closed by `。` was a
+  different recall key from the same name closed by `?`.
 - **`MSC_WS_DEBUG=0` no longer turns the WebSocket probe on.** The switch was
   read as "set means on", so a shell profile that exported the variable to
   disable it kept the probe logging. `0`, `false`, `off`, and `no` now turn it

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maci0/muninn-sidecar/internal/redact"
 )
@@ -172,6 +173,11 @@ const maxErrorRunes = 300
 // the cap, so an over-long rejection cannot escape the scrub by being over-long;
 // the cap may then cut a marker redaction inserted, which costs the line some
 // context, never secrecy.
+//
+// Redact first and cap second: a server message long enough to be capped is
+// usually long because it quotes the offending memory, so truncating before the
+// scrub would return the first maxErrorRunes of exactly the text that must not
+// be logged.
 func scrubServerText(s string) string {
 	s = redact.Secrets(strings.TrimSpace(s))
 	r := []rune(s)
@@ -340,11 +346,18 @@ func CheckEnvelope(body []byte) error {
 }
 
 // bodySummary renders an untrusted response body for an error message, capped
-// so a large HTML page does not land whole in a log line.
+// so a large HTML page does not land whole in a log line. The cut backs off to
+// a rune boundary: a server that answers with a non-ASCII error page would
+// otherwise have the cap land mid-character and the log line carry a replacement
+// character for the rest of it.
 func bodySummary(body []byte) string {
 	const maxSummary = 200
 	if len(body) <= maxSummary {
 		return string(body)
 	}
-	return string(body[:maxSummary]) + "..."
+	cut := body[:maxSummary]
+	for len(cut) > 0 && !utf8.RuneStart(cut[len(cut)-1]) {
+		cut = cut[:len(cut)-1]
+	}
+	return string(cut) + "..."
 }

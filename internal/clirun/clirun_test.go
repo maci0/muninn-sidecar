@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // A judge that prints without bound must not be able to grow the caller's heap
@@ -50,6 +51,30 @@ func TestRunKillsProcessGroupOnTimeout(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	if b, err := os.ReadFile(marker); err == nil {
 		t.Errorf("grandchild survived the group kill and wrote %q", b)
+	}
+}
+
+// A child that overruns the cap mid-character must not leave the retained tail
+// starting inside a multi-byte rune: every caller parses the capture, and a head
+// that decodes to a replacement character corrupts a JSON verdict line and shows
+// up as mojibake in the parsed text.
+func TestRunKeepsTailOnRuneBoundary(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	// 3-byte CJK filler past the 4 MiB cap, then the verdict. 4 MiB is not a
+	// multiple of 3, so a byte-wise tail necessarily starts mid-character.
+	argv := []string{"/bin/sh", "-c",
+		"head -c 5242880 /dev/zero | tr '\\0' '\\xe4'; printf 'VERDICT-1\\n'"}
+	out, err := Run(context.Background(), argv, "", 30*time.Second)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("captured tail is not valid UTF-8, head = %q", first(out, 8))
+	}
+	if !strings.HasSuffix(out, "VERDICT-1\n") {
+		t.Errorf("output does not end in the verdict the child printed last: %q", last(out, 40))
 	}
 }
 
@@ -143,6 +168,13 @@ func last(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+func first(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // IsolateProcessGroup must leave a command that never started cancellable

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,23 @@ func rewritePrompt(query string, max int) string {
 		"<question>" + question + "</question>"
 }
 
+// reQuestionTag matches the tag fencing the question, so a question cannot
+// close its own fence and have the remainder read as prompt text.
+var reQuestionTag = regexp.MustCompile(`(?i)<\s*/?\s*question\b`)
+
+// reListMarker matches a leading ordered/unordered list marker: a bullet, or an
+// index followed by its separator ("2." / "3)"). The separator after the digits
+// is required, so a sub-query that *is* a number keeps it: the answers to
+// "in what year…" and "how many…" are digits, and cutting a leading run of
+// digits turns "1989" into a dropped line and "2004年の…" into "年の…".
+var reListMarker = regexp.MustCompile(`^\s*(?:[-*•]+|\(?\d{1,2}[.)])\s+`)
+
+// minSubqueryBytes is the shortest line worth sending back to MuninnDB as
+// embedding context. Bytes, as before: a short CJK query measures several
+// bytes per character, and dropping it here on a character count would lose
+// exactly the short queries a non-Latin corpus produces.
+const minSubqueryBytes = 3
+
 // parseSubqueries reads the model's lines into sub-queries, always prepending
 // the original query and de-duplicating, capped at max (counting the original).
 // Each sub-query is length-capped: model output is untrusted input to the
@@ -65,10 +83,8 @@ func parseSubqueries(original, out string, max int) []string {
 	subs := []string{original}
 	seen := map[string]bool{strings.ToLower(strings.TrimSpace(original)): true}
 	for _, line := range strings.Split(out, "\n") {
-		s := strings.TrimSpace(line)
-		// Strip leading list-marker characters (digits, ".", ")", "-", "*", "•").
-		s = strings.TrimLeft(s, "-*•0123456789.) \t")
-		if len(s) < 3 {
+		s := strings.TrimSpace(reListMarker.ReplaceAllString(line, ""))
+		if len(s) < minSubqueryBytes {
 			continue
 		}
 		s = apiformat.TruncateQuery(s, maxSubqueryRunes)

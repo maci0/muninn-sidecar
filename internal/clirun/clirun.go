@@ -27,6 +27,9 @@ import (
 // Writes past the limit drop the oldest bytes: these agents print their
 // reasoning first and the payload last, so keeping the tail preserves what
 // callers parse, where an uncapped buffer would instead exhaust memory.
+// The tail is kept by internal/tailbuf, which starts the retained bytes at a
+// rune boundary: a child that overruns the cap mid-character (a CJK or emoji
+// verdict) would otherwise hand every caller invalid UTF-8 to parse.
 const maxOutput = 4 << 20 // 4 MiB
 
 // Run executes argv and returns its standard output, or an error if the child
