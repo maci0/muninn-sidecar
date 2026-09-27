@@ -101,6 +101,16 @@ type CapturedExchange struct {
 	CacheWrite int             `json:"cache_write,omitempty"` // Anthropic cache_creation_input_tokens
 	CacheRead  int             `json:"cache_read,omitempty"`  // Anthropic cache_read_input_tokens
 	DurationMs int64           `json:"duration_ms,omitempty"` // request arrival to last response byte, in ms
+
+	// UserText and AssistantText hold the messages a Preparer already pulled
+	// out of ReqBody and RespBody while normalizing them, before the store's own
+	// normalization (system-reminder stripping, redaction). A captured request
+	// carries the whole conversation and can reach tens of MiB, so decoding it
+	// a second time here to find the same two strings is the store worker's
+	// dominant cost. A nil field means "not extracted yet" and the store falls
+	// back to decoding the body itself.
+	UserText      *string `json:"-"`
+	AssistantText *string `json:"-"`
 }
 
 // New creates a MuninnStore and starts its background flush goroutine.
@@ -307,8 +317,12 @@ func (s *MuninnStore) prepareForStore(ex *CapturedExchange, ring *[dedupRingSize
 // slot holds a set of hashes from one flush cycle, so multiple exchanges per
 // cycle are tracked correctly.
 func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, ringIdx *int) *formattedMemory {
-	userMsg := apiformat.StripSystemReminders(apiformat.ExtractUserMessage(ex.ReqBody))
-	assistantMsg := apiformat.ExtractAssistantMessage(ex.RespBody)
+	userMsg := apiformat.StripSystemReminders(exchangeText(ex.UserText, func() string {
+		return apiformat.ExtractUserMessage(ex.ReqBody)
+	}))
+	assistantMsg := exchangeText(ex.AssistantText, func() string {
+		return apiformat.ExtractAssistantMessage(ex.RespBody)
+	})
 
 	// Redact well-known secret formats (API keys, tokens, private keys) before
 	// they enter long-term memory, where they would persist and resurface on
@@ -392,6 +406,16 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 		content: content,
 		tags:    buildTags(ex),
 	}
+}
+
+// exchangeText returns the message text a Preparer already extracted, or
+// extracts it from the body when no Preparer supplied it. The fallback is a
+// closure so the body is only decoded when it is actually needed.
+func exchangeText(prepared *string, extract func() string) string {
+	if prepared != nil {
+		return *prepared
+	}
+	return extract()
 }
 
 // flushFormatted sends a batch of pre-formatted memories to MuninnDB:

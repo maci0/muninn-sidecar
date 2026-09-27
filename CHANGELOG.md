@@ -5,6 +5,16 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ## [Unreleased]
 
+### Changed
+
+- **Captured bodies are decoded once.** A captured request carries the whole
+  conversation and can reach tens of MiB, and the store worker decoded it four
+  times over: once to filter injected context and tool traffic, twice more to
+  pull the model name and token usage, and again to find the last user message.
+  The request and response are now each parsed a single time, and the filtering
+  step hands its parsed document to the callers that read those fields. Capture
+  normalization is ~1.8x faster on a 1 MB request body.
+
 ### Added
 
 - **The session is observable.** `--debug` output and the end-of-session summary

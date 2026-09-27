@@ -77,7 +77,7 @@ func TestFilterAnthropicToolUse(t *testing.T) {
 		]
 	}`)
 
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -142,7 +142,7 @@ func TestFilterOpenAIToolCalls(t *testing.T) {
 		]
 	}`)
 
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -185,7 +185,7 @@ func TestFilterPreservesNonMuninnTools(t *testing.T) {
 		]
 	}`)
 
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -224,7 +224,7 @@ func TestFilterNoMatchReturnsOriginal(t *testing.T) {
 		]
 	}`)
 
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	// Should be byte-identical since nothing matched.
 	if string(result) != string(body) {
@@ -234,7 +234,7 @@ func TestFilterNoMatchReturnsOriginal(t *testing.T) {
 
 func TestFilterInvalidJSON(t *testing.T) {
 	body := json.RawMessage(`not json at all`)
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	if string(result) != string(body) {
 		t.Fatal("expected invalid JSON to pass through unchanged")
@@ -243,13 +243,13 @@ func TestFilterInvalidJSON(t *testing.T) {
 
 func TestFilterEmptyPatterns(t *testing.T) {
 	body := json.RawMessage(`{"messages":[]}`)
-	result := cleanResponse(body, nil)
+	_, result := cleanResponse(body, nil)
 
 	if string(result) != string(body) {
 		t.Fatal("expected nil patterns to skip filtering")
 	}
 
-	result = cleanResponse(body, []string{})
+	_, result = cleanResponse(body, []string{})
 	if string(result) != string(body) {
 		t.Fatal("expected empty patterns to skip filtering")
 	}
@@ -267,7 +267,7 @@ func TestFilterToolDefinitions(t *testing.T) {
 		"messages": [{"role": "user", "content": "hello"}]
 	}`)
 
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -301,7 +301,7 @@ func TestFilterAnthropicResponse(t *testing.T) {
 		"usage": {"input_tokens": 100, "output_tokens": 50}
 	}`)
 
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -334,7 +334,7 @@ func TestStripInjectedContextAnthropicArray(t *testing.T) {
 		"messages":[{"role":"user","content":"hello"}]
 	}`)
 
-	result := cleanRequest(body, nil)
+	_, result := cleanRequest(body, nil)
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -357,7 +357,7 @@ func TestStripInjectedContextAnthropicString(t *testing.T) {
 		"messages":[{"role":"user","content":"hello"}]
 	}`)
 
-	result := cleanRequest(body, nil)
+	_, result := cleanRequest(body, nil)
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -379,7 +379,7 @@ func TestStripInjectedContextOpenAI(t *testing.T) {
 		]
 	}`)
 
-	result := cleanRequest(body, nil)
+	_, result := cleanRequest(body, nil)
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -409,7 +409,7 @@ func TestStripInjectedContextGemini(t *testing.T) {
 		}
 	}`)
 
-	result := cleanRequest(body, nil)
+	_, result := cleanRequest(body, nil)
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -435,7 +435,7 @@ func TestStripInjectedContextNoMarkers(t *testing.T) {
 		]
 	}`)
 
-	result := cleanRequest(body, nil)
+	_, result := cleanRequest(body, nil)
 
 	if string(result) != string(body) {
 		t.Error("should return original body when no markers found")
@@ -444,7 +444,7 @@ func TestStripInjectedContextNoMarkers(t *testing.T) {
 
 func TestStripInjectedContextInvalidJSON(t *testing.T) {
 	body := json.RawMessage(`not json`)
-	result := cleanRequest(body, nil)
+	_, result := cleanRequest(body, nil)
 	if string(result) != `"not json"` {
 		t.Errorf("expected sanitized string, got %s", string(result))
 	}
@@ -459,7 +459,7 @@ func TestFilterOpenAIResponsesOutput(t *testing.T) {
 		]
 	}`)
 
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -490,7 +490,7 @@ func TestFilterOpenAIResponsesInput(t *testing.T) {
 		]
 	}`)
 
-	result := cleanRequest(body, []string{"muninn"})
+	_, result := cleanRequest(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -517,7 +517,7 @@ func TestStripInjectedContextOpenAIResponses(t *testing.T) {
 		"instructions":"Be helpful\n\n<retrieved-context source=\"muninn\">\nsome memory\n</retrieved-context>"
 	}`)
 
-	result := cleanRequest(body, nil)
+	_, result := cleanRequest(body, nil)
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -548,7 +548,7 @@ func TestStripInjectedContextOpenAIResponsesMultiLineBlock(t *testing.T) {
 	}
 
 	var doc map[string]any
-	if err := json.Unmarshal(cleanRequest(body, nil), &doc); err != nil {
+	if err := json.Unmarshal(mustCleanRequest(body), &doc); err != nil {
 		t.Fatal(err)
 	}
 	if doc["instructions"] != orig {
@@ -566,7 +566,7 @@ func TestStripInjectedContextOpenAIResponsesOnlyBlock(t *testing.T) {
 		"instructions":"<retrieved-context source=\"muninn\">\nsome memory\n</retrieved-context>"
 	}`)
 
-	result := cleanRequest(body, nil)
+	_, result := cleanRequest(body, nil)
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -589,7 +589,7 @@ func TestFilterSyntheticToolUseWithoutID(t *testing.T) {
 		]
 	}`)
 
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -620,7 +620,7 @@ func TestFilterCaseInsensitive(t *testing.T) {
 		]
 	}`)
 
-	result := cleanResponse(body, []string{"muninn"})
+	_, result := cleanResponse(body, []string{"muninn"})
 
 	var doc map[string]any
 	if err := json.Unmarshal(result, &doc); err != nil {
@@ -662,4 +662,11 @@ func TestFilterToolDefs(t *testing.T) {
 	if !names["Read"] || !names["edit_file"] {
 		t.Errorf("non-matching tools should be kept, got %v", names)
 	}
+}
+
+// mustCleanRequest returns the stored bytes cleanRequest produces, dropping the
+// parsed document the tests here do not inspect.
+func mustCleanRequest(body []byte) json.RawMessage {
+	_, out := cleanRequest(body, nil)
+	return out
 }

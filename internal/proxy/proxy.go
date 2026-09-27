@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/mitm"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 	"github.com/maci0/muninn-sidecar/internal/store"
@@ -654,9 +655,36 @@ type preparerSetter interface{ SetPreparer(store.Preparer) }
 // definitions) from the request and response bodies, wraps a non-JSON payload
 // so it stays storable, and fills in the model name and token usage.
 func (p *Proxy) prepareExchange(ex *store.CapturedExchange) {
-	ex.ReqBody = cleanRequest(ex.ReqBody, p.filterPatterns)
-	ex.RespBody = cleanResponse(sanitizeJSON(ex.RespBody), p.filterPatterns)
-	extractModelAndTokens(ex)
+	// Each body is decoded once. cleanRequest/cleanResponse hand back the
+	// document they filtered, so the model name, the usage counters, and the
+	// two message texts the store writes come out of that single decode
+	// instead of four more walks over bodies that reach tens of MiB.
+	reqDoc, reqBody := cleanRequest(ex.ReqBody, p.filterPatterns)
+	respDoc, respBody := cleanResponse(sanitizeJSON(ex.RespBody), p.filterPatterns)
+	ex.ReqBody = reqBody
+	ex.RespBody = respBody
+
+	if reqDoc != nil {
+		ex.Model, _ = reqDoc["model"].(string)
+	}
+	if respDoc != nil {
+		readUsage(ex, respDoc)
+	} else if !json.Valid(respBody) {
+		// A captured response body can legitimately be valid JSON that isn't an
+		// object — e.g. the synthetic string fallback buildRespBody emits for a
+		// stream with no structured final event. That simply carries no usage
+		// metadata; only flag genuinely malformed JSON. The validity check is
+		// only reached when there is no decoded document, so it never re-scans a
+		// body that was just parsed.
+		slog.Debug("unparseable response body for token extraction", "path", ex.Path)
+	}
+
+	// Extracted as the capture pipeline sees them; the store strips system
+	// reminders and redacts both texts on its own goroutine.
+	userText := apiformat.ExtractUserQuery(reqDoc, apiformat.DetectFormat(reqDoc))
+	assistantText := apiformat.ExtractAssistantText(respDoc)
+	ex.UserText = &userText
+	ex.AssistantText = &assistantText
 }
 
 // maxTokenCount bounds a usage number taken from an upstream response body. No
@@ -683,92 +711,62 @@ func tokenCount(v *float64) int {
 	return int(f)
 }
 
-// extractModelAndTokens pulls the model name and token usage from the
-// request and response JSON. Handles:
+// readUsage fills the model name and token usage from a decoded response body.
+// Handles:
 //   - Anthropic: usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}
 //   - OpenAI: usage.{prompt_tokens, completion_tokens}
 //   - Gemini: usageMetadata.{promptTokenCount, candidatesTokenCount}
-//   - Model from request body, response body, or response modelVersion field
-func extractModelAndTokens(ex *store.CapturedExchange) {
-	// Unmarshal into typed structs rather than map[string]any: a captured request
-	// body carries the full conversation (and tool schemas) and can reach tens of
-	// MiB, but only a handful of scalar fields are needed here. A struct lets
-	// encoding/json skip the rest without materializing the entire generic tree,
-	// which is the dominant cost on this background worker. Float pointers preserve
-	// the original "set only when the field is present" semantics (a missing usage
-	// number must not zero an already-extracted one).
-	var reqData struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(ex.ReqBody, &reqData); err != nil {
-		slog.Debug("unparseable request body for token extraction", "path", ex.Path, "err", err)
-	} else {
-		ex.Model = reqData.Model
-	}
-
-	var respData struct {
-		Model        string `json:"model"`
-		ModelVersion string `json:"modelVersion"`
-		Usage        *struct {
-			InputTokens         *float64 `json:"input_tokens"`
-			PromptTokens        *float64 `json:"prompt_tokens"`
-			OutputTokens        *float64 `json:"output_tokens"`
-			CompletionTokens    *float64 `json:"completion_tokens"`
-			CacheCreationTokens *float64 `json:"cache_creation_input_tokens"`
-			CacheReadTokens     *float64 `json:"cache_read_input_tokens"`
-		} `json:"usage"`
-		UsageMetadata *struct {
-			PromptTokenCount     *float64 `json:"promptTokenCount"`
-			CandidatesTokenCount *float64 `json:"candidatesTokenCount"`
-		} `json:"usageMetadata"`
-	}
-	if err := json.Unmarshal(ex.RespBody, &respData); err != nil {
-		// A captured response body can legitimately be valid JSON that isn't an
-		// object — e.g. the synthetic string fallback buildRespBody emits for a
-		// stream with no structured final event. That simply carries no usage
-		// metadata; only flag genuinely malformed JSON.
-		if !json.Valid(ex.RespBody) {
-			slog.Debug("unparseable response body for token extraction", "path", ex.Path, "err", err)
-		}
-		return
-	}
-
-	// Model: prefer request model, fall back to response model or modelVersion.
+//   - Model from the response body or its modelVersion field
+//
+// The request body's model is already set by the caller, and is kept when
+// present; a response never overwrites one the request supplied.
+func readUsage(ex *store.CapturedExchange, doc map[string]any) {
 	if ex.Model == "" {
-		ex.Model = respData.Model
+		ex.Model, _ = doc["model"].(string)
 	}
 	if ex.Model == "" {
-		ex.Model = respData.ModelVersion
+		ex.Model, _ = doc["modelVersion"].(string)
 	}
 
 	// Anthropic / OpenAI: "usage" object.
-	if u := respData.Usage; u != nil {
+	if u, ok := doc["usage"].(map[string]any); ok {
 		// Input tokens: Anthropic input_tokens or OpenAI prompt_tokens.
-		if u.InputTokens != nil {
-			ex.TokensIn = tokenCount(u.InputTokens)
-		} else if u.PromptTokens != nil {
-			ex.TokensIn = tokenCount(u.PromptTokens)
+		if n, ok := usageNumber(u, "input_tokens"); ok {
+			ex.TokensIn = n
+		} else if n, ok := usageNumber(u, "prompt_tokens"); ok {
+			ex.TokensIn = n
 		}
 		// Output tokens: Anthropic output_tokens or OpenAI completion_tokens.
-		if u.OutputTokens != nil {
-			ex.TokensOut = tokenCount(u.OutputTokens)
-		} else if u.CompletionTokens != nil {
-			ex.TokensOut = tokenCount(u.CompletionTokens)
+		if n, ok := usageNumber(u, "output_tokens"); ok {
+			ex.TokensOut = n
+		} else if n, ok := usageNumber(u, "completion_tokens"); ok {
+			ex.TokensOut = n
 		}
 		// Anthropic prompt caching tokens.
-		ex.CacheWrite = tokenCount(u.CacheCreationTokens)
-		ex.CacheRead = tokenCount(u.CacheReadTokens)
+		ex.CacheWrite, _ = usageNumber(u, "cache_creation_input_tokens")
+		ex.CacheRead, _ = usageNumber(u, "cache_read_input_tokens")
 	}
 
 	// Gemini: "usageMetadata" object.
-	if u := respData.UsageMetadata; u != nil {
-		if u.PromptTokenCount != nil {
-			ex.TokensIn = tokenCount(u.PromptTokenCount)
+	if u, ok := doc["usageMetadata"].(map[string]any); ok {
+		if n, ok := usageNumber(u, "promptTokenCount"); ok {
+			ex.TokensIn = n
 		}
-		if u.CandidatesTokenCount != nil {
-			ex.TokensOut = tokenCount(u.CandidatesTokenCount)
+		if n, ok := usageNumber(u, "candidatesTokenCount"); ok {
+			ex.TokensOut = n
 		}
 	}
+}
+
+// usageNumber reads one usage counter from a decoded usage object. The second
+// result is false when the field is absent, so a provider that omits it leaves
+// an already-extracted count alone rather than zeroing it.
+func usageNumber(u map[string]any, key string) (int, bool) {
+	f, ok := u[key].(float64)
+	if !ok {
+		return 0, false
+	}
+	return tokenCount(&f), true
 }
 
 // sanitizeJSON ensures data is valid JSON for MuninnDB storage. Non-JSON

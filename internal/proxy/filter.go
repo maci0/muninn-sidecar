@@ -35,10 +35,14 @@ func injectedBlockStart(s string) int {
 }
 
 // cleanRequest removes injected context and muninn tool calls from a request body.
-// Parses and serializes JSON at most once.
-func cleanRequest(body []byte, patterns []string) json.RawMessage {
+// Parses and serializes JSON at most once, and hands the parsed document back so
+// the caller can read the fields it also needs (model, last user message) without
+// walking a body that can reach tens of MiB a second time. The document is nil
+// whenever the returned bytes are not the result of re-serializing it, so a
+// caller that reads fields from it always reads what will be stored.
+func cleanRequest(body []byte, patterns []string) (map[string]any, json.RawMessage) {
 	if len(body) == 0 {
-		return json.RawMessage("null")
+		return nil, json.RawMessage("null")
 	}
 
 	// Unmarshal directly instead of calling sanitizeJSON first — that
@@ -47,11 +51,11 @@ func cleanRequest(body []byte, patterns []string) json.RawMessage {
 	// to handle non-JSON payloads (wraps as JSON string).
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return sanitizeJSON(body)
+		return nil, sanitizeJSON(body)
 	}
 	if doc == nil {
 		// body was JSON null; nothing to filter.
-		return json.RawMessage(body)
+		return nil, json.RawMessage(body)
 	}
 
 	changed1 := stripInjectedContextDoc(doc)
@@ -61,36 +65,46 @@ func cleanRequest(body []byte, patterns []string) json.RawMessage {
 	}
 
 	if !changed1 && !changed2 {
-		return json.RawMessage(body)
+		return doc, json.RawMessage(body)
 	}
 
 	result, err := json.Marshal(doc)
 	if err != nil {
-		return json.RawMessage(body)
+		// The stored bytes are the untouched body, so the edited document no
+		// longer describes them: drop it rather than let the caller read fields
+		// that will not be there.
+		return nil, json.RawMessage(body)
 	}
-	return json.RawMessage(result)
+	return doc, json.RawMessage(result)
 }
 
-// cleanResponse removes muninn tool calls from a response body.
-func cleanResponse(body json.RawMessage, patterns []string) json.RawMessage {
-	if len(patterns) == 0 || len(body) == 0 {
-		return body
+// cleanResponse removes muninn tool calls from a response body. As with
+// cleanRequest, the parsed document is returned for the caller's own field
+// extraction, and is nil whenever the returned bytes were not produced from it.
+// The body is decoded even when there is nothing to filter, because the caller
+// reads the usage counters and the assistant text out of that same document.
+func cleanResponse(body json.RawMessage, patterns []string) (map[string]any, json.RawMessage) {
+	if len(body) == 0 {
+		return nil, body
 	}
 
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return body
+		return nil, body
+	}
+	if doc == nil {
+		return nil, body
 	}
 
-	if !filterMCPToolsDoc(doc, patterns) {
-		return body
+	if len(patterns) == 0 || !filterMCPToolsDoc(doc, patterns) {
+		return doc, body
 	}
 
 	result, err := json.Marshal(doc)
 	if err != nil {
-		return body
+		return nil, body
 	}
-	return json.RawMessage(result)
+	return doc, json.RawMessage(result)
 }
 
 // stripInjectedContextDoc removes injected memory context blocks from a parsed JSON doc.

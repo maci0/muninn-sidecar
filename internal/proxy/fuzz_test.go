@@ -18,7 +18,7 @@ func FuzzCleanRequest(f *testing.F) {
 	f.Add([]byte(`{"tools":[{"name":"muninn_remember"},{"name":"Read"}]}`))
 	f.Add([]byte(`not json`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		out := cleanRequest(data, defaultFilterPatterns)
+		_, out := cleanRequest(data, defaultFilterPatterns)
 		// cleanRequest always returns syntactically-valid JSON (it wraps non-JSON
 		// via sanitizeJSON). json.Valid checks syntax without the float64-overflow
 		// quirk of unmarshalling huge numbers into interface{}.
@@ -33,7 +33,7 @@ func FuzzCleanResponse(f *testing.F) {
 	f.Add([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"c1","function":{"name":"muninn_recall"}}]}}]}`))
 	f.Add([]byte(`{}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		out := cleanResponse(json.RawMessage(data), defaultFilterPatterns)
+		_, out := cleanResponse(json.RawMessage(data), defaultFilterPatterns)
 		// Contract: cleanResponse passes non-JSON through unchanged (response
 		// bodies are JSON in practice); when the input IS valid JSON, filtering
 		// must preserve syntactic validity.
@@ -134,7 +134,7 @@ func FuzzExtractModelAndTokens(f *testing.F) {
 			ReqBody:  json.RawMessage(req),
 			RespBody: json.RawMessage(resp),
 		}
-		extractModelAndTokens(ex)
+		(&Proxy{filterPatterns: defaultFilterPatterns}).prepareExchange(ex)
 	})
 }
 

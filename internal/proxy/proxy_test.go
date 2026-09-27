@@ -2041,7 +2041,7 @@ func TestExtractModelAndTokens(t *testing.T) {
 				ReqBody:  json.RawMessage(tt.reqBody),
 				RespBody: json.RawMessage(tt.respBody),
 			}
-			extractModelAndTokens(ex)
+			(&Proxy{filterPatterns: defaultFilterPatterns}).prepareExchange(ex)
 			if ex.Model != tt.wantModel {
 				t.Errorf("Model = %q, want %q", ex.Model, tt.wantModel)
 			}

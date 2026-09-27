@@ -259,6 +259,18 @@ func ExtractAssistantMessage(body []byte) string {
 	if !ok {
 		return ""
 	}
+	return ExtractAssistantText(doc)
+}
+
+// ExtractAssistantText is ExtractAssistantMessage for a body the caller has
+// already parsed. A capture pipeline that inspects the response to filter tool
+// traffic and pull usage already holds the decoded document; re-parsing the
+// bytes to reach the same answer costs a second full walk of a body that can
+// reach tens of MiB.
+func ExtractAssistantText(doc map[string]any) string {
+	if doc == nil {
+		return ""
+	}
 	doc = unwrapCloudCodeResponse(doc)
 
 	// Anthropic response: top-level content[] array with text and tool_use blocks.
