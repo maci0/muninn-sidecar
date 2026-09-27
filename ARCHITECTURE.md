@@ -121,7 +121,7 @@ internal/
   mitm/
     ca.go                 Local CA: generate/persist + mint cached per-host leaf certs
     host.go               Host normalization & SAN selection (DNS vs IP)
-  redact/redact.go        Secret scrubbing (API keys/tokens/key=value) for store + inject
+  redact/redact.go        Secret scrubbing (API keys/tokens/key=value) for store + inject, plus URL display redaction
   proxy/
     proxy.go              Reverse proxy, request/response capture, token extraction
     mitm.go               CONNECT handler: TLS-terminate, intercept, re-originate TLS

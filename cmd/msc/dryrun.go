@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
-	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/inject"
+	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
 // printDryRun outputs a preview of what msc would do without launching anything.
@@ -62,11 +62,11 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 		info := dryRunInfo{
 			Agent:      cmd,
 			Binary:     binary,
-			Upstream:   config.RedactURL(upstream),
+			Upstream:   redact.URL(upstream),
 			Env:        envMap,
 			ProxyArgs:  args,
 			Vault:      vault,
-			MuninnURL:  config.RedactURL(mcpURL),
+			MuninnURL:  redact.URL(mcpURL),
 			Inject:     !o.noInject,
 			MITM:       o.mitm,
 			MITMHosts:  o.mitmHosts,
@@ -101,7 +101,7 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 
 	fmt.Fprintf(os.Stdout, "Agent:    %s\n", cmd)
 	fmt.Fprintf(os.Stdout, "Binary:   %s\n", binary)
-	fmt.Fprintf(os.Stdout, "Upstream: %s\n", config.RedactURL(upstream))
+	fmt.Fprintf(os.Stdout, "Upstream: %s\n", redact.URL(upstream))
 	if o.mitm {
 		scope := "all hosts"
 		// "*" forces intercept-all in the proxy, so scoped wording would be wrong.
@@ -130,7 +130,7 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	} else {
 		muninnStatus = fmt.Sprintf("(unreachable: %v)", healthErr)
 	}
-	fmt.Fprintf(os.Stdout, "MuninnDB: %s %s\n", config.RedactURL(mcpURL), muninnStatus)
+	fmt.Fprintf(os.Stdout, "MuninnDB: %s %s\n", redact.URL(mcpURL), muninnStatus)
 	if !o.noInject {
 		calib := "auto-calibrated"
 		if o.noAutoCalibrate {

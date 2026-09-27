@@ -17,6 +17,9 @@ cover.out
 
 # Application binaries (anchored to repo root so they don't match cmd/* source dirs)
 /msc
+/msc-bench
+/msc-eval
+/msc-qa
 /testmsc
 
 # Profiling and coverage artifacts

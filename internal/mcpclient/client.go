@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
@@ -113,7 +112,7 @@ func (c *Client) HealthCheck() error {
 	// The request uses the real URL (a password in the userinfo is part of how
 	// the endpoint authenticates); only the error text names the redacted form,
 	// since these errors reach logs and the operator's terminal.
-	shown := config.RedactURL(healthURL)
+	shown := redact.URL(healthURL)
 
 	req, err := http.NewRequestWithContext(context.Background(), "GET", healthURL, nil)
 	if err != nil {

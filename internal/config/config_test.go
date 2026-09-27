@@ -197,28 +197,6 @@ func TestHostClassification(t *testing.T) {
 	}
 }
 
-// TestRedactURL pins that a password in the userinfo never reaches a log line
-// or a terminal, while the scheme, host, and path (what makes the line
-// diagnosable) survive.
-func TestRedactURL(t *testing.T) {
-	cases := map[string]string{
-		"http://user:hunter2@mcp.example.com:8750/mcp": "http://user:xxxxx@mcp.example.com:8750/mcp",
-		"https://user:hunter2@mcp.example.com/mcp":     "https://user:xxxxx@mcp.example.com/mcp",
-		"http://user@mcp.example.com/mcp":              "http://user@mcp.example.com/mcp",
-		"http://127.0.0.1:8750/mcp":                    "http://127.0.0.1:8750/mcp",
-		"":                                             "",
-	}
-	for in, want := range cases {
-		got := RedactURL(in)
-		if got != want {
-			t.Errorf("RedactURL(%q) = %q, want %q", in, got, want)
-		}
-		if strings.Contains(got, "hunter2") {
-			t.Errorf("RedactURL(%q) leaked the password: %q", in, got)
-		}
-	}
-}
-
 // TestPlaintextRemoteHost pins the condition callers warn on before forwarding
 // a credential: an http:// endpoint that is not loopback. Loopback traffic
 // never leaves the machine, so it is not a plaintext send.

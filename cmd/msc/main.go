@@ -34,6 +34,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/mitm"
 	"github.com/maci0/muninn-sidecar/internal/proxy"
+	"github.com/maci0/muninn-sidecar/internal/redact"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
@@ -205,7 +206,7 @@ func run() int {
 		}
 		if config.PlaintextRemoteHost(mcpURL) {
 			slog.Warn("bearer token will be sent over unencrypted HTTP; use HTTPS for remote MuninnDB endpoints",
-				"mcp_url", config.RedactURL(mcpURL))
+				"mcp_url", redact.URL(mcpURL))
 		}
 	}
 
@@ -215,7 +216,7 @@ func run() int {
 	// The injection numbers come from the same helpers the dry-run preview uses,
 	// so the two cannot report different values.
 	slog.Debug("resolved config",
-		"mcp_url", config.RedactURL(mcpURL),
+		"mcp_url", redact.URL(mcpURL),
 		"vault", vault,
 		"token", token != "",
 		"inject", !o.noInject,
@@ -249,7 +250,7 @@ func run() int {
 	if !o.force {
 		healthErr = muninn.HealthCheck()
 		if healthErr != nil && !o.dryRun {
-			logerr("MuninnDB at %s is unreachable: %v", config.RedactURL(mcpURL), healthErr)
+			logerr("MuninnDB at %s is unreachable: %v", redact.URL(mcpURL), healthErr)
 			logf("Captures will be lost. Use --force to launch anyway.")
 			return 1
 		}
@@ -270,9 +271,9 @@ func run() int {
 	}
 	if config.PlaintextRemoteHost(upstream) {
 		slog.Warn("the agent's API key and every captured turn will cross the network unencrypted to this upstream; use HTTPS",
-			"agent", cmd, "upstream", config.RedactURL(upstream))
+			"agent", cmd, "upstream", redact.URL(upstream))
 	}
-	slog.Debug("resolved upstream", "agent", cmd, "upstream", config.RedactURL(upstream))
+	slog.Debug("resolved upstream", "agent", cmd, "upstream", redact.URL(upstream))
 
 	// TLS-MITM mode: load/create the local CA so the proxy can intercept HTTPS
 	// CONNECT tunnels and the child can be told to trust it. Built before the

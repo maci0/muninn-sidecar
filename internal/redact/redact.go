@@ -2,7 +2,8 @@
 // keys, sensitive key=value assignments) and directly-identifying personal data
 // (email addresses, payment card numbers, US Social Security numbers, phone
 // numbers, the caller's home-directory path) from text,
-// replacing them with a [REDACTED] marker. It is
+// replacing them with a [REDACTED] marker, and drops a URL password for
+// display. It is
 // shared by the store (scrub before persisting a captured exchange) and the
 // injector (scrub recalled memory content before it is injected into an outgoing
 // request — defense in depth against secrets/PII stored by other clients or
@@ -21,6 +22,7 @@
 package redact
 
 import (
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -364,6 +366,19 @@ func redactHome(s string) string {
 	return re.ReplaceAllStringFunc(s, func(m string) string {
 		return HomeMarker + strings.TrimPrefix(m, home)
 	})
+}
+
+// URL returns raw with any password in its userinfo removed, so an endpoint
+// carrying credentials (https://user:pass@host/mcp) is safe to put in a log
+// line or on a terminal. The scheme, host, and path stay: those are what make
+// the line diagnosable. Only the display form is redacted; the caller still
+// dials the original.
+func URL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return u.Redacted()
 }
 
 // Secrets replaces well-known credential formats in s with Marker, and the
