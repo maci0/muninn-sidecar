@@ -32,25 +32,6 @@ func waitForLogs(t *testing.T, logs *logBuffer, msg string) map[string]any {
 	}
 }
 
-// turnRecords returns the parsed "turn" lines from a captured log buffer.
-func turnRecords(t *testing.T, logs *logBuffer) []map[string]any {
-	t.Helper()
-	var out []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		if line == "" {
-			continue
-		}
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Fatalf("log line is not valid JSON: %v (%q)", err, line)
-		}
-		if rec["msg"] == "turn" {
-			out = append(out, rec)
-		}
-	}
-	return out
-}
-
 // TestTurnLineReportsOutcome pins the per-turn access line: one line per turn
 // carrying the correlation ID, the status it ended with, and how long it took.
 // Before this line existed, duration_ms appeared only on the upstream-error
