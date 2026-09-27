@@ -19,6 +19,21 @@ import (
 // goroutine indefinitely.
 const tunnelDialTimeout = 30 * time.Second
 
+// handshakeTimeout bounds the TLS handshake on a hijacked CONNECT tunnel. Once
+// the connection is hijacked the http.Server no longer owns it, so its
+// ReadHeaderTimeout no longer applies: a client that opens CONNECT and then
+// stalls (or sends no ClientHello at all) would otherwise pin the handling
+// goroutine and both sockets forever. Copied into Proxy.handshakeTimeout at
+// construction so the value is fixed before any handler goroutine can read it.
+const handshakeTimeout = 30 * time.Second
+
+// upgradeHandshakeTimeout bounds the wait for the backend's reply to a spliced
+// upgrade request. tunnelDialTimeout bounds reaching the backend, but a backend
+// that accepts the connection and never answers would otherwise pin the hijacked
+// client conn, the backend conn, and the serving goroutine forever. Copied into
+// Proxy.upgradeHandshakeTimeout at construction, like handshakeTimeout.
+const upgradeHandshakeTimeout = 30 * time.Second
+
 // handleConnect terminates a CONNECT tunnel and intercepts its TLS traffic. The
 // agent (configured with HTTPS_PROXY pointing at msc, and trusting msc's CA)
 // sends `CONNECT host:443`; msc replies 200, completes a TLS handshake using a
@@ -78,8 +93,18 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return p.ca.LeafFor(name)
 		},
 	})
+	if err := clientConn.SetReadDeadline(time.Now().Add(p.handshakeTimeout)); err != nil {
+		slog.Debug("mitm: could not set handshake deadline", "target", target, "err", err)
+		return
+	}
 	if err := tlsConn.Handshake(); err != nil {
 		slog.Debug("mitm: TLS handshake failed", "target", target, "err", err)
+		return
+	}
+	// Drop the deadline: the tunnel is now a long-lived connection whose reads
+	// are bounded by the http.Server serving it (ReadHeaderTimeout/ReadTimeout).
+	if err := clientConn.SetReadDeadline(time.Time{}); err != nil {
+		slog.Debug("mitm: could not clear handshake deadline", "target", target, "err", err)
 		return
 	}
 	slog.Debug("mitm: intercepting tunnel", "target", target, "sni", tlsConn.ConnectionState().ServerName)

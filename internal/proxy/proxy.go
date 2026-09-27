@@ -87,6 +87,13 @@ type Proxy struct {
 	mitmAll        bool                   // intercept every CONNECT host (allowlist contained "*")
 	stats          *stats.Stats           // optional session counters (nil = no recording)
 	clock          Clock                  // source of capture timestamps and durations
+
+	// Deadlines for the pre-request half of a hijacked tunnel, fixed at
+	// construction so no goroutine ever reads a value another one can change.
+	// Both cover a peer that has been reached but never answers; both are
+	// cleared once the handshake completes.
+	handshakeTimeout        time.Duration // CONNECT tunnel: client-side TLS handshake
+	upgradeHandshakeTimeout time.Duration // spliced upgrade: backend's reply
 }
 
 // Config holds the parameters for creating a Proxy.
@@ -136,6 +143,9 @@ func New(cfg Config) (*Proxy, error) {
 		ca:             cfg.CA,
 		stats:          cfg.Stats,
 		clock:          clock,
+
+		handshakeTimeout:        handshakeTimeout,
+		upgradeHandshakeTimeout: upgradeHandshakeTimeout,
 	}
 
 	// MITM defaults to intercepting every CONNECT host: that's the whole point —

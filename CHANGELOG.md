@@ -72,6 +72,19 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   agent (`MSC_UPSTREAM_<AGENT>`), and a nested msc detects a base-URL var
   poisoned by a different agent's parent proxy. Gemini-mode `countTokens` no
   longer stores duplicate user-only memories.
+- **Hijacked tunnels no longer block forever.** A CONNECT tunnel and a spliced
+  protocol upgrade each waited, unbounded, on a peer that had already been
+  reached: the client-side TLS handshake and the backend's reply to the upgrade
+  request. After `Hijack` the http.Server no longer owns the connection, so a
+  stalled or silent peer pinned the serving goroutine and both sockets with no
+  way to recover. Both reads are now bounded (30s, cleared once the handshake
+  completes) and tests pin the bound.
+- **The store's preparer is synchronized.** The capture-side `Preparer` was a
+  plain field written by `SetPreparer` while the worker goroutine (already
+  running) read it; it is now guarded, so the preparer can be swapped while
+  captures flow.
+- **`msc-bench` and `msc-qa` build again.** Both used `filepath.Join` without
+  importing `path/filepath`, so the two commands failed to compile.
 
 ### Changed
 

@@ -250,11 +250,22 @@ func runWSParser(dir string, ch <-chan []byte, deflate bool, onMessage func(dir 
 // and permessage-deflate negotiation is detected.
 func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, backend net.Conn, target string) {
 	backendBuf := bufio.NewReader(backend)
+	if err := backend.SetReadDeadline(time.Now().Add(p.upgradeHandshakeTimeout)); err != nil {
+		slog.Debug("ws capture: could not set backend handshake deadline", "target", target, "err", err)
+		return
+	}
 	hdr, err := readHeaderBlock(backendBuf)
 	if err != nil {
+		slog.Debug("ws capture: no backend upgrade response", "target", target, "err", err)
 		return
 	}
 	if _, err := client.Write(hdr); err != nil {
+		return
+	}
+	// The handshake is done; the splice below is a long-lived tunnel whose reads
+	// are bounded only by the peers, so the deadline must not leak into it.
+	if err := backend.SetReadDeadline(time.Time{}); err != nil {
+		slog.Debug("ws capture: could not clear backend handshake deadline", "target", target, "err", err)
 		return
 	}
 	deflate := bytes.Contains(bytes.ToLower(hdr), []byte("permessage-deflate"))

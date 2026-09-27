@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/maci0/muninn-sidecar/internal/store"
@@ -314,4 +316,54 @@ func mustJSON(t *testing.T, s string) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(b)
+}
+
+// TestSpliceWithCaptureBackendHandshakeTimeout pins the bound on waiting for the
+// backend's reply to an upgrade request. The dial is already bounded
+// (tunnelDialTimeout), but a backend that accepts the connection and then stays
+// silent would otherwise pin the hijacked client conn, the backend conn, and the
+// serving goroutine forever: readHeaderBlock blocks with no deadline, and the
+// function never reaches the splices that would unblock it.
+func TestSpliceWithCaptureBackendHandshakeTimeout(t *testing.T) {
+	// Backend: accepts the connection and never writes a byte.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			accepted <- nil
+			return
+		}
+		accepted <- c
+	}()
+
+	client, clientPeer := net.Pipe()
+	defer clientPeer.Close()
+	backend, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	held := <-accepted
+	if held == nil {
+		t.Fatal("backend accept failed")
+	}
+	defer held.Close()
+
+	p := &Proxy{upgradeHandshakeTimeout: 200 * time.Millisecond}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.spliceWithCapture(client, bufio.NewReader(client), backend, "silent:443")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("spliceWithCapture blocked on a silent backend: the upgrade handshake read is unbounded")
+	}
 }

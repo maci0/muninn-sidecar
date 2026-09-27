@@ -49,7 +49,12 @@ type MuninnStore struct {
 	drainOnce sync.Once              // ensures Drain is idempotent
 	stats     *stats.Stats           // session statistics (nil-safe)
 	redact    atomic.Bool            // scrub secrets from captured content before storage
-	prepare   Preparer               // capture-side normalization, run on the worker (nil = bodies stored as captured)
+
+	// prepare is written by SetPreparer (the caller) and read on the worker
+	// goroutine, which is already running by the time it is installed, so it
+	// needs its own synchronization rather than the startup ordering.
+	prepareMu sync.RWMutex
+	prepare   Preparer // capture-side normalization, run on the worker (nil = bodies stored as captured)
 
 	// flushCtx governs MCP flush calls and their retries. It stays live for the
 	// whole session (so transient blips get full retries), and Drain arms a
@@ -127,8 +132,20 @@ func (s *MuninnStore) SetRedaction(enabled bool) { s.redact.Store(enabled) }
 // hands over are raw: stripping injected context and muninn tool traffic, and
 // extracting model/usage, all parse bodies that reach tens of MiB, and that
 // work belongs on the worker's goroutine rather than in the agent's turn.
-// Call before captures start flowing.
-func (s *MuninnStore) SetPreparer(p Preparer) { s.prepare = p }
+// Safe to call at any time; exchanges already queued are normalized by the
+// preparer in force when the worker reaches them.
+func (s *MuninnStore) SetPreparer(p Preparer) {
+	s.prepareMu.Lock()
+	s.prepare = p
+	s.prepareMu.Unlock()
+}
+
+// preparer returns the installed Preparer, or nil when none is set.
+func (s *MuninnStore) preparer() Preparer {
+	s.prepareMu.RLock()
+	defer s.prepareMu.RUnlock()
+	return s.prepare
+}
 
 // Store enqueues an exchange for async delivery. Non-blocking: if the queue
 // is full the exchange is dropped with a warning (we never block the proxy).
@@ -262,8 +279,8 @@ func isNoiseContent(msg string) bool {
 // model and token usage it derived, then formats and deduplicates the
 // exchange. Returns nil if the exchange should be dropped.
 func (s *MuninnStore) prepareForStore(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, ringIdx *int) *formattedMemory {
-	if s.prepare != nil {
-		s.prepare(ex)
+	if p := s.preparer(); p != nil {
+		p(ex)
 	}
 	if s.stats != nil {
 		s.stats.RecordModel(ex.Model)

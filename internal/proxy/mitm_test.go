@@ -683,3 +683,41 @@ func FuzzStripPort(f *testing.F) {
 		}
 	})
 }
+
+// TestMITMConnectHandshakeTimeout pins the bound on the TLS handshake of a
+// hijacked CONNECT tunnel. After Hijack the http.Server no longer owns the
+// connection, so its ReadHeaderTimeout stops applying: a client that opens
+// CONNECT, reads the 200, and then sends no ClientHello would hold the handling
+// goroutine and both sockets forever.
+func TestMITMConnectHandshakeTimeout(t *testing.T) {
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0", Upstream: "https://api.example.invalid",
+		Store: st, CA: mustCA(t), MITMHosts: []string{"*"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Shorten before Start, so no handler goroutine can observe the change.
+	p.handshakeTimeout = 200 * time.Millisecond
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	// Intercept-all, so the CONNECT target need not be reachable: the handshake
+	// happens before any per-request forwarding.
+	resp, _, raw := connectStatus(t, addr, "silent.invalid:443")
+	defer raw.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("CONNECT status %d, want 200", resp.StatusCode)
+	}
+
+	// Send no ClientHello; msc must give up on the handshake and drop the
+	// tunnel rather than holding it open indefinitely.
+	raw.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadAll(raw); err != nil {
+		t.Fatalf("reading the abandoned tunnel: %v", err)
+	}
+}

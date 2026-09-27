@@ -1254,3 +1254,48 @@ func TestDedupKeyIsContentAddressed(t *testing.T) {
 		t.Fatal("different concept produced the same dedup key")
 	}
 }
+
+// TestSetPreparerConcurrentWithStore pins the synchronization on the preparer
+// field. The worker goroutine is already running when SetPreparer installs the
+// Preparer, so a plain field would be an unsynchronized read/write pair; the
+// mutex makes swapping the preparer while captures flow safe. Run under -race.
+func TestSetPreparerConcurrentWithStore(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL, "", "test", &stats.Stats{})
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Reinstall the preparer continuously while captures flow, so the worker's
+	// read and the caller's write overlap no matter how the two are scheduled.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			s.SetPreparer(func(ex *CapturedExchange) { ex.Model = "test-model" })
+		}
+	}()
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for i := 0; time.Now().Before(deadline); i++ {
+		s.Store(&CapturedExchange{
+			Agent:    "claude",
+			Path:     "/v1/messages",
+			ReqBody:  json.RawMessage(fmt.Sprintf(`{"messages":[{"role":"user","content":"msg %d"}]}`, i)),
+			RespBody: json.RawMessage(fmt.Sprintf(`{"content":[{"type":"text","text":"resp %d"}]}`, i)),
+		})
+	}
+	close(stop)
+	wg.Wait()
+	s.Drain()
+}
