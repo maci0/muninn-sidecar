@@ -237,7 +237,7 @@ type probeResult struct {
 func runProbes(ctx context.Context, c *mcpclient.Client, vault string, probes []probe, limit int, opt probeOpts) ([]probeResult, error) {
 	out := make([]probeResult, 0, len(probes))
 	var totalDur time.Duration
-	var timed int
+	var timed, skipped int
 	for i, pr := range probes {
 		query := transformQuery(opt, probes, i)
 		t0 := time.Now()
@@ -255,6 +255,7 @@ func runProbes(ctx context.Context, c *mcpclient.Client, vault string, probes []
 		if err != nil {
 			// Skip transient failures rather than aborting the whole run; a
 			// dropped probe just doesn't contribute to the metrics.
+			skipped++
 			fmt.Fprintf(os.Stderr, "  warn: probe %d skipped: %v\n", i, err)
 			continue
 		}
@@ -282,6 +283,16 @@ func runProbes(ctx context.Context, c *mcpclient.Client, vault string, probes []
 	if timed > 0 {
 		fmt.Fprintf(os.Stderr, "recall latency: avg %.1fms over %d calls\n",
 			float64(totalDur.Microseconds())/float64(timed)/1000, timed)
+	}
+	// A report computed over zero probes is all zeros, and reads like a real
+	// measurement: a script (or a person) checking whether a change regressed
+	// retrieval would read R@1=0.00 and a zero exit code. Fail instead, naming
+	// the usual cause, and say how many probes were lost when only some were.
+	if len(out) == 0 && len(probes) > 0 {
+		return nil, fmt.Errorf("all %d probes failed, so there is nothing to report: check -mcp-url, -token, and that MuninnDB is running", len(probes))
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "%d/%d probes failed and are excluded from the metrics above\n", skipped, len(probes))
 	}
 	return out, nil
 }

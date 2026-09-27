@@ -180,6 +180,15 @@ func cmdList(o *opts) int {
 func cmdStatus(o *opts) int {
 	mcpURL, token, vault := resolveConfig(o)
 
+	// An endpoint msc could never dial is a typo, not an outage. Validating it
+	// here (as the agent path does) keeps "I mistyped --mcp-url" distinguishable
+	// from "MuninnDB is down" by exit code, and stops a malformed URL being
+	// reported as a health check result.
+	if err := config.ValidateURL("MuninnDB URL", mcpURL); err != nil {
+		logerr("%v", err)
+		return exitUsage
+	}
+
 	err := mcpclient.HealthCheckAt(mcpURL, token)
 
 	// Best-effort vault stats (memory count + health) when reachable — answers
@@ -350,7 +359,8 @@ Examples:
   msc --json status         Machine-readable output
   msc status --vault proj   Check a specific vault
 
-Exit codes: 0 when MuninnDB is reachable, 1 when it is not.
+Exit codes: 0 when MuninnDB is reachable, 1 when it is not, 2 for an unusable
+--mcp-url.
 `, true
 	case "ca":
 		return `Usage: msc ca [--json]

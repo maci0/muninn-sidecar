@@ -76,6 +76,25 @@ func TestRunStatusUnreachable(t *testing.T) {
 	}
 }
 
+// TestRunStatusUnusableURL: an undialable endpoint is a typo, not an outage, so
+// it takes the usage exit code like every other msc entry point instead of
+// reporting a health check result that was never made.
+func TestRunStatusUnusableURL(t *testing.T) {
+	t.Setenv("MUNINN_TOKEN", "x")
+	for _, args := range [][]string{
+		{"status", "--mcp-url", "://x"},
+		{"-j", "status", "--mcp-url", "://x"},
+	} {
+		if code := runArgs(t, args...); code != exitUsage {
+			t.Errorf("%v: exit code %d, want %d", args, code, exitUsage)
+		}
+	}
+	t.Setenv("MUNINN_MCP_URL", "://x")
+	if code := runArgs(t, "status"); code != exitUsage {
+		t.Errorf("status with a bad MUNINN_MCP_URL: exit code %d, want %d", code, exitUsage)
+	}
+}
+
 func TestRunDryRun(t *testing.T) {
 	t.Setenv("MUNINN_MCP_URL", "http://127.0.0.1:1/mcp")
 	t.Setenv("MUNINN_TOKEN", "x")

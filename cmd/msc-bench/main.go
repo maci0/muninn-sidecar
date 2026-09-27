@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/config"
@@ -104,6 +106,23 @@ func run() error {
 	}
 	if err := config.OneOf("-rerank", *rerank, "none", "lexical"); err != nil {
 		return err
+	}
+	// The remaining enums are switched on deeper in the run (chunk in the SQuAD
+	// generators, transform in transformQuery, rerank in runProbes) where the
+	// default branch is itself a valid mode. A typo would run the baseline
+	// configuration under another one's name, and the report header echoes the
+	// value back, so nothing downstream notices.
+	for _, e := range []struct {
+		flag, value string
+		allowed     []string
+	}{
+		{"-chunk", *chunk, []string{"paragraph", "sentence"}},
+		{"-query-transform", *qTransform, []string{"none", "distractors", "emphasis", "repeat-last"}},
+		{"-rerank", *rerank, []string{"none", "lexical"}},
+	} {
+		if !slices.Contains(e.allowed, e.value) {
+			return fmt.Errorf("invalid %s %q: must be one of %s", e.flag, e.value, strings.Join(e.allowed, ", "))
+		}
 	}
 	for opt, raw := range map[string]string{"-ground-url": *groundURL, "-rewrite-url": *rewriteURL} {
 		if err := config.ValidateURL(opt, raw); err != nil {

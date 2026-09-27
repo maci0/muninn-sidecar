@@ -340,6 +340,33 @@ func TestRecallErrorIsReported(t *testing.T) {
 	}
 }
 
+// TestRecallErrorReachesCaller: a transport failure must not be indistinguishable
+// from an empty vault, or the arms are scored on empty context and the run reads
+// as a completed evaluation.
+func TestRecallErrorReachesCaller(t *testing.T) {
+	cl := mcpclient.New("http://127.0.0.1:1/mcp", "", time.Second)
+	defer cl.Close()
+	cands, err := recallStructuredErr(context.Background(), cl, "v", "q", 0.6, false)
+	if err == nil {
+		t.Fatalf("expected a transport error, got %d candidates", len(cands))
+	}
+	if len(cands) != 0 {
+		t.Errorf("expected no candidates alongside the error, got %d", len(cands))
+	}
+}
+
+// TestRunRejectsBadInjectFormat: the presentation enum's default branch is a
+// valid mode, so a typo would silently score the bare arm under another name.
+func TestRunRejectsBadInjectFormat(t *testing.T) {
+	oldArgs, oldFS := os.Args, flag.CommandLine
+	defer func() { os.Args, flag.CommandLine = oldArgs, oldFS }()
+	flag.CommandLine = flag.NewFlagSet("msc-qa", flag.ContinueOnError)
+	os.Args = []string{"msc-qa", "-inject-format", "scoredd"}
+	if err := run(); err == nil {
+		t.Error("expected a usage error for an unknown -inject-format")
+	}
+}
+
 // contents renders recall candidates the way the prompt does, one per line.
 func contents(cands []cand) string {
 	out := make([]string, len(cands))

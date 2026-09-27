@@ -50,18 +50,28 @@ func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query s
 // concept and relevance, in MuninnDB's return order (already score-ranked; the
 // multi-query path concatenates per-sub-query results, not a global ranking).
 func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) ([]cand, error) {
+	return recallStructuredErr(ctx, mcp, vault, query, minScore, multi)
+}
+
+// recallStructuredErr is recallStructured with the transport error kept. A failed
+// call is otherwise indistinguishable from an empty vault, and the arms scored
+// on an empty injected context look like a real (zero) result instead of a run
+// that never reached MuninnDB. The multi-query path reports the first failing
+// sub-query and still returns what the others recalled.
+func recallStructuredErr(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) ([]cand, error) {
 	if multi {
 		// Dedup by content, keeping the best score across sub-queries: a memory
 		// scoring low vs the full question but high vs an entity sub-query must
 		// carry the high score, or a downstream gate would wrongly reject it.
 		seen := map[string]int{}
 		var parts []cand
+		var firstErr error
 		for _, sub := range querysplit.Split(query) {
-			cs, err := recallStructured(ctx, mcp, vault, sub, minScore, false)
-			if err != nil {
-				return nil, err
+			cands, err := recallStructuredErr(ctx, mcp, vault, sub, minScore, false)
+			if err != nil && firstErr == nil {
+				firstErr = err
 			}
-			for _, c := range cs {
+			for _, c := range cands {
 				if c.Content == "" {
 					continue
 				}
@@ -75,7 +85,7 @@ func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query s
 				parts = append(parts, c)
 			}
 		}
-		return parts, nil
+		return parts, firstErr
 	}
 	resp, err := mcp.Call(ctx, "muninn_recall", map[string]any{
 		"vault": vault, "context": []string{query}, "limit": 5, "threshold": 0.05, "mode": "semantic",

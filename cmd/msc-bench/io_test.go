@@ -61,6 +61,41 @@ func TestSeedCorpusAndRunProbes(t *testing.T) {
 	}
 }
 
+// TestRunProbesAllFail: with every probe failing, the run measured nothing, so
+// it must report the failure instead of an all-zero report and a success exit.
+func TestRunProbesAllFail(t *testing.T) {
+	c := mcpclient.New("http://127.0.0.1:1/mcp", "", 2*time.Second)
+	defer c.Close()
+	probes := []probe{{Query: "q", Gold: "a#0", Present: true}, {Query: "z", Present: false}}
+	results, err := runProbes(context.Background(), c, "v", probes, 5, probeOpts{})
+	if err == nil {
+		t.Fatalf("expected an error when every probe fails, got %d results", len(results))
+	}
+	if results != nil {
+		t.Errorf("expected no results alongside the error, got %d", len(results))
+	}
+}
+
+// TestRunRejectsBadEnums: a typo'd enum would otherwise fall through to the
+// default branch of the switch that consumes it and measure the baseline under
+// another configuration's name.
+func TestRunRejectsBadEnums(t *testing.T) {
+	for _, args := range [][]string{
+		{"msc-bench", "-probe", "-chunk", "sentnce"},
+		{"msc-bench", "-probe", "-query-transform", "emphsis"},
+		{"msc-bench", "-probe", "-rerank", "lexicalx"},
+	} {
+		oldArgs, oldFS := os.Args, flag.CommandLine
+		flag.CommandLine = flag.NewFlagSet("msc-bench", flag.ContinueOnError)
+		os.Args = args
+		err := run()
+		os.Args, flag.CommandLine = oldArgs, oldFS
+		if err == nil {
+			t.Errorf("%v: expected a usage error, got nil", args)
+		}
+	}
+}
+
 func TestPrintersSmoke(t *testing.T) {
 	old := os.Stdout
 	w, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)

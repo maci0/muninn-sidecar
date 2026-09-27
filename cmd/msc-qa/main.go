@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -81,6 +82,11 @@ func run() error {
 	default:
 		return fmt.Errorf("invalid -dataset %q: must be one of squad, hotpot, generic", *dataset)
 	}
+	// formatInjected's default branch is a valid presentation, so a typo would
+	// silently score the "bare" arm under the name of another one.
+	if !slices.Contains([]string{"bare", "labeled", "scored"}, *injectFmt) {
+		return fmt.Errorf("invalid -inject-format %q: must be one of bare, labeled, scored", *injectFmt)
+	}
 	if *n <= 0 {
 		return fmt.Errorf("invalid -n %d: must be positive", *n)
 	}
@@ -128,6 +134,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// An empty or wrongly-shaped file would otherwise run every arm over zero
+	// questions and print a table of zeros as a completed evaluation.
+	if len(questions) == 0 {
+		if *dataset == "squad" {
+			return fmt.Errorf("no answerable questions in %s: -dataset squad expects the official SQuAD dev JSON (a top-level \"data\" array of articles)", *squadFile)
+		}
+		return fmt.Errorf("no answerable questions in %s: -dataset %s expects a flat JSON array of {question, answer} objects", *squadFile, *dataset)
+	}
 	datasetSHA, err := fileSHA256(*squadFile)
 	if err != nil {
 		return err
@@ -162,14 +176,26 @@ func run() error {
 	// would wrap to itself, handing the arm the correct context), so that arm is
 	// left empty with a warning.
 	ungated := make([][]cand, len(questions))
+	var recallFails int
+	var firstRecallErr error
 	for i, q := range questions {
-		cands, err := recallStructured(ctx, mcp, *vault, q.Question, 0, *multiRecall)
+		cands, err := recallStructuredErr(ctx, mcp, *vault, q.Question, 0, *multiRecall)
 		if err != nil {
-			// Every arm below is built from this set, and an unreachable or
-			// failing vault would otherwise be reported as answer-coverage 0/100.
-			return fmt.Errorf("question %d: %w", i, err)
+			recallFails++
+			if firstRecallErr == nil {
+				firstRecallErr = err
+			}
 		}
 		ungated[i] = cands
+	}
+	// Every question's recall failing means MuninnDB was never reached, so the
+	// injected and distractor arms below are both empty and the run would report
+	// a zero delta for a reason that is not about injection at all.
+	if recallFails == len(questions) {
+		return fmt.Errorf("recall failed for all %d questions, so the injected and distractor arms would be empty: %w", recallFails, firstRecallErr)
+	}
+	if recallFails > 0 {
+		fmt.Fprintf(os.Stderr, "warn: recall failed for %d/%d questions (excluded from the arms); first error: %v\n", recallFails, len(questions), firstRecallErr)
 	}
 	var coverage, distEmpty, distGold, groundCalls, groundPassages int
 	for i, q := range questions {

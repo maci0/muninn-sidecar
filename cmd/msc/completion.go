@@ -14,7 +14,8 @@ func cmdCompletion(shell string) int {
 
 	switch shell {
 	case "bash":
-		fmt.Printf(`_msc() {
+		fmt.Printf(`# shellcheck disable=SC2207  # COMPREPLY must word-split compgen's output.
+_msc() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
