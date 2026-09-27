@@ -20,6 +20,11 @@
   ability; a wrong injection never helps*.
 - **[testing.md](testing.md)** — test + fuzz posture: every function tested,
   60 fuzz targets over all parsing/transform surfaces, `make cover` / `make fuzz`.
+- **[THREAT_MODEL.md](THREAT_MODEL.md)** — the security view: risk-ranked
+  summary, attack-surface inventory (every entry point with a file reference),
+  trust boundaries, STRIDE threats per boundary, the mitigations that exist
+  mapped to the threats they cover, the ones that do not, abuse cases, and what
+  the logs can and cannot answer after an incident.
 
 ## Dataset zoo
 

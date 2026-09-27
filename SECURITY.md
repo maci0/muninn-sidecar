@@ -37,8 +37,20 @@ warrant care:
 - **Tokens & transport.** The MuninnDB bearer token is read from
   `~/.muninn/mcp.token` (msc warns on overly-permissive perms or plaintext HTTP to
   a non-loopback endpoint). The proxy listens on loopback (`127.0.0.1`).
+- **The loopback listener is unauthenticated.** Any process running as the same
+  user can connect to the proxy port; msc does not check client identity. Under
+  `--mitm` that client can also open a CONNECT tunnel to any host and have the
+  decrypted traffic captured into your vault. Only run msc on a machine you
+  trust, and scope MITM with `--mitm-host` where you can.
+- **Vault content reaches the agent's system prompt.** Memories recalled from
+  MuninnDB are injected as system-level context, so anything written into a
+  vault by any client or session can steer a later agent turn. Recall is gated
+  on relevance, not provenance. Use a distinct `--vault` per project if you
+  share a machine with untrusted code.
 
 The build has no third-party dependencies (standard library only); `make vuln`
 (govulncheck) and CI scan the reachable code against the Go vulnerability DB.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) and the README for the full design.
+See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the risk-ranked surface,
+trust boundaries, and the threats with no mitigation today, plus
+[ARCHITECTURE.md](ARCHITECTURE.md) and the README for the full design.
