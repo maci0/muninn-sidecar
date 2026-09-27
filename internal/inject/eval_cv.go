@@ -95,17 +95,16 @@ func betterTrain(a, b studyScore) bool {
 
 // MethodResult is the held-out (cross-validated) performance of one method.
 type MethodResult struct {
-	Name        string      `json:"name"`
-	F1Mean      float64     `json:"f1_mean"` // mean held-out macro-F1 across folds
-	F1Std       float64     `json:"f1_std"`  // std across folds (stability)
-	GateAcc     float64     `json:"gate_accuracy"`
-	Wasted      float64     `json:"wasted"`
-	AvgInjected float64     `json:"avg_injected"`
-	TunedParams studyParams `json:"-"` // mean tuned hyperparameters across folds
-	TunedFloor  float64     `json:"tuned_floor"`
-	TunedRel    float64     `json:"tuned_rel"`
-	TunedAbs    float64     `json:"tuned_abs"`
-	TunedK      float64     `json:"tuned_k"`
+	Name        string  `json:"name"`
+	F1Mean      float64 `json:"f1_mean"` // mean held-out macro-F1 across folds
+	F1Std       float64 `json:"f1_std"`  // std across folds (stability)
+	GateAcc     float64 `json:"gate_accuracy"`
+	Wasted      float64 `json:"wasted"`
+	AvgInjected float64 `json:"avg_injected"`
+	TunedFloor  float64 `json:"tuned_floor"`
+	TunedRel    float64 `json:"tuned_rel"`
+	TunedAbs    float64 `json:"tuned_abs"`
+	TunedK      float64 `json:"tuned_k"`
 }
 
 // StudyReport is the full empirical comparison.

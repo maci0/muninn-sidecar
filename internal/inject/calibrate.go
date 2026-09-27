@@ -74,23 +74,16 @@ const (
 // would suppress everything — without latching onto noise. Returns defaultMinScore
 // for a too-small sample.
 func CalibrateThreshold(scores []float64) float64 {
-	t, _, _, _ := calibrateDetail(scores)
+	t, _, _, _ := CalibrateThresholdDetail(scores)
 	return t
 }
 
-// CalibrateThresholdDetail exposes the calibrated threshold together with the
-// two Otsu cluster means and their separation (score units), for the
-// calibration-validation instrument in cmd/msc-bench.
+// CalibrateThresholdDetail returns the calibrated threshold together with the
+// two Otsu cluster means and their separation (score units). The extra values
+// let the calibration-validation instrument in cmd/msc-bench see where the
+// valley sits relative to the relevant cluster. threshold is already clamped
+// and falls back to defaultMinScore when not confidently bimodal.
 func CalibrateThresholdDetail(scores []float64) (threshold, noiseMean, relMean, sep float64) {
-	return calibrateDetail(scores)
-}
-
-// calibrateDetail is CalibrateThreshold's core, additionally returning the two
-// Otsu cluster means and their separation (all in score units). Exposed for the
-// calibration-validation instrument (cmd/msc-bench) so the valley's position
-// relative to the relevant cluster can be inspected. threshold is already
-// clamped and falls back to defaultMinScore when not confidently bimodal.
-func calibrateDetail(scores []float64) (threshold, noiseMean, relMean, sep float64) {
 	if len(scores) < 20 {
 		return defaultMinScore, 0, 0, 0
 	}

@@ -178,16 +178,6 @@ func logerr(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "msc: error: "+format+"\n", args...)
 }
 
-// containsStr reports whether s appears in list.
-func containsStr(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
 // closestMatch returns the best match from candidates if it's within a
 // reasonable edit distance (<=2), or "" if nothing is close enough. Used
 // for "did you mean?" suggestions on typos.

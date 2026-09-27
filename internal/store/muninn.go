@@ -82,14 +82,11 @@ type Preparer func(*CapturedExchange)
 // token-count fields are derived from them and filled in by the Preparer
 // (nil Preparer leaves them at zero).
 type CapturedExchange struct {
-	Timestamp  time.Time       `json:"timestamp"`
-	Agent      string          `json:"agent"`  // which coding agent (claude, codex, etc.)
-	Method     string          `json:"method"` // HTTP method
-	Path       string          `json:"path"`   // request path (e.g. /v1/messages)
+	Agent      string          `json:"agent"` // which coding agent (claude, codex, etc.)
+	Path       string          `json:"path"`  // request path (e.g. /v1/messages)
 	ReqBody    json.RawMessage `json:"req_body,omitempty"`
 	StatusCode int             `json:"status_code"`
 	RespBody   json.RawMessage `json:"resp_body,omitempty"`
-	DurationMs int64           `json:"duration_ms"`
 	Model      string          `json:"model,omitempty"`       // extracted from req/resp JSON
 	TokensIn   int             `json:"tokens_in,omitempty"`   // input/prompt token count
 	TokensOut  int             `json:"tokens_out,omitempty"`  // output/completion token count

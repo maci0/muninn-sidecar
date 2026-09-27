@@ -25,7 +25,7 @@ const (
 
 // tokenFile is the bearer-token file MuninnDB writes on first start, relative
 // to the user's home directory.
-var tokenFile = []string{".muninn", "mcp.token"}
+const tokenFile = ".muninn/mcp.token"
 
 // EnvOr returns the value of the environment variable key, or def when the
 // variable is unset or empty.
@@ -94,7 +94,7 @@ func Token(flagVal string) string {
 	if err != nil {
 		return ""
 	}
-	path := filepath.Join(append([]string{home}, tokenFile...)...)
+	path := filepath.Join(home, tokenFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""

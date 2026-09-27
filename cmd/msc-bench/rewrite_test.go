@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,22 +59,6 @@ func FuzzRewritePrompt(f *testing.F) {
 	})
 }
 
-func FuzzItoa(f *testing.F) {
-	f.Add(0)
-	f.Add(42)
-	f.Add(-5)
-	f.Fuzz(func(t *testing.T, n int) {
-		got := itoa(n)
-		want := "0"
-		if n > 0 {
-			want = strconv.Itoa(n)
-		}
-		if got != want {
-			t.Fatalf("itoa(%d) = %q, want %q", n, got, want)
-		}
-	})
-}
-
 func TestParseSubqueries(t *testing.T) {
 	out := "Who directed the film?\n2. What year was the director born?\n- where is the studio"
 	subs := parseSubqueries("orig question", out, 4)
@@ -114,17 +97,6 @@ func TestParseSubqueriesEmpty(t *testing.T) {
 	subs := parseSubqueries("only this", "\n  \n.\n", 4)
 	if len(subs) != 1 || subs[0] != "only this" {
 		t.Fatalf("expected only the original, got %v", subs)
-	}
-}
-
-func TestItoa(t *testing.T) {
-	for _, c := range []struct {
-		n    int
-		want string
-	}{{0, "0"}, {-3, "0"}, {7, "7"}, {42, "42"}, {1000, "1000"}} {
-		if got := itoa(c.n); got != c.want {
-			t.Errorf("itoa(%d)=%q want %q", c.n, got, c.want)
-		}
 	}
 }
 

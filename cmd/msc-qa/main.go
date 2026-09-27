@@ -8,7 +8,8 @@
 //   - distractor: question + a deliberately irrelevant memory (harm of a false inject)
 //
 // It also reports answer-coverage (did the injected context even contain the
-// answer?) and utilization (did the model's answer overlap the injected text?).
+// answer?), plus how often a gold answer appears in the reply as a contiguous
+// token run (the "loose containment" line under each model).
 //
 // This is the gold-standard metric the proxy-level studies only proxy for. It
 // needs a model endpoint; without -model-url it builds the prompts and recall
@@ -301,6 +302,7 @@ func run() error {
 			row += fmt.Sprintf("   %4.2f/%4.2f", agg[3].em(), agg[3].f1())
 		}
 		fmt.Printf("%s   %s  %s%s\n", row, deltaCI(&agg[0], &agg[1]), deltaCI(&agg[0], &agg[2]), note)
+		fmt.Printf("    loose answer containment: %s\n", containmentLine(agg, armNames))
 		if grd != nil {
 			fmt.Printf("    Δgrounded F1 = %+.2f (vs none), %+.2f (vs injected)\n", agg[3].f1()-agg[0].f1(), agg[3].f1()-agg[1].f1())
 		}
@@ -445,17 +447,17 @@ func reproManifest(fs *flag.FlagSet, datasetSHA string, nQuestions int, readers 
 // question indices after the fact; failed model calls keep their index for
 // pairing (ok=false) but are excluded from every aggregate.
 type armAgg struct {
-	ems, f1s []float64
-	ok       []bool
-	ctxN     int
+	ems, f1s  []float64
+	ok        []bool
+	contained int
 }
 
-func (a *armAgg) add(em, f1 float64, usesCtx bool) {
+func (a *armAgg) add(em, f1 float64, contains bool) {
 	a.ems = append(a.ems, em)
 	a.f1s = append(a.f1s, f1)
 	a.ok = append(a.ok, true)
-	if usesCtx {
-		a.ctxN++
+	if contains {
+		a.contained++
 	}
 }
 
@@ -475,10 +477,24 @@ func (a *armAgg) n() int {
 	}
 	return n
 }
-func (a *armAgg) failN() int    { return len(a.ok) - a.n() }
-func (a *armAgg) em() float64   { return safe(sumWhere(a.ems, a.ok), float64(a.n())) }
-func (a *armAgg) f1() float64   { return safe(sumWhere(a.f1s, a.ok), float64(a.n())) }
-func (a *armAgg) util() float64 { return safe(float64(a.ctxN), float64(a.n())) }
+func (a *armAgg) failN() int  { return len(a.ok) - a.n() }
+func (a *armAgg) em() float64 { return safe(sumWhere(a.ems, a.ok), float64(a.n())) }
+func (a *armAgg) f1() float64 { return safe(sumWhere(a.f1s, a.ok), float64(a.n())) }
+
+// containment is the fraction of answers that contain a gold answer as a
+// contiguous token run. It is looser than exactMatch (which requires the whole
+// normalized answer), so it shows how often the model got the fact right inside
+// a longer sentence — the signal that separates "wrong" from "right but verbose".
+func (a *armAgg) containment() float64 { return safe(float64(a.contained), float64(a.n())) }
+
+// containmentLine renders the per-arm containment rates for one model's row.
+func containmentLine(agg []armAgg, armNames []string) string {
+	parts := make([]string, 0, len(agg))
+	for a, name := range armNames {
+		parts = append(parts, fmt.Sprintf("%s %.2f", name, agg[a].containment()))
+	}
+	return strings.Join(parts, "  ")
+}
 
 func sumWhere(xs []float64, ok []bool) float64 {
 	s := 0.0

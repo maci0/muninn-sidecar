@@ -113,9 +113,7 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 			"content": []map[string]any{{"type": "text", "text": text}},
 		})
 		e.p.store.Store(&store.CapturedExchange{
-			Timestamp:  e.p.now(),
 			Agent:      e.p.agentName,
-			Method:     "WS",
 			Path:       "/backend-api/codex/responses",
 			ReqBody:    req,
 			StatusCode: 200,

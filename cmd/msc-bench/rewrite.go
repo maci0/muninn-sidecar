@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,7 +30,7 @@ type rewriter interface {
 
 func rewritePrompt(query string, max int) string {
 	return "Decompose this question into the distinct facts a search engine must find to answer it. " +
-		"Output up to " + itoa(max) + " short keyword search queries, one per line, no numbering, no prose. " +
+		"Output up to " + strconv.Itoa(max) + " short keyword search queries, one per line, no numbering, no prose. " +
 		"If the question is already a single lookup, output just one line.\n" +
 		"Question: " + query
 }
@@ -65,20 +66,6 @@ func parseSubqueries(original, out string, max int) []string {
 func failOpen(reason, query string) []string {
 	fmt.Fprintf(os.Stderr, "  warn: query rewrite failed open (%s); using original query\n", reason)
 	return []string{query}
-}
-
-func itoa(n int) string {
-	if n <= 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }
 
 // --- HTTP (OpenAI-compatible) rewriter ---

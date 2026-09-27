@@ -94,12 +94,8 @@ func TestCallHTTPServerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 5xx response, got nil")
 	}
-	var serverErr *ServerError
-	if !errors.As(err, &serverErr) {
-		t.Fatalf("expected *ServerError, got %T: %v", err, err)
-	}
-	if serverErr.Status != 500 {
-		t.Fatalf("expected status 500, got %d", serverErr.Status)
+	if got := err.Error(); got != "server error: HTTP 500" {
+		t.Fatalf("got %q, want %q", got, "server error: HTTP 500")
 	}
 }
 
@@ -125,9 +121,6 @@ func TestHealthURLFrom(t *testing.T) {
 }
 
 func TestErrorMessages(t *testing.T) {
-	if got := (&ServerError{Status: 503}).Error(); got != "server error: HTTP 503" {
-		t.Errorf("ServerError: %q", got)
-	}
 	if got := (&ClientError{Status: 404}).Error(); got != "client error: HTTP 404" {
 		t.Errorf("ClientError: %q", got)
 	}

@@ -3,7 +3,6 @@ package store
 import (
 	"encoding/json"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/maci0/muninn-sidecar/internal/stats"
@@ -34,9 +33,7 @@ func FuzzFormatAndDedup(f *testing.F) {
 		s.SetRedaction(redact)
 
 		ex := &CapturedExchange{
-			Timestamp:  time.Unix(0, 0).UTC(),
 			Agent:      agent,
-			Method:     "POST",
 			Path:       "/v1/messages",
 			StatusCode: status,
 			ReqBody:    json.RawMessage(req),

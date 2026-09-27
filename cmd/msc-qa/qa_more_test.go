@@ -40,15 +40,15 @@ func TestArmAgg(t *testing.T) {
 	var a armAgg
 	a.add(1, 1.0, true)
 	a.add(0, 0.5, false)
-	if a.em() != 0.5 || a.f1() != 0.75 || a.util() != 0.5 {
-		t.Errorf("armAgg em=%v f1=%v util=%v", a.em(), a.f1(), a.util())
+	if a.em() != 0.5 || a.f1() != 0.75 || a.containment() != 0.5 {
+		t.Errorf("armAgg em=%v f1=%v containment=%v", a.em(), a.f1(), a.containment())
 	}
 	a.fail()
 	if a.failN() != 1 || a.n() != 2 || a.f1() != 0.75 {
 		t.Errorf("failed call must be excluded: failN=%d n=%d f1=%v", a.failN(), a.n(), a.f1())
 	}
 	var z armAgg
-	if z.em() != 0 || z.f1() != 0 || z.util() != 0 {
+	if z.em() != 0 || z.f1() != 0 || z.containment() != 0 {
 		t.Errorf("empty armAgg should be 0")
 	}
 }

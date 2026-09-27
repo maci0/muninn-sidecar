@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sort"
 
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 )
@@ -42,9 +43,5 @@ func applyGrounding(ctx context.Context, g grounding.Grounder, results []probeRe
 }
 
 func sortByVecDesc(mems []recalledMemory) {
-	for i := 1; i < len(mems); i++ {
-		for j := i; j > 0 && mems[j].VectorScore > mems[j-1].VectorScore; j-- {
-			mems[j], mems[j-1] = mems[j-1], mems[j]
-		}
-	}
+	sort.SliceStable(mems, func(i, j int) bool { return mems[i].VectorScore > mems[j].VectorScore })
 }

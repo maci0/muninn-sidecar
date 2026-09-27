@@ -35,9 +35,7 @@ func TestStoreAndDrain(t *testing.T) {
 	s := New(srv.URL, "", "test", st)
 
 	s.Store(&CapturedExchange{
-		Timestamp: time.Now(),
 		Agent:     "test",
-		Method:    "POST",
 		Path:      "/v1/messages",
 		ReqBody:   json.RawMessage(`{"messages":[{"role":"user","content":"hello world"}]}`),
 		RespBody:  json.RawMessage(`{"content":[{"type":"text","text":"hi there"}]}`),
@@ -258,12 +256,11 @@ func TestBatching(t *testing.T) {
 		msg := fmt.Sprintf(`{"messages":[{"role":"user","content":"question %d"}]}`, i)
 		resp := fmt.Sprintf(`{"content":[{"type":"text","text":"answer %d"}]}`, i)
 		s.Store(&CapturedExchange{
-			Timestamp: time.Now(),
-			Agent:     "test",
-			Path:      "/v1/messages",
-			ReqBody:   json.RawMessage(msg),
-			RespBody:  json.RawMessage(resp),
-			TokensIn:  i,
+			Agent:    "test",
+			Path:     "/v1/messages",
+			ReqBody:  json.RawMessage(msg),
+			RespBody: json.RawMessage(resp),
+			TokensIn: i,
 		})
 	}
 
@@ -465,12 +462,10 @@ func TestDeduplication(t *testing.T) {
 	// Send the same user message 5 times — should be deduped to 1.
 	for range 5 {
 		s.Store(&CapturedExchange{
-			Timestamp: time.Now(),
-			Agent:     "claude",
-			Method:    "POST",
-			Path:      "/v1/messages",
-			ReqBody:   json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"How do I sort a slice in Go?"}]}]}`),
-			RespBody:  json.RawMessage(`{"content":[{"type":"text","text":"Use sort.Slice()"}]}`),
+			Agent:    "claude",
+			Path:     "/v1/messages",
+			ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"How do I sort a slice in Go?"}]}]}`),
+			RespBody: json.RawMessage(`{"content":[{"type":"text","text":"Use sort.Slice()"}]}`),
 		})
 	}
 
@@ -502,22 +497,18 @@ func TestSkipEmptyCapture(t *testing.T) {
 
 	// Exchange where user message is entirely system-reminder: should be skipped.
 	s.Store(&CapturedExchange{
-		Timestamp: time.Now(),
-		Agent:     "claude",
-		Method:    "POST",
-		Path:      "/v1/messages",
-		ReqBody:   json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>metadata only</system-reminder>"}]}]}`),
-		RespBody:  json.RawMessage(`{}`),
+		Agent:    "claude",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>metadata only</system-reminder>"}]}]}`),
+		RespBody: json.RawMessage(`{}`),
 	})
 
 	// Exchange with no extractable messages at all.
 	s.Store(&CapturedExchange{
-		Timestamp: time.Now(),
-		Agent:     "claude",
-		Method:    "POST",
-		Path:      "/v1/messages",
-		ReqBody:   json.RawMessage(`{"model":"claude-3"}`),
-		RespBody:  json.RawMessage(`{"ok":true}`),
+		Agent:    "claude",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"model":"claude-3"}`),
+		RespBody: json.RawMessage(`{"ok":true}`),
 	})
 
 	s.Drain()
@@ -555,12 +546,10 @@ func TestStripSystemReminderInCapture(t *testing.T) {
 
 	// Exchange where user message has system-reminder mixed with real content.
 	s.Store(&CapturedExchange{
-		Timestamp: time.Now(),
-		Agent:     "claude",
-		Method:    "POST",
-		Path:      "/v1/messages",
-		ReqBody:   json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>ignore this</system-reminder>\nActual user question about Go"}]}]}`),
-		RespBody:  json.RawMessage(`{"content":[{"type":"text","text":"Here is the answer about Go"}]}`),
+		Agent:    "claude",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>ignore this</system-reminder>\nActual user question about Go"}]}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"Here is the answer about Go"}]}`),
 	})
 
 	s.Drain()
@@ -589,12 +578,9 @@ func TestFormatAndDedupAnthropic(t *testing.T) {
 	ringIdx := 0
 
 	ex := &CapturedExchange{
-		Timestamp:  time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
 		Agent:      "claude",
-		Method:     "POST",
 		Path:       "/v1/messages",
 		StatusCode: 200,
-		DurationMs: 1500,
 		Model:      "claude-3-opus",
 		TokensIn:   500,
 		TokensOut:  200,
@@ -654,11 +640,9 @@ func TestFormatAndDedupOpenAI(t *testing.T) {
 	ringIdx := 0
 
 	ex := &CapturedExchange{
-		Timestamp: time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
-		Agent:     "codex",
-		Method:    "POST",
-		Path:      "/v1/chat/completions",
-		Model:     "gpt-4",
+		Agent: "codex",
+		Path:  "/v1/chat/completions",
+		Model: "gpt-4",
 		ReqBody: json.RawMessage(`{
 			"model":"gpt-4",
 			"messages":[
@@ -694,10 +678,8 @@ func TestFormatAndDedupGemini(t *testing.T) {
 	ringIdx := 0
 
 	ex := &CapturedExchange{
-		Timestamp: time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
-		Agent:     "gemini",
-		Method:    "POST",
-		Path:      "/v1/generateContent",
+		Agent: "gemini",
+		Path:  "/v1/generateContent",
 		ReqBody: json.RawMessage(`{
 			"contents":[{"role":"user","parts":[{"text":"What is Kubernetes?"}]}]
 		}`),
@@ -730,12 +712,9 @@ func TestFormatAndDedupEmptySkipped(t *testing.T) {
 	ringIdx := 0
 
 	ex := &CapturedExchange{
-		Timestamp:  time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
 		Agent:      "claude",
-		Method:     "POST",
 		Path:       "/v1/messages",
 		StatusCode: 200,
-		DurationMs: 1500,
 		ReqBody:    json.RawMessage(`{"model":"claude-3-opus"}`),
 		RespBody:   json.RawMessage(`{"ok":true}`),
 	}
@@ -798,12 +777,10 @@ func TestPartialSystemReminderStrip(t *testing.T) {
 	s := New(srv.URL, "", "test", st)
 
 	s.Store(&CapturedExchange{
-		Timestamp: time.Now(),
-		Agent:     "claude",
-		Method:    "POST",
-		Path:      "/v1/messages",
-		ReqBody:   json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>first reminder</system-reminder>\nReal question about databases\n<system-reminder>second reminder</system-reminder>\nMore real content here"}]}]}`),
-		RespBody:  json.RawMessage(`{"content":[{"type":"text","text":"Here is the database answer"}]}`),
+		Agent:    "claude",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>first reminder</system-reminder>\nReal question about databases\n<system-reminder>second reminder</system-reminder>\nMore real content here"}]}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"Here is the database answer"}]}`),
 	})
 
 	s.Drain()
@@ -1037,7 +1014,6 @@ func TestFormatAndDedupAssistantOnly(t *testing.T) {
 	// No user message extractable, but assistant has content.
 	s.Store(&CapturedExchange{
 		Agent:    "claude",
-		Method:   "POST",
 		Path:     "/v1/messages",
 		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"tool output"}]}]}`),
 		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"Based on the tool output, here is my analysis"}]}`),

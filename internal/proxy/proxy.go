@@ -531,22 +531,18 @@ func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
 }
 
 // buildExchange constructs a CapturedExchange from capture context and
-// response data, reading the request duration from clock. This is the single
-// construction site for exchanges, used by both the non-streaming and
-// streaming paths. The bodies are handed over as captured: stripping injected
-// context and muninn tool traffic, and deriving model/usage, all parse bodies
-// that reach tens of MiB, so they run on the store's worker goroutine (see
-// prepareExchange) rather than here.
+// response data. This is the single construction site for exchanges, used by
+// both the non-streaming and streaming paths. The bodies are handed over as
+// captured: stripping injected context and muninn tool traffic, and deriving
+// model/usage, all parse bodies that reach tens of MiB, so they run on the
+// store's worker goroutine (see prepareExchange) rather than here.
 func buildExchange(clock Clock, ctx *captureCtx, statusCode int, respBody json.RawMessage) *store.CapturedExchange {
 	return &store.CapturedExchange{
-		Timestamp:  ctx.start,
 		Agent:      ctx.agent,
-		Method:     ctx.method,
 		Path:       ctx.path,
 		ReqBody:    ctx.reqBody,
 		StatusCode: statusCode,
 		RespBody:   respBody,
-		DurationMs: clock.Since(ctx.start).Milliseconds(),
 	}
 }
 

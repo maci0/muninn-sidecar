@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -519,7 +520,7 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	if o.mitm {
 		scope := "all hosts"
 		// "*" forces intercept-all in the proxy, so scoped wording would be wrong.
-		if len(o.mitmHosts) > 0 && !containsStr(o.mitmHosts, "*") {
+		if len(o.mitmHosts) > 0 && !slices.Contains(o.mitmHosts, "*") {
 			scope = "upstream + " + strings.Join(o.mitmHosts, ", ") + " (others blind-tunneled)"
 		}
 		fmt.Fprintf(os.Stdout, "Mode:     TLS-MITM (transparent HTTPS proxy)\n")

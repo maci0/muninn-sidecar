@@ -103,11 +103,6 @@ func healthURLFrom(mcpURL string) (string, error) {
 	return u.String(), nil
 }
 
-// ServerError is a retryable error for 5xx responses.
-type ServerError struct{ Status int }
-
-func (e *ServerError) Error() string { return fmt.Sprintf("server error: HTTP %d", e.Status) }
-
 // ClientError is a non-retryable error for 4xx responses.
 type ClientError struct{ Status int }
 
@@ -123,12 +118,14 @@ type RPCError struct {
 func (e *RPCError) Error() string { return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message) }
 
 // Call sends a JSON-RPC 2.0 tools/call request and returns the raw response body.
-// Returns a *ServerError for 5xx, *ClientError for 4xx, or *RPCError for a
+// Returns a *ClientError for 4xx (a permanent rejection) or an *RPCError for a
 // JSON-RPC protocol-level error (HTTP 200 with an "error" field in the body).
 //
 // Call mints a fresh request ID per invocation, so calling it in a retry loop
 // gives every attempt a distinct ID. A retried write should reserve one ID via
 // NextRequestID and use CallWithID for every attempt instead.
+//
+// 5xx is returned as a plain wrapped error, which callers treat as retryable.
 func (c *Client) Call(ctx context.Context, toolName string, args map[string]any) ([]byte, error) {
 	return c.CallWithID(ctx, NextRequestID(), toolName, args)
 }
@@ -184,7 +181,7 @@ func (c *Client) CallWithID(ctx context.Context, id int64, toolName string, args
 	}
 
 	if resp.StatusCode >= 500 {
-		return nil, &ServerError{Status: resp.StatusCode}
+		return nil, fmt.Errorf("server error: HTTP %d", resp.StatusCode)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, &ClientError{Status: resp.StatusCode}
