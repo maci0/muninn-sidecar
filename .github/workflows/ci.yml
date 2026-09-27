@@ -39,6 +39,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Before the toolchain is installed: GO_VERSION and go.mod's directive
+      # are the only two places the Go line is written, and this is the job
+      # that reads both. A line raised in go.mod without GO_VERSION following
+      # it otherwise surfaces as "module requires Go X" under an unrelated
+      # build error, which is the one message the go-version-check target
+      # exists to replace.
+      - name: Go version matches go.mod
+        run: make go-version-check
+
       - uses: actions/setup-go@v6
         with:
           # Latest 1.25.x patch (not the vulnerable 1.25.0 the go.mod directive

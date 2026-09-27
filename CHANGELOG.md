@@ -11,118 +11,6 @@ minor bump is safe.
 
 ## [Unreleased]
 
-### Changed
-
-- **ruff covers the whole tree, not just `scripts/`.** `make lint-non-go` and
-  `make fmt` passed `scripts/` as ruff's path, so a Python file added anywhere
-  else was formatted by nobody and linted by nobody while `ruff.toml` sat at the
-  root applying to it. Both now run ruff over `.`, which resolves to the same
-  single file today and picks up the next one wherever it lands.
-- **Five more ruff rule groups are on.** `N` (naming), `PGH` (blanket `# noqa`
-  and `# type: ignore`), `RSE` (unnecessary `raise`), `PLW` (pylint warnings) and
-  `ERA` (commented-out code) were never selected, so a suppression that silences
-  a whole line or a whole file, and a block of code left commented out, passed
-  silently. The tree passes all five today.
-- **A staticcheck on the wrong version now fails `make lint-go` instead of
-  warning.** `make tools` is a separate command, so the copy on PATH can be
-  older than the pin while still satisfying the presence gate, and a different
-  staticcheck is a different rule set: a green `make check` was not the green CI
-  gets. The version is read out of the binary's own build info, nothing is
-  fetched, and the check runs after the lint so a mismatch fails the target
-  without hiding what the linter found on the way there.
-
-### Fixed
-
-- **An unreadable MuninnDB token file is no longer silent.** `config.Token`
-  returned an empty token for any read failure, so a file that exists but cannot
-  be read (a permission change, a directory in its place, a transient I/O error)
-  was indistinguishable from "none configured". msc then ran with no
-  `Authorization` header and every MCP call failed 401, surfacing far from the
-  file as a generic delivery error. A missing file stays silent, since a server
-  that needs no auth is a valid deployment; any other read failure now names the
-  path and the reason.
-- **`msc-qa` no longer reports an undecodable recall reply as zero recall.** A
-  2xx body that is not a JSON-RPC reply (an intermediary's HTML page, a
-  truncated payload) parsed to an empty candidate set, which the harness then
-  scored as a measurement: every arm built from nothing, answer-coverage 0/100
-  reported as a result. The parse failure now reaches the caller and is counted
-  like any other recall failure, alongside the existing "recall failed for N/M
-  questions" warning and the all-questions-failed abort. A reply that decodes
-  and carries no memories is still a genuine empty result.
-- **`msc-qa` and `msc-bench` no longer strand a socket per model call.** Both
-  tools built a fresh `http.Client` for every question they asked, and each one
-  owns a private `Transport` whose `IdleConnTimeout` is zero: the keep-alive
-  connection the call opened went back to a pool nothing could reach, taking its
-  read and write goroutines with it, for the life of the run. A run over a
-  dataset leaked one socket and two goroutines per question, on top of
-  re-handshaking a connection that could have been reused. Both now hold one
-  client for the run, with a bounded idle pool and a 90s idle timeout, the same
-  shape `internal/grounding` already used for its judge.
-- **A panic in a turn no longer takes the session down.** The request pipeline
-  had no recovery of its own, so a panic fell through to the stdlib's
-  per-connection recover with `http.Server.ErrorLog` left nil. That default
-  writes through the `log` package: a `--log-json` run got one unstructured
-  line in the middle of the stream, and the level filter never applied to it,
-  so the panic was invisible in the log an operator was actually reading. It is
-  now recovered per turn (a 502 for that turn, counted as a proxy error, logged
-  at error with a stack), and `ErrorLog` is wired to the same slog handler on
-  the proxy's server and on each MITM tunnel's.
-- **Every turn now reports how it ended.** A successful turn logged no outcome
-  and no duration at any level: `duration_ms` appeared only on the
-  upstream-error warning, so a turn that succeeded and a turn that vanished
-  looked identical. Both the plain and the MITM path now end in one `turn` line
-  with the correlation ID, method, path, status, and duration, at error level
-  for a 5xx.
-- **A response msc cannot decode is now counted.** gRPC, non-gzip, and protocol
-  upgrade responses were skipped at debug level and nowhere else, so an
-  upstream answering in brotli reported the same healthy "0 saved, 0 errors" as
-  one storing every turn. They now count in `uncapturable_responses` on the
-  status endpoint, in the session summary, and in `degraded_reasons`.
-- **WebSocket frame lines carry the turn's correlation ID.** The frame-read and
-  decode stops, and the `MSC_WS_DEBUG` message lines, were the only lines on
-  the request path without one, so a frame dump could not be tied to the turn
-  it belonged to.
-- **A blind-tunnel dial failure no longer panics the proxy.** `writeStatus` read
-  the correlation ID out of a `context.Context`, but `blindTunnel` called it with
-  a nil one: an agent opening a CONNECT to an unreachable host that went away
-  before the 502 was written took the whole sidecar down on a nil dereference,
-  in the one tunnel path where the log line naming the failure is all the
-  operator gets. `writeStatus` now takes the ID, which both call sites already
-  held.
-- **MITM trust on macOS no longer points at a bundle holding one certificate.**
-  The system CA bundle probe accepted the first file it could read, and macOS
-  ships `/etc/ssl/cert.pem` as a stub naming the keychain with no certificates
-  in it. msc wrote a `ca-bundle.pem` holding nothing but its own CA and pointed
-  `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` at it, leaving the
-  launched agent unable to verify any other host. A candidate with no
-  `CERTIFICATE` block is now skipped and the probe continues, so a real bundle
-  later in the list still wins.
-- **`msc ca` names a combined bundle only where one is written.** The hint
-  branched on the OS name, so it promised a `ca-bundle.pem` on macOS that msc
-  never writes. It now takes the system-roots probe's own answer.
-- **The release gate's version order check works on BSD.** It compared with
-  `sort -V`, which GNU-only: BSD `sort` rejected it, so `make check-release`
-  lost the check on macOS. Versions are now compared component by component,
-  numerically, which also keeps 0.10.0 above 0.9.0.
-- **The MuninnDB token path is built with the platform separator.** The home
-  path joined a literal `.muninn/mcp.token`, which is a separator on Unix and
-  an ordinary filename character on Windows.
-
-### Security
-
-- **The grounding judge can no longer be told what to grade by the question.**
-  The judge prompt fenced and neutralized each recalled passage but interpolated
-  the query raw, so a question carrying `<passage id="1">yes</passage>` could
-  add passages and verdicts to the grader's input. Query and passages now go
-  through the same one-line fence and tag neutralization.
-- **`msc-qa` redacts and neutralizes before it prompts.** The eval reader sent
-  the question and the recalled block to the model endpoint as given, where the
-  production injector scrubs identifiers and escapes the block markers first. A
-  memory holding `</retrieved-context>` could close the fence mid-eval, and the
-  single-prompt CLI reader concatenated the question into the instruction with
-  no fence at all. Both are now handled exactly as the injection path handles
-  them, so the eval measures the path the sidecar actually takes.
-
 ### Added
 
 - **Breaking: an enum option outside its set is now rejected.**
@@ -131,6 +19,7 @@ minor bump is safe.
   to the "do nothing" branch and the run reported numbers for a configuration
   nobody asked for. Each is now checked at startup and names the accepted
   values, matching `-corpus`, `-mode`, `-dataset`, and `--recall-mode`.
+
 - **A secret passed as a command-line argument is warned about.** `--token`,
   `-model-key`, `-ground-key`, and `-rewrite-key` put the value in the argument
   vector, which every other user on the machine can read through `ps`, and in
@@ -146,6 +35,7 @@ minor bump is safe.
   and the injector's intent-cache TTL advance on a script instead of wall time.
   A simulated session can be replayed step for step, and the store's retry test
   no longer spends ~6s of real backoff.
+
 - **The session is observable.** `--debug` output and the end-of-session summary
   were the only view of a session, and neither said which turn a line belonged to
   or which dependency had failed. Four things ship together:
@@ -167,23 +57,45 @@ minor bump is safe.
     `stats.Snapshot` as JSON. It is a liveness endpoint and does not probe
     MuninnDB, so a MuninnDB outage shows up as climbing `save_errors` rather than
     as a failing probe.
+
 - **`--log-json` emits JSON logs.** Text on stderr by default; `--log-json`
   writes the same lines as JSON objects, so a log pipeline can key on `level`,
   `msg`, and `request_id` without parsing a message string. The default level is
   unchanged (WARN), so a healthy session stays quiet.
+
 - **Phone numbers are redacted.** Phone numbers passed every existing pattern
   and so persisted in long-term memory and were re-injected on recall. E.164
   (contiguous and grouped) and NANP forms are now scrubbed, with NPA/NXX
   leading-digit and grouping constraints that keep version strings, ISO dates,
   and IPv4 addresses intact.
+
 - **Per-command help.** `msc list --help` (and `status`, `ca`, `version`,
   `completion`, `help`) printed the global usage, which documents the agent
   wrapper and cannot say what a single command accepts. Each command now has
   its own usage, arguments, examples, and exit codes, reachable as
   `msc <command> --help` or `msc help <command>`; `msc help <agent>` prints
   that agent's base-URL override, default upstream, and launch line.
-
 ### Changed
+
+- **ruff covers the whole tree, not just `scripts/`.** `make lint-non-go` and
+  `make fmt` passed `scripts/` as ruff's path, so a Python file added anywhere
+  else was formatted by nobody and linted by nobody while `ruff.toml` sat at the
+  root applying to it. Both now run ruff over `.`, which resolves to the same
+  single file today and picks up the next one wherever it lands.
+
+- **Five more ruff rule groups are on.** `N` (naming), `PGH` (blanket `# noqa`
+  and `# type: ignore`), `RSE` (unnecessary `raise`), `PLW` (pylint warnings) and
+  `ERA` (commented-out code) were never selected, so a suppression that silences
+  a whole line or a whole file, and a block of code left commented out, passed
+  silently. The tree passes all five today.
+
+- **A staticcheck on the wrong version now fails `make lint-go` instead of
+  warning.** `make tools` is a separate command, so the copy on PATH can be
+  older than the pin while still satisfying the presence gate, and a different
+  staticcheck is a different rule set: a green `make check` was not the green CI
+  gets. The version is read out of the binary's own build info, nothing is
+  fetched, and the check runs after the lint so a mismatch fails the target
+  without hiding what the linter found on the way there.
 
 - **The CI linters are pinned like the other tools.** `staticcheck` and
   `govulncheck` were installed with `go install <module>@latest`, so each run
@@ -192,6 +104,7 @@ minor bump is safe.
   loosened checks turned it green just as silently. Both now carry a version in
   the Makefile, overridable the same way, and `make lint` and `make vuln` warn
   when the copy on `PATH` is not the pinned one.
+
 - **The threat model inventories the eval CLIs.** The document claimed the
   `msc-eval`, `msc-bench`, and `msc-qa` scope was covered "only where they
   differ materially" without ever listing what that is. Their entry points,
@@ -200,12 +113,14 @@ minor bump is safe.
   before prompting) and three abuse cases are now written down with file
   references, and `SECURITY.md` names the model and judge endpoint and the
   flags that put a secret in the process list, which it did not mention.
+
 - **CI and `make lint` run the same linter invocations.** The `Lint` job kept
   its own copy of the four non-Go linter commands while the Makefile kept a
   second one, so the two could check different rules without either change
   looking wrong. The commands now live in the `lint-non-go` target, and CI
   calls that target with the pinned ephemeral ruff and yamllint passed in as
   make variables.
+
 - **A failing sidecar says so, and a log line names its turn.** Three
   observability gaps on the request path:
   - The `request_id` stopped at the end of the HTTP request. The store's
@@ -231,6 +146,7 @@ minor bump is safe.
     request rate; `captured` counts only what reached the store, so a session
     that is answering but no longer capturing is now distinguishable from one the
     agent has stopped calling.
+
 - **Captured bodies are decoded once.** A captured request carries the whole
   conversation and can reach tens of MiB, and the store worker decoded it four
   times over: once to filter injected context and tool traffic, twice more to
@@ -246,13 +162,16 @@ minor bump is safe.
   binaries (`msc`, `msc-eval`, `msc-bench`, `msc-qa`) now resolve the endpoint,
   token, and vault from one package, so the default, the env var names, and the
   token-file path have a single definition.
+
 - **The grounding key is checked against the host, not just the scheme.**
   `OPENAI_API_KEY` was warned about only over plaintext HTTP. It is now also
   warned about when `--ground-url` points at a host that is not api.openai.com,
   since the key then leaves the machine in a form the user may not have intended.
+
 - **Capture no longer cleans bodies on the request path.** Body normalization ran
   between receiving a response and forwarding it, so its cost was paid by the
   agent's turn. It now runs on the store worker, after the bytes are forwarded.
+
 - **Redaction is gated, and 13x faster.** Almost every pattern starts with a
   character class or word boundary rather than a literal, so the regexp engine
   fell back to a full scan per pattern. Each rule now carries a necessary
@@ -260,10 +179,12 @@ minor bump is safe.
   sensitive key stem) checked before the regex runs; every condition is required
   by its pattern, so which spans get redacted is unchanged. A 4 KiB turn went
   from ~2.3ms to ~0.17ms.
+
 - **CI lints the Python, shell, and YAML sources.** A `Lint` job runs `ruff`
   (plus `ruff format --check` on `scripts/`), `shellcheck` on `test-live.sh`,
   and `yamllint` on the repository's YAML, each with a pinned version, so the
   non-Go sources are held to the same bar as the Go tree.
+
 - **Dev loop matches CI.** `make lint` and `make vuln` no longer swallow a
   linter's real failure behind a "not installed, skipping" message; a missing
   tool now fails with the `go install` line to run. `make check` reproduces the
@@ -271,6 +192,7 @@ minor bump is safe.
   help` lists every target, `make tools` installs the two CI linters, and
   `make test PKG=... RUN='^TestFoo$'` (plus `make test-fast`) narrows the
   edit-test loop to one package or test.
+
 - **Eval methodology hardened.** `msc-qa`: paired-bootstrap 95% CIs on F1
   deltas, deterministic `-sample-seed` question sampling, failed calls excluded
   (not scored as wrong), per-question distractors instead of one shared passage,
@@ -279,10 +201,12 @@ minor bump is safe.
   the in-sample optimum, validated probe namespaces, `-rewrite-key` for
   authenticated rewrite endpoints. `msc-eval`: `-study-seed`/`-study-n`/
   `-study-folds`; `-compare` reports cross-seed mean and std of held-out F1.
+
 - **Docs corrected against code.** SECURITY.md had MITM scoping backwards (no
   `--mitm-host` means intercept-all); stale thresholds, sweep plateaus, and fuzz
   counts fixed; eval claims right-sized with provenance and limitations notes
   (N=20 tables are directional; per-model deltas need N >= 100).
+
 - **The tag, the version, and the notes are checked against each other.**
   The tag is the only place the version number lives (`make build` stamps it
   from `git describe`), and a tag can be pushed with no `CHANGELOG.md` section
@@ -290,8 +214,35 @@ minor bump is safe.
   none of which any existing check noticed. `make check-release` (in `make
   check`) reports each of those, and a `Release notes` CI job runs it on a `v*`
   tag push with `TAG` set, so a release cannot ship undocumented.
-
 ### Fixed
+
+- **An unreadable MuninnDB token file is no longer silent.** `config.Token`
+  returned an empty token for any read failure, so a file that exists but cannot
+  be read (a permission change, a directory in its place, a transient I/O error)
+  was indistinguishable from "none configured". msc then ran with no
+  `Authorization` header and every MCP call failed 401, surfacing far from the
+  file as a generic delivery error. A missing file stays silent, since a server
+  that needs no auth is a valid deployment; any other read failure now names the
+  path and the reason.
+
+- **`msc-qa` no longer reports an undecodable recall reply as zero recall.** A
+  2xx body that is not a JSON-RPC reply (an intermediary's HTML page, a
+  truncated payload) parsed to an empty candidate set, which the harness then
+  scored as a measurement: every arm built from nothing, answer-coverage 0/100
+  reported as a result. The parse failure now reaches the caller and is counted
+  like any other recall failure, alongside the existing "recall failed for N/M
+  questions" warning and the all-questions-failed abort. A reply that decodes
+  and carries no memories is still a genuine empty result.
+
+- **`msc-qa` and `msc-bench` no longer strand a socket per model call.** Both
+  tools built a fresh `http.Client` for every question they asked, and each one
+  owns a private `Transport` whose `IdleConnTimeout` is zero: the keep-alive
+  connection the call opened went back to a pool nothing could reach, taking its
+  read and write goroutines with it, for the life of the run. A run over a
+  dataset leaked one socket and two goroutines per question, on top of
+  re-handshaking a connection that could have been reused. Both now hold one
+  client for the run, with a bounded idle pool and a 90s idle timeout, the same
+  shape `internal/grounding` already used for its judge.
 
 - **A panic in a turn no longer takes the session down.** The request pipeline
   had no recovery of its own, so a panic fell through to the stdlib's
@@ -302,21 +253,54 @@ minor bump is safe.
   now recovered per turn (a 502 for that turn, counted as a proxy error, logged
   at error with a stack), and `ErrorLog` is wired to the same slog handler on
   the proxy's server and on each MITM tunnel's.
+
 - **Every turn now reports how it ended.** A successful turn logged no outcome
   and no duration at any level: `duration_ms` appeared only on the
   upstream-error warning, so a turn that succeeded and a turn that vanished
   looked identical. Both the plain and the MITM path now end in one `turn` line
   with the correlation ID, method, path, status, and duration, at error level
   for a 5xx.
+
 - **A response msc cannot decode is now counted.** gRPC, non-gzip, and protocol
   upgrade responses were skipped at debug level and nowhere else, so an
   upstream answering in brotli reported the same healthy "0 saved, 0 errors" as
   one storing every turn. They now count in `uncapturable_responses` on the
   status endpoint, in the session summary, and in `degraded_reasons`.
+
 - **WebSocket frame lines carry the turn's correlation ID.** The frame-read and
   decode stops, and the `MSC_WS_DEBUG` message lines, were the only lines on
   the request path without one, so a frame dump could not be tied to the turn
   it belonged to.
+
+- **A blind-tunnel dial failure no longer panics the proxy.** `writeStatus` read
+  the correlation ID out of a `context.Context`, but `blindTunnel` called it with
+  a nil one: an agent opening a CONNECT to an unreachable host that went away
+  before the 502 was written took the whole sidecar down on a nil dereference,
+  in the one tunnel path where the log line naming the failure is all the
+  operator gets. `writeStatus` now takes the ID, which both call sites already
+  held.
+
+- **MITM trust on macOS no longer points at a bundle holding one certificate.**
+  The system CA bundle probe accepted the first file it could read, and macOS
+  ships `/etc/ssl/cert.pem` as a stub naming the keychain with no certificates
+  in it. msc wrote a `ca-bundle.pem` holding nothing but its own CA and pointed
+  `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` at it, leaving the
+  launched agent unable to verify any other host. A candidate with no
+  `CERTIFICATE` block is now skipped and the probe continues, so a real bundle
+  later in the list still wins.
+
+- **`msc ca` names a combined bundle only where one is written.** The hint
+  branched on the OS name, so it promised a `ca-bundle.pem` on macOS that msc
+  never writes. It now takes the system-roots probe's own answer.
+
+- **The release gate's version order check works on BSD.** It compared with
+  `sort -V`, which GNU-only: BSD `sort` rejected it, so `make check-release`
+  lost the check on macOS. Versions are now compared component by component,
+  numerically, which also keeps 0.10.0 above 0.9.0.
+
+- **The MuninnDB token path is built with the platform separator.** The home
+  path joined a literal `.muninn/mcp.token`, which is a separator on Unix and
+  an ordinary filename character on Windows.
 
 - **`make build` compiles again.** The `msc --dry-run` preview called
   `agents.HasSystemCABundle`, a helper that had already been removed as dead
@@ -325,38 +309,46 @@ minor bump is safe.
   is back, next to the system-roots probe it answers for, so the preview and
   the real launch cannot disagree about it, and a test pins it to the bundle
   `writeCombinedCABundle` actually writes.
+
 - **The CI lint job can pass again.** The presence gate that runs before
   shellcheck, ruff and yamllint stripped *every* space out of the tool variable
   before testing it, so the pipx form CI invokes was looked up as the single
   word `pipxrunruff@0.16.4` and the job failed with "ruff is required" on every
   run. It now gates on the first word, which is the executable the command
   actually runs.
+
 - **`scripts/check-release-notes.sh` is linted.** `make lint-non-go` passed
   shellcheck a single file by name, so the release gate's script was never
   checked. It now passes every tracked `*.sh`, which covers new scripts without
   a second edit.
+
 - **The ruff and yamllint pins have one home.** They were stated in the
   Makefile and repeated as literals in `ci.yml`, so a bump in one left the
   other enforcing a different ruff release than `make lint` did. `make lint-ci`
   is now the invocation the workflow runs, pins included.
+
 - **Breaking: a bad flag value now exits 2 in every binary.** The `flag`
   package already exits 2 for an unparseable command line, but the three tool
   binaries exited 1 for a value it parsed and then rejected (`msc-qa -n 0`,
   `msc-bench -ground-topk 0`, `msc-eval -min-score 5`), so a script could not
   tell a typo from a runtime failure. The rejections are typed and exit 2, as
   `msc` already did.
+
 - **Breaking: `--mitm-host` with no host in it is rejected.** `--mitm-host ""` (or a
   value of only commas and spaces) scoped nothing and left `--mitm` on, which
   TLS-intercepts every host: the opposite of what the flag asks for, and the
   one setting that widens interception to hosts the user never named. It now
   fails as a usage error like every other empty flag value.
+
 - **Two grounding backends in one command line are named.** `--ground-cmd` and
   `--ground-url` together silently dropped `--ground-url`; the run now warns
   which backend it picked.
+
 - **Breaking: `--json` output is no longer HTML-escaped.** The proxy placeholder in
   `msc --json --dry-run` came out as `\\u003cport\\u003e`, so a grep or a `sed`
   over the machine-readable form missed it. A script matching the escaped form
   reads a different string after upgrading.
+
 - **A failed flush no longer leaves a dedup mark that swallows the retry.** The
   store's dedup ring recorded a concept's hash when the exchange was formatted,
   up to two seconds before the flush that writes it. A flush that failed
@@ -368,12 +360,14 @@ minor bump is safe.
   ring window is also rolled before each flush rather than after, so a delivered
   memory occupies the full ~16s window instead of being cleared by the same tick
   that stored it.
+
 - **A `go.mod` bump cannot leave CI on an older Go.** `ci.yml` installs the
   release line in its own `GO_VERSION` and `go.mod` names the floor the module
   needs, with nothing comparing them: raise the directive and the build fails
   late as a `note: module requires Go X.Y` under an unrelated error, lower it and
   the tree compiles silently against a toolchain nobody chose. `make
   go-version-check`, part of `make check`, fails with both versions named.
+
 - **Breaking: reader output and judge scope are capped at startup.** `-max-tokens`
   (`msc-qa`) and `-ground-topk` (`msc-qa`, `msc-bench`) were the only things
   bounding a model call, and neither rejected a zero: providers that honor
@@ -382,30 +376,37 @@ minor bump is safe.
   passage in one call". Both now fail loud at startup, matching the `--ground-topk`
   check `msc` already had, so a run that passed `-max-tokens 0` exits with a
   usage error instead of calling the provider.
+
 - **A capped server error message no longer bypasses redaction.** The RPC
   error text was capped at 300 runes *before* the scrub, so a rejection long
   enough to hit the cap (exactly the kind that quotes the memory it refused)
   returned its first 300 runes unredacted, putting the secret at the head of
   every log line the error reached. It is scrubbed first and capped second.
+
 - **A judge CLI's output capture starts on a character boundary.**
   `internal/clirun` carried its own tail buffer that kept the last 4 MiB of
   bytes with no UTF-8 check, so a child that overran the cap mid-character (a
   CJK or emoji verdict) handed every caller invalid UTF-8 to parse. It now uses
   the shared `internal/tailbuf`, whose buffer is rune-aware.
+
 - **A response body quoted into an error is cut on a character boundary.** The
   200-byte summary of an untrusted response could land inside a multi-byte
   character and put a replacement character in the log line for the rest of it.
+
 - **A sub-query that begins with digits keeps them.** The list-marker strip
   removed a bare run of leading digits, so a rewriter answering "1989" to a
   year question lost the sub-query entirely and "2004年の…" became "年の…". A
   marker is now a bullet, or an index with its separator, and nothing else.
+
 - **An entity span ends with its own script's punctuation.** `querysplit`
   trimmed only `?.,` off a capitalized run, so a span closed by `。` was a
   different recall key from the same name closed by `?`.
+
 - **Breaking: `MSC_WS_DEBUG=0` no longer turns the WebSocket probe on.** The
   switch was read as "set means on", so a shell profile that exported the
   variable to disable it kept the probe logging. `0`, `false`, `off`, and `no`
   now turn it off, as does leaving it empty; any other value turns it on.
+
 - **A memory server's rejection text no longer reaches the log unscrubbed.**
   `muninn_remember` and `muninn_remember_batch` failures are reported at error
   level with the concept and content deliberately omitted, but the error itself
@@ -413,6 +414,7 @@ minor bump is safe.
   text is now scrubbed of direct identifiers and capped before it becomes an
   error value, so no call site can leak captured conversation into a log line, a
   stderr warning, or an `err` field by way of the transport.
+
 - **The store queue is bounded by bytes, not only by slot count.** Its
   back-pressure was a 256-slot channel, but an exchange carries a captured
   request that repeats the whole conversation (up to 50 MiB a body) plus its
@@ -424,11 +426,13 @@ minor bump is safe.
   is. `GET /__msc/health` reports `bytes_in_flight`, `bytes_capacity` and
   `bytes_saturated` next to the depth, so a queue dropping on its memory budget
   no longer reads as healthy.
+
 - **`msc-bench -seed` no longer doubles the corpus on a rerun.** The seeded
   memories carried no `dedup_key`, so re-seeding the same corpus stored a second
   copy of every item: the duplicates crowd recall's top-k and skew the retrieval
   numbers the benchmark exists to measure. Every seeded memory now carries the
   same content-addressed key `msc` and `msc-qa` send.
+
 - **A CRLF results file no longer grows without bound.** The `msc-qa` report
   writer matched a run's manifest marker against the line with only its newline
   trimmed, so in a file with Windows line endings the marker was never found and
@@ -436,6 +440,7 @@ minor bump is safe.
   now matched with the carriage return trimmed too, and a replacement block is
   written with the line ending the file already uses, so a report stays CRLF end
   to end.
+
 - **Non-ASCII text no longer breaks at a character boundary.** The `msc-eval`
   and `msc-qa` report tables clipped a scenario name or model label by byte, so
   a multi-byte character (CJK, emoji) was cut in half and the row ended in a
@@ -448,6 +453,7 @@ minor bump is safe.
   to the first whole character. A model name in the session summary was the one
   cap still cut by byte, which left invalid UTF-8 in both the tracked name and
   the line that prints it.
+
 - **A URL with no `//` after the scheme no longer logs its credentials.** The
   log sanitizer redacted userinfo held in `url.Userinfo`, but a URL parsed in
   the opaque form (`https:user:pass@host/v1`, which a client can put in an
@@ -470,6 +476,7 @@ minor bump is safe.
   applied through the transport's `DialTLSContext`, so it can be swapped at any
   time; `TestSetMITMRootsConcurrentWithDialing` fails under `-race` without the
   lock.
+
 - **Windows stopped getting Unix-only behavior.** A run from a drive root named
   the vault `\` instead of falling back to `sidecar`; the token file and MITM CA
   key warned about "overly permissive permissions" on every run, because Go
@@ -483,6 +490,7 @@ minor bump is safe.
   exists, the additive `NODE_EXTRA_CA_CERTS`/`DENO_CERT` still carry the CA,
   and `msc ca` says where Windows keeps its roots instead of naming a bundle
   that is never written.
+
 - **Breaking: bad endpoint config fails at startup.** `--ground-url` (and
   the eval binaries' `-ground-url`, `-model-url`, `-rewrite-url`) accepted any
   string, so a typo failed per request as a transport error or silently left the
@@ -492,46 +500,55 @@ minor bump is safe.
   `--ground-url`/`--ground-cmd` backend instead of being silently dropped, and
   `msc-qa`/`msc-eval` reject a `-min-score` outside (0,1] (NaN included), which
   would otherwise inject everything or nothing and misreport the run.
+
 - **The MuninnDB default endpoint had three definitions.** `msc-bench` and
   `msc-qa` each carried their own copy of `http://127.0.0.1:8750/mcp` while
   `msc-eval` resolved it through `config`; the dev binaries now take the shared
   default, so one edit covers all of them.
+
 - **`--debug` logs the effective configuration.** A captured session log now
   names the endpoint, vault, injection budget/gate/recall mode, redaction, and
   MITM state. The bearer token is reported as set/unset, never by value.
+
 - **Breaking: `msc help <typo>` no longer looks like it worked.** It ignored
   the topic, printed the global usage, and exited `0`, so a mistyped topic in a
   script passed silently. An unknown topic now reports itself, suggests the
   nearest one, and exits `2`; more than one topic is a usage error too.
+
 - **Breaking: a missing agent binary exits `127`, not `1`.** `msc <agent>` for
   an agent that is not installed reported "not found in PATH" and exited `1`,
   the same code it used for a general runtime failure. It now uses the shell's
   "command not found" code, so a script can tell a mistyped agent name apart
   from an agent that ran and failed. The exit-code table is documented in
   `msc --help` and the README.
+
 - **The shipped binary no longer depends on the build host's libc.** Nothing
   here imports `C`, but the builds ran with cgo on, so `msc` linked against
   whatever glibc the build machine had, needed a working C toolchain to build
   at all, and produced different bytes on different hosts. `make build`,
   `make build-all` and `make install` now set `CGO_ENABLED=0` and emit static
   binaries.
+
 - **The build date stamp silently went back to wall-clock time on macOS.** The
   `date -d @N` fallback is GNU-only, so on the BSD `date` every macOS in the
   release matrix has, the second candidate failed too and the stamp fell
   through to `date -u` with no argument. The Makefile now tries the BSD
   spelling as well, and reports `unknown` rather than a moving date if neither
   works.
+
 - **CI never built with the flags that ship.** The `Build` steps ran a bare
   `go build -o /dev/null ./...`, so `-trimpath`, `-buildvcs=false` and the
   version stamp were untested there, and the same command was written out three
   more times across the workflow. CI now calls `make build-all`, `make vet`,
   `make tidy-check`, `make fmt-check`, `make test` and `make lint-go`, so the
   Makefile is the only place the build is described.
+
 - **The reproducibility job could fail for the wrong reason.** It built a copy
   of the tree and compared hashes, but both builds ran `git describe` in a
   directory whose index had just been copied. The job now pins `VERSION`,
   `COMMIT` and `SOURCE_DATE_EPOCH`, so a hash mismatch means a leaked path or
   timestamp and nothing else.
+
 - **CLI-agent backends no longer leak output buffers and orphan grandchildren.**
   The grounding judge capped its child's stdout and killed the child's process
   group on timeout; the query rewriter (`msc-bench`) and the answer client
@@ -539,6 +556,7 @@ minor bump is safe.
   limit and a timeout left the agent's own helpers running. All three now share
   one runner (`internal/clirun`) that caps the captured output and signals the
   whole process group.
+
 - **Short-lived MCP clients no longer strand their connections.** Every
   `mcpclient.New` owns a private `http.Transport`, and a fully-read response
   returns its connection to that transport's idle pool. Callers that build a
@@ -546,22 +564,26 @@ minor bump is safe.
   socket still parked, so the connection and its read/write goroutines lived
   until the process exited. `Client.Close` releases them, and the store,
   injector, and one-shot callers now call it.
+
 - **Builds are reproducible.** `make build` passed no `-trimpath`, so the
   checkout path was embedded in every binary, and the stamped build date came
   from the wall clock, so no two builds of one commit matched. Builds now use
   `-trimpath -buildvcs=false` and derive the date from `SOURCE_DATE_EPOCH`
   (defaulting to the commit timestamp). A new `Reproducible build` CI job
   builds twice from two directories and compares hashes.
+
 - **ndjson streams are captured.** Stream capture only read SSE lines, so a
   server that streams bare JSON events (an ndjson body, no `data: ` prefix) was
   forwarded but never captured. A line starting with `{` is now treated as an
   event payload; SSE control lines (`event:`, `id:`, `retry:`, `:`) still carry
   none and are skipped.
+
 - **WebSocket assistant text is bounded.** The per-turn assistant text
   accumulated from decoded WebSocket deltas had no cap, so one long turn grew
   without limit. Deltas are now clamped to `wsMaxRespText` as they arrive (the
   clamp never lands mid-rune), so the turn is stored truncated rather than
   buffered whole.
+
 - **`--dry-run` shows what the child actually gets.** The preview built its own
   env map instead of calling the same helpers `Exec`/`ExecMITM` use, so it could
   disagree with the launch: flag-based agents (`qwen`) showed only env overrides
@@ -571,16 +593,20 @@ minor bump is safe.
   `proxy_args`, `inject_min_score`, `inject_recall_mode`, and
   `inject_calibration`, and its `env` values are the real ones. `msc ca` points
   at the combined system+msc bundle for the same reason.
+
 - **Breaking: `--inject-min-score nan` is rejected.** The range test was
   `f <= 0 || f > 1`, which `NaN` passes, so a NaN threshold reached the injector.
   The test is now a positive check, `--inject-min-score must be in (0,1]`.
+
 - **A full MuninnDB queue no longer floods the log.** Every dropped exchange
   logged a warn line, so a sustained MuninnDB outage produced one line per agent
   turn and buried everything else. The first drop and every 100th after it are
   logged with a running total; `Stats.Dropped` carries the exact count.
+
 - **The session window has a stable order.** The window is built from a map, so
   memories with equal effective scores were emitted in a different order on
   every run. Ties now break on ID, so the injected block is replayable.
+
 - **The grounding judge no longer leaks a connection per turn.** `--ground-url`
   built a fresh `http.Client` and `http.Transport` inside every `Relevant` call,
   and that transport sets no idle-connection timeout, so each grounded turn
@@ -590,22 +616,26 @@ minor bump is safe.
   captured into a capped tail buffer instead of an unbounded `bytes.Buffer`,
   and a judge that times out is killed as a process group, so the helpers it
   spawned do not outlive the call.
+
 - **A signalled agent's own children go down with it.** Signal forwarding
   reached only the agent's pid, so helpers it had spawned survived msc's exit
   (most visibly after the 3s SIGKILL fallback) and kept running against a proxy
   that was about to close. The agent's process group is signalled instead,
   except when that is the group msc itself belongs to, which also holds the
   user's shell.
+
 - **The model breakdown stops growing without a ceiling.** Model names are read
   out of captured request bodies, so every distinct string a client ever sent
   became a permanent session counter, and one long name was retained verbatim.
   Names are now capped in count and length, and the captures past the cap are
   reported as `other (N)` in the summary rather than dropped silently or, worse,
   leaving the list looking complete.
+
 - **Direct identifiers no longer reach third parties on the read path.** The
   recall query is scrubbed before it is sent to MuninnDB, and
   `grounding.Prompt` scrubs the query and candidate passages before they reach
   a judge model. Both paths previously carried unredacted text off-process.
+
 - **Signals reach the agent without a `/proc`.** Child discovery walked
   `/proc`, so on macOS, Windows, or a locked-down `/proc` a `kill`/`docker stop`
   aimed at msc left the agent running against a dead proxy, and the 3s SIGKILL
@@ -613,52 +643,65 @@ minor bump is safe.
   and falls back to it, still leaving SIGINT to the kernel so Ctrl+C is not
   double-delivered. The Unix-only `syscall.Kill`/`syscall.Getpgrp` calls moved
   behind `//go:build` shims, so `GOOS=windows go build` compiles again.
+
 - **No hardcoded `/tmp`.** `msc-bench`/`msc-qa` `-squad-file` and
   `scripts/fetch_hf_datasets.py` resolve their default dataset path through
   `os.TempDir()` / `tempfile.gettempdir()`.
+
 - **A retried memory write is one write.** A MuninnDB flush that fails after the
   server committed it was retried under a fresh JSON-RPC id with no dedup
   token, so the memory was stored twice. Every attempt of a flush now reuses one
   request id, and each memory carries a content-addressed `dedup_key`
   (SHA-256 of vault + concept + content).
+
 - **`msc-qa -md` converges on rerun.** Results were appended blindly, so a
   repeated run with identical flags added a second copy of the same rows. Each
   run's block is now keyed by its repro manifest and replaced in place; a
   different configuration still gets its own block. Rows are also written once
   at the end, so a run that dies mid-way leaves no truncated block.
+
 - **Upgrades survive capture.** 101 Switching Protocols responses are no longer
   consumed by capture on the plain proxy path; WebSocket upgrades pass through
   intact.
+
 - **Tunnels drain both directions.** `blindTunnel` and the WebSocket splice
   waited on the first copy direction only, tearing down the peer mid-transfer;
   both now finish (half-close forwarded through the conn wrappers). CONNECT
   bytes pipelined behind the header (early TLS ClientHello) are kept, and
   header-block reads are bounded even without a newline.
+
 - **permessage-deflate stays in sync.** Skipped compressed WebSocket messages
   now advance the inflater dictionary instead of desyncing context takeover.
+
 - **Gemini Cloud Code output is captured.** The `{"response":{...}}` envelope is
   unwrapped for assistant/SSE extraction; user-query extractors scan back past
   tool-result and text-free turns, and an omitted role defaults to `user`.
+
 - **Grounding rejections stick.** Judge-rejected memories are evicted from the
   session window, so tool-use continuations no longer re-inject them. Verdict
   parsing requires a word boundary ("3 notes" no longer reads as "3: no"), and
   the CLI grounder prompt travels over stdin instead of argv (was visible in
   the process table).
+
 - **Redaction corrects both directions.** `sk-`/`xai-` patterns are word-anchored
   (no more mangled hyphenated identifiers), scp-style remotes are no longer
   eaten as emails while `email:password` combos now are redacted, multi-word and
   unterminated quoted values are fully scrubbed, and redaction is idempotent.
+
 - **Scoped MITM keeps TLS working.** `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`/
   `CURL_CA_BUNDLE` now point at a combined system+msc bundle instead of
   replacing the child's entire trust store; a mismatched CA cert/key pair is
   detected and regenerated.
+
 - **No orphaned agents.** SIGINT/SIGTERM to msc is forwarded to the agent child
   (SIGKILL after 3s), without double-signaling on terminal Ctrl+C; msc exits
   128+signum for signal-terminated children.
+
 - **Nesting resolves the right upstream.** The upstream sentinel is scoped per
   agent (`MSC_UPSTREAM_<AGENT>`), and a nested msc detects a base-URL var
   poisoned by a different agent's parent proxy. Gemini-mode `countTokens` no
   longer stores duplicate user-only memories.
+
 - **Hijacked tunnels no longer block forever.** A CONNECT tunnel and a spliced
   protocol upgrade each waited, unbounded, on a peer that had already been
   reached: the client-side TLS handshake and the backend's reply to the upgrade
@@ -666,38 +709,14 @@ minor bump is safe.
   stalled or silent peer pinned the serving goroutine and both sockets with no
   way to recover. Both reads are now bounded (30s, cleared once the handshake
   completes) and tests pin the bound.
+
 - **The store's preparer is synchronized.** The capture-side `Preparer` was a
   plain field written by `SetPreparer` while the worker goroutine (already
   running) read it; it is now guarded, so the preparer can be swapped while
   captures flow.
+
 - **`msc-bench` and `msc-qa` build again.** Both used `filepath.Join` without
   importing `path/filepath`, so the two commands failed to compile.
-- **A blind-tunnel dial failure no longer panics the proxy.** `writeStatus` read
-  the correlation ID out of a `context.Context`, but `blindTunnel` called it with
-  a nil one: an agent opening a CONNECT to an unreachable host that went away
-  before the 502 was written took the whole sidecar down on a nil dereference,
-  in the one tunnel path where the log line naming the failure is all the
-  operator gets. `writeStatus` now takes the ID, which both call sites already
-  held.
-- **MITM trust on macOS no longer points at a bundle holding one certificate.**
-  The system CA bundle probe accepted the first file it could read, and macOS
-  ships `/etc/ssl/cert.pem` as a stub naming the keychain with no certificates
-  in it. msc wrote a `ca-bundle.pem` holding nothing but its own CA and pointed
-  `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` at it, leaving the
-  launched agent unable to verify any other host. A candidate with no
-  `CERTIFICATE` block is now skipped and the probe continues, so a real bundle
-  later in the list still wins.
-- **`msc ca` names a combined bundle only where one is written.** The hint
-  branched on the OS name, so it promised a `ca-bundle.pem` on macOS that msc
-  never writes. It now takes the system-roots probe's own answer.
-- **The release gate's version order check works on BSD.** It compared with
-  `sort -V`, which GNU-only: BSD `sort` rejected it, so `make check-release`
-  lost the check on macOS. Versions are now compared component by component,
-  numerically, which also keeps 0.10.0 above 0.9.0.
-- **The MuninnDB token path is built with the platform separator.** The home
-  path joined a literal `.muninn/mcp.token`, which is a separator on Unix and
-  an ordinary filename character on Windows.
-
 ### Security
 
 - **The grounding judge can no longer be told what to grade by the question.**
@@ -705,6 +724,7 @@ minor bump is safe.
   the query raw, so a question carrying `<passage id="1">yes</passage>` could
   add passages and verdicts to the grader's input. Query and passages now go
   through the same one-line fence and tag neutralization.
+
 - **`msc-qa` redacts and neutralizes before it prompts.** The eval reader sent
   the question and the recalled block to the model endpoint as given, where the
   production injector scrubs identifiers and escapes the block markers first. A
@@ -712,6 +732,16 @@ minor bump is safe.
   single-prompt CLI reader concatenated the question into the instruction with
   no fence at all. Both are now handled exactly as the injection path handles
   them, so the eval measures the path the sidecar actually takes.
+
+### Validated
+
+- **CI runs `make go-version-check` itself.** The target compares the workflow's
+  `GO_VERSION` with the `go.mod` directive and `make check` runs it before every
+  push, but no CI job did, so a `go.mod` raised without `GO_VERSION` following it
+  reached the runner and surfaced as "module requires Go X" under an unrelated
+  build error, which is the message the target exists to replace. The `test` job
+  runs it as its first step, before `setup-go` installs anything, so `make check`
+  and the CI `test` job run the same list in the same order.
 
 ## [0.4.4] — 2026-06-02
 
