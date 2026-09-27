@@ -6,7 +6,6 @@ package inject
 import (
 	"context"
 	"encoding/json"
-	"hash/fnv"
 	"log/slog"
 	"sort"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/redact"
 	"github.com/maci0/muninn-sidecar/internal/reqid"
 	"github.com/maci0/muninn-sidecar/internal/stats"
+	"github.com/maci0/muninn-sidecar/internal/strhash"
 )
 
 // Config holds parameters for creating an Injector.
@@ -606,9 +606,7 @@ func (inj *Injector) currentMinScore() float64 {
 // hashQuery returns an FNV-1a hash of the recall query, used to detect that a
 // request is a continuation of the same user intent (so recall can be skipped).
 func hashQuery(query string) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(query))
-	return h.Sum64()
+	return strhash.FNV1a(query)
 }
 
 // groundMemories applies the answer-grounding rerank to the gated set: the top

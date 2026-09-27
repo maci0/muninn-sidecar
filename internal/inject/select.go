@@ -201,17 +201,29 @@ func wordSet(s string) []string {
 }
 
 // isNearDuplicate reports whether tokens overlaps any previously-kept token set
-// with Jaccard similarity at or above dupTokenOverlap.
+// with Jaccard similarity at or above dupTokenOverlap. The candidate's index is
+// built once and reused for every kept set, so the loop costs one map per
+// candidate rather than one per (candidate, kept) pair.
 func isNearDuplicate(tokens []string, kept [][]string) bool {
 	if len(tokens) == 0 {
 		return false
 	}
+	set := wordIndex(tokens)
 	for _, k := range kept {
-		if jaccard(tokens, k) >= dupTokenOverlap {
+		if jaccardIndexed(len(tokens), set, k) >= dupTokenOverlap {
 			return true
 		}
 	}
 	return false
+}
+
+// wordIndex turns a duplicate-free word set (see wordSet) into a lookup map.
+func wordIndex(words []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(words))
+	for _, w := range words {
+		set[w] = struct{}{}
+	}
+	return set
 }
 
 // jaccard returns the Jaccard similarity (|A∩B| / |A∪B|) of two word sets.
@@ -220,17 +232,23 @@ func jaccard(a, b []string) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
 	}
-	set := make(map[string]struct{}, len(a))
-	for _, w := range a {
-		set[w] = struct{}{}
+	return jaccardIndexed(len(a), wordIndex(a), b)
+}
+
+// jaccardIndexed is jaccard with the caller's word index of a supplied
+// instead of building one, so a caller comparing one set against many can
+// build the index once.
+func jaccardIndexed(aLen int, aSet map[string]struct{}, b []string) float64 {
+	if aLen == 0 || len(b) == 0 {
+		return 0
 	}
 	inter := 0
 	for _, w := range b {
-		if _, ok := set[w]; ok {
+		if _, ok := aSet[w]; ok {
 			inter++
 		}
 	}
-	union := len(a) + len(b) - inter
+	union := aLen + len(b) - inter
 	if union == 0 {
 		return 0
 	}

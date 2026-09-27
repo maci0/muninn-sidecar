@@ -118,6 +118,11 @@ type Proxy struct {
 	// so writing RootCAs into it would race with those clones.
 	mitmRootsMu sync.RWMutex
 	mitmRoots   *x509.CertPool
+
+	// dialer is the one net.Dialer both transports share. It holds no mutable
+	// state, and dialMITMTLS dials through it rather than allocating one per
+	// forward-leg connection.
+	dialer *net.Dialer
 }
 
 // Config holds the parameters for creating a Proxy.
@@ -195,9 +200,9 @@ func New(cfg Config) (*Proxy, error) {
 	// goes quiet pins the agent's turn and the proxy's connection forever.
 	// 5 minutes covers a slow-to-first-byte LLM endpoint while still failing
 	// instead of hanging.
-	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	p.dialer = &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
-		DialContext:           dialer.DialContext,
+		DialContext:           p.dialer.DialContext,
 		TLSHandshakeTimeout:   30 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Minute,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS13},
@@ -212,7 +217,7 @@ func New(cfg Config) (*Proxy, error) {
 	// TLSClientConfig) so the verification roots can be swapped at runtime
 	// without racing the transport's per-dial clone.
 	p.mitmTransport = &http.Transport{
-		DialContext:           dialer.DialContext,
+		DialContext:           p.dialer.DialContext,
 		DialTLSContext:        p.dialMITMTLS,
 		TLSHandshakeTimeout:   30 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Minute,
@@ -307,7 +312,7 @@ func (p *Proxy) mitmRootCAs() *x509.CertPool {
 // The dial honors the request context, so an agent that disconnects mid-turn
 // stops the connect attempt instead of holding it for the full dial timeout.
 func (p *Proxy) dialMITMTLS(ctx context.Context, network, addr string) (net.Conn, error) {
-	raw, err := (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, addr)
+	raw, err := p.dialer.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}

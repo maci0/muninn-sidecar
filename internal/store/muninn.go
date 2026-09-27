@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -21,6 +20,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/redact"
 	"github.com/maci0/muninn-sidecar/internal/reqid"
 	"github.com/maci0/muninn-sidecar/internal/stats"
+	"github.com/maci0/muninn-sidecar/internal/strhash"
 )
 
 // dedupRingSize is the number of slots in the dedup ring buffer.
@@ -546,9 +546,7 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	content := sb.String()
 
 	// Dedup by concept hash (FNV-1a). Skip if seen in any ring slot.
-	h := fnv.New64a()
-	h.Write([]byte(concept))
-	hash := h.Sum64()
+	hash := strhash.FNV1a(concept)
 
 	for i := range ring {
 		if ring[i] != nil {
