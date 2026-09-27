@@ -2422,7 +2422,7 @@ func TestStreamCaptureRecordsFullStreamLatency(t *testing.T) {
 	if n, err := sc.Read(buf); n == 0 || (err != nil && err != io.EOF) {
 		t.Fatalf("read: n=%d err=%v", n, err)
 	}
-	clock.advance(2 * time.Second)
+	clock.Advance(2 * time.Second)
 	sc.Close()
 
 	if n, _, max := st.Latency(); n != 1 || max != 2000 {

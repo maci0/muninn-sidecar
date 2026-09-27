@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/clock"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/redact"
@@ -33,6 +34,12 @@ type Config struct {
 	AutoCalibrate bool          // self-tune MinScore from observed recall-score distribution (the sidecar enables this; New() callers default off)
 	Timeout       time.Duration // MCP call timeout (default: 200ms)
 	Stats         *stats.Stats  // session statistics (nil-safe)
+
+	// Clock is the injector's time source (the project's single clock, see
+	// internal/clock): the intent cache's freshness is read from it, so a
+	// simulator can age the cache without waiting out intentCacheTTL. nil =
+	// system clock.
+	Clock clock.Clock
 
 	// Grounder, when set, adds an LLM answer-grounding rerank after the cosine
 	// gate: each freshly-recalled candidate (top GroundTopK by score) is dropped
@@ -116,7 +123,7 @@ type Injector struct {
 	autoCalibrate bool
 	timeout       time.Duration
 	stats         *stats.Stats
-	now           func() time.Time // wall clock for the intent-cache TTL (tests substitute it)
+	clock         clock.Clock // time source for the intent-cache TTL
 
 	grounder   grounding.Grounder // optional answer-grounding rerank (nil = cosine gate only)
 	groundTopK int
@@ -155,6 +162,10 @@ type Injector struct {
 
 // New creates an Injector with the given configuration.
 func New(cfg Config) *Injector {
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.SystemClock{}
+	}
 	if cfg.Vault == "" {
 		cfg.Vault = "sidecar"
 	}
@@ -206,7 +217,7 @@ func New(cfg Config) *Injector {
 		autoCalibrate:  cfg.AutoCalibrate,
 		timeout:        cfg.Timeout,
 		stats:          cfg.Stats,
-		now:            time.Now,
+		clock:          clk,
 		grounder:       cfg.Grounder,
 		groundTopK:     cfg.GroundTopK,
 		recentMemories: make(map[string]trackedMemory),
@@ -336,7 +347,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	// The cached verdict only stands in for a fresh recall while it is young.
 	// Past intentCacheTTL the vault may hold memories this query would now
 	// match (the sidecar writes to it throughout the session), so ask again.
-	cachedFresh := inj.hasLastQuery && inj.now().Sub(inj.lastQueryAt) < intentCacheTTL
+	cachedFresh := inj.hasLastQuery && inj.clock.Now().Sub(inj.lastQueryAt) < intentCacheTTL
 	sameIntent := cachedFresh && (qhash == inj.lastQueryHash ||
 		(inj.querySimReuse < 1 && len(inj.lastQueryTokens) > 0 &&
 			jaccard(curTokens, inj.lastQueryTokens) >= inj.querySimReuse))
@@ -401,7 +412,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 		inj.lastQueryTokens = curTokens
 		inj.hasLastQuery = true
 		inj.lastWasEmpty = len(inj.recentMemories) == 0
-		inj.lastQueryAt = inj.now()
+		inj.lastQueryAt = inj.clock.Now()
 		inj.mu.Unlock()
 	}
 

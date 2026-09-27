@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/clock"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/redact"
 	"github.com/maci0/muninn-sidecar/internal/stats"
@@ -68,6 +69,12 @@ type MuninnStore struct {
 	// unreachable instead of retrying 6s per queued batch.
 	flushCtx    context.Context
 	flushCancel context.CancelFunc
+
+	// clock drives every timing decision the worker makes: the flush ticker,
+	// the dedup ring's expiry, the retry backoff, and the drain deadline. It is
+	// fixed at construction, so a simulator's scripted clock and the worker's
+	// timers cannot race.
+	clock clock.Clock
 }
 
 // drainTimeout bounds total shutdown flushing. It exceeds one batch's full retry
@@ -116,8 +123,19 @@ type CapturedExchange struct {
 // for an extended period, new captures are dropped rather than letting
 // memory grow unbounded. Pass a non-nil Stats to track session metrics.
 func New(mcpURL, token, vault string, st *stats.Stats) *MuninnStore {
+	return NewWithClock(mcpURL, token, vault, st, nil)
+}
+
+// NewWithClock is New with an explicit clock; a nil clock means the system
+// clock. Every timing decision the worker makes comes from it, so a simulator
+// can drive flushes, dedup expiry, and retry backoff from a script and get the
+// same delivery sequence on every run.
+func NewWithClock(mcpURL, token, vault string, st *stats.Stats, clk clock.Clock) *MuninnStore {
 	if vault == "" {
 		vault = "sidecar"
+	}
+	if clk == nil {
+		clk = clock.SystemClock{}
 	}
 	s := &MuninnStore{
 		vault: vault,
@@ -128,6 +146,7 @@ func New(mcpURL, token, vault string, st *stats.Stats) *MuninnStore {
 		queue: make(chan *CapturedExchange, 256),
 		done:  make(chan struct{}),
 		stats: st,
+		clock: clk,
 	}
 	s.flushCtx, s.flushCancel = context.WithCancel(context.Background())
 	s.redact.Store(true) // secure default: scrub secrets before storage
@@ -208,7 +227,7 @@ func (s *MuninnStore) Drain() {
 		// Bound shutdown: cancel flush retries after drainTimeout so a queued
 		// backlog against an unreachable MuninnDB can't hang exit. Normal flushes
 		// before this fires keep their full retry budget.
-		time.AfterFunc(drainTimeout, s.flushCancel)
+		s.clock.AfterFunc(drainTimeout, s.flushCancel)
 		close(s.queue)
 	})
 	<-s.done
@@ -244,7 +263,7 @@ func (s *MuninnStore) worker() {
 	var batch []formattedMemory
 	var dedupRing [dedupRingSize]map[uint64]struct{}
 	ringIdx := 0
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := s.clock.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -263,7 +282,7 @@ func (s *MuninnStore) worker() {
 				s.flushFormatted(batch)
 				batch = nil
 			}
-		case <-ticker.C:
+		case <-ticker.C():
 			if len(batch) > 0 {
 				s.flushFormatted(batch)
 				batch = nil
@@ -498,7 +517,7 @@ func (s *MuninnStore) callTool(name string, args map[string]any) error {
 			// Interruptible backoff: a Drain deadline cancels flushCtx so we
 			// don't sleep through shutdown.
 			select {
-			case <-time.After(backoff):
+			case <-s.clock.After(backoff):
 			case <-s.flushCtx.Done():
 				return s.flushCtx.Err()
 			}

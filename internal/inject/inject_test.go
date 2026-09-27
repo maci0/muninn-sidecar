@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/clock"
 	"github.com/maci0/muninn-sidecar/internal/redact"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
@@ -358,9 +359,8 @@ func TestNegativeCacheExpires(t *testing.T) {
 	})
 	defer srv.Close()
 
-	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
-	clock := time.Now()
-	inj.now = func() time.Time { return clock }
+	clk := clock.NewFake()
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Clock: clk})
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"how do we deploy"}]}`)
 	inj.Enrich(t.Context(), body)
@@ -371,7 +371,7 @@ func TestNegativeCacheExpires(t *testing.T) {
 	}
 
 	// Past it, the vault is re-queried.
-	clock = clock.Add(intentCacheTTL + time.Second)
+	clk.Advance(intentCacheTTL + time.Second)
 	inj.Enrich(t.Context(), body)
 	if got := recalls.Load(); got != 2 {
 		t.Errorf("recall fired %d times, want 2 after the intent cache expired", got)
@@ -390,9 +390,8 @@ func TestIntentWindowReuseExpires(t *testing.T) {
 	})
 	defer srv.Close()
 
-	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
-	clock := time.Now()
-	inj.now = func() time.Time { return clock }
+	clk := clock.NewFake()
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048, Clock: clk})
 
 	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"how do we deploy"}]}`)
 	inj.Enrich(t.Context(), body)
@@ -401,7 +400,7 @@ func TestIntentWindowReuseExpires(t *testing.T) {
 		t.Fatalf("recall fired %d times for a continuation, want 1 (window reuse)", got)
 	}
 
-	clock = clock.Add(intentCacheTTL + time.Second)
+	clk.Advance(intentCacheTTL + time.Second)
 	inj.Enrich(t.Context(), body)
 	if got := recalls.Load(); got != 2 {
 		t.Errorf("recall fired %d times, want 2 after the intent cache expired", got)

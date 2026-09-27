@@ -5,25 +5,6 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Non-ASCII text no longer breaks at a character boundary.** The `msc-eval`
-  and `msc-qa` report tables clipped a scenario name or model label by byte, so
-  a multi-byte character (CJK, emoji) was cut in half and the row ended in a
-  replacement character; both count characters now. A capped text delta in the
-  SSE and WebSocket paths trimmed bytes from the end until the string decoded,
-  which discarded every character after a stray invalid byte in the delta rather
-  than just the incomplete tail; only the tail is dropped now. The bounded
-  capture buffer kept the last N bytes of a stream, which can start part-way
-  through a character, so its contents could no longer decode; it now advances
-  to the first whole character.
-- **A Unicode host is refused when minting a certificate.** SNI and CONNECT
-  carry punycode, and a certificate SAN cannot hold a non-ASCII name, so
-  `--mitm-host` or a CONNECT naming `münchen.de` failed deep inside x509 (or,
-  when only interception was scoped, silently blind-tunneled the host). The
-  error now names the punycode form to use, and a host with an explicit DNS
-  root (`api.openai.com.`) mints the same leaf as one without.
-
 ### Changed
 
 - **Captured bodies are decoded once.** A captured request carries the whole
@@ -36,6 +17,15 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Added
 
+- **One clock for the whole sidecar.** `internal/clock` holds the project's only
+  time source: `Clock` (now, elapsed, `After`, `NewTicker`, `AfterFunc`),
+  `SystemClock` for production, and `Fake`, a manually advanced clock. The
+  capture path's `proxy.Clock` is now that clock, and the store worker
+  (`store.NewWithClock`) and the injector (`inject.Config.Clock`) read it too, so
+  the store's flush ticker, dedup-ring expiry, retry backoff, and drain deadline
+  and the injector's intent-cache TTL advance on a script instead of wall time.
+  A simulated session can be replayed step for step, and the store's retry test
+  no longer spends ~6s of real backoff.
 - **The session is observable.** `--debug` output and the end-of-session summary
   were the only view of a session, and neither said which turn a line belonged to
   or which dependency had failed. Four things ship together:
@@ -75,6 +65,22 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **Non-ASCII text no longer breaks at a character boundary.** The `msc-eval`
+  and `msc-qa` report tables clipped a scenario name or model label by byte, so
+  a multi-byte character (CJK, emoji) was cut in half and the row ended in a
+  replacement character; both count characters now. A capped text delta in the
+  SSE and WebSocket paths trimmed bytes from the end until the string decoded,
+  which discarded every character after a stray invalid byte in the delta rather
+  than just the incomplete tail; only the tail is dropped now. The bounded
+  capture buffer kept the last N bytes of a stream, which can start part-way
+  through a character, so its contents could no longer decode; it now advances
+  to the first whole character.
+- **A Unicode host is refused when minting a certificate.** SNI and CONNECT
+  carry punycode, and a certificate SAN cannot hold a non-ASCII name, so
+  `--mitm-host` or a CONNECT naming `münchen.de` failed deep inside x509 (or,
+  when only interception was scoped, silently blind-tunneled the host). The
+  error now names the punycode form to use, and a host with an explicit DNS
+  root (`api.openai.com.`) mints the same leaf as one without.
 - **Windows stopped getting Unix-only behavior.** A run from a drive root named
   the vault `\` instead of falling back to `sidecar`; the token file and MITM CA
   key warned about "overly permissive permissions" on every run, because Go

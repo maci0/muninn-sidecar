@@ -7,9 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	"github.com/maci0/muninn-sidecar/internal/clock"
 )
 
 // fakeClock is a manually advanced clock: every capture timestamp and duration
@@ -17,40 +18,21 @@ import (
 // sequence produces byte-identical exchanges.
 //
 // It is read from the upstream handler goroutine and advanced from the test
-// goroutine, so every access is under the mutex.
+// goroutine, so clock.Fake's own locking covers both.
 type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
+	*clock.Fake
 }
 
 func newFakeClock() *fakeClock {
-	return &fakeClock{now: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) Since(t time.Time) time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now.Sub(t)
-}
-
-func (c *fakeClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
+	return &fakeClock{Fake: clock.NewFake()}
 }
 
 func TestCaptureIsReplayableFromClock(t *testing.T) {
 	// The upstream advances the scripted clock while the request is in flight, so
 	// each captured duration is exactly the scripted 1500ms.
-	var clock *fakeClock
+	var clk *fakeClock
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clock.advance(1500 * time.Millisecond)
+		clk.Advance(1500 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"id":"msg_1","content":[{"type":"text","text":"hi"}]}`)
 	}))
@@ -67,15 +49,15 @@ func TestCaptureIsReplayableFromClock(t *testing.T) {
 	// taken at request start and followed by the upstream's 1500ms advance while
 	// the request is in flight.
 	run := func() (string, time.Duration) {
-		clock = newFakeClock()
-		base := clock.Now()
+		clk = newFakeClock()
+		base := clk.Now()
 		rec := &recordStore{}
 		p, err := New(Config{
 			ListenAddr: "127.0.0.1:0",
 			Upstream:   upstream.URL,
 			AgentName:  "test-agent",
 			Store:      rec,
-			Clock:      clock,
+			Clock:      clk,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -87,7 +69,7 @@ func TestCaptureIsReplayableFromClock(t *testing.T) {
 		t.Cleanup(func() { p.Shutdown(context.Background()) })
 
 		for i := 0; i < 3; i++ {
-			clock.advance(10 * time.Second)
+			clk.Advance(10 * time.Second)
 			resp, err := http.Post("http://"+addr+"/v1/messages", "application/json",
 				strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
 			if err != nil {
@@ -102,7 +84,7 @@ func TestCaptureIsReplayableFromClock(t *testing.T) {
 			out.Write(b)
 			out.WriteByte('\n')
 		}
-		return out.String(), clock.Since(base)
+		return out.String(), clk.Now().Sub(base)
 	}
 
 	first, firstElapsed := run()

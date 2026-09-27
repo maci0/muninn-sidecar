@@ -282,9 +282,15 @@ Both the `store` and `inject` packages communicate with MuninnDB via JSON-RPC 2.
 
 ### Injected Clock and Deterministic Ordering
 
-The capture path reads wall-clock time only through the `proxy.Clock` interface (`internal/proxy/clock.go`). `Config.Clock` supplies it and `SystemClock` is the default, so a test or simulator can drive request timestamps and durations from a scripted clock and replay a request sequence byte-for-byte (`TestCaptureIsReplayableFromClock`).
+`internal/clock` holds the project's only clock: `Clock` (now, elapsed, `After`, `NewTicker`, `AfterFunc`), `SystemClock` for production, and `Fake`, a manually advanced clock a test or simulator drives. Every timing decision on the capture, injection, and delivery paths reads it, so a scripted run replays step for step:
+
+- **Capture** — `proxy.Clock` (an alias of `clock.Clock`) supplies the request timestamps and durations written to a `CapturedExchange`; `Config.Clock` is the seam and `TestCaptureIsReplayableFromClock` replays a request sequence byte-for-byte.
+- **Store worker** — the flush ticker, the dedup ring's expiry, the retry backoff, and the drain deadline all come from `store.NewWithClock`'s clock, so flush cycles and retry budgets advance on simulated time instead of holding a run for the ~6s of real backoff they represent (`TestFlushesRunOnTheInjectedClock`, `TestRetryBackoffRunsOnTheInjectedClock`, `TestDedupRingExpiresOnTheInjectedClock`).
+- **Injector** — `inject.Config.Clock` ages the intent cache, so a continuation's window reuse and its expiry are both scriptable without waiting out the TTL.
 
 Ordering that reaches stored or injected output is pinned the same way. The session memory window is a Go map, so `sortByScore` (`internal/inject/window.go`) sorts by effective score and breaks ties on memory ID; without it, equally scored memories would swap places between the near-duplicate filter, the token budget, and the injected block on every run. `stats.Models` applies the same tiebreak so the session summary's model line is stable.
+
+Randomized evaluation arms (`internal/inject/eval_study.go`, `eval_window.go`) take their seed as a parameter and build a dedicated `rand.Rand` from it, so a reported F1 or decay curve is reproducible from the seed it was printed with. Cryptographic randomness (`internal/mitm/ca.go`: CA keys, nonces, serial numbers) stays on `crypto/rand` and is deliberately not seeded.
 
 ## Observability
 
