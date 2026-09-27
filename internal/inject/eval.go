@@ -131,7 +131,7 @@ func runScenario(s EvalScenario, minScore float64, budget int) EvalResult {
 	injectedRelevant, injectedTokens, relevantTokens := 0, 0, 0
 	for _, m := range injected {
 		injectedEval = append(injectedEval, cand[m.ID])
-		tok := entryChars(m) / charPerToken
+		tok := entryBytes(m) / charPerToken
 		injectedTokens += tok
 		rel := 0
 		if label[m.ID] {

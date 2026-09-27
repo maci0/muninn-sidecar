@@ -545,3 +545,28 @@ func FuzzSplitQuery(f *testing.F) {
 		}
 	})
 }
+
+// TestSplitQueryNonASCIIUppercase pins that entity extraction sees uppercase
+// letters outside A-Z. A German sentence-initial noun, a Cyrillic proper noun,
+// and a Greek one all carry no ASCII uppercase, so the previous 'A'..'Z' range
+// test returned the full query alone and multi-hop recall silently degraded to
+// a single recall.
+func TestSplitQueryNonASCIIUppercase(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"german noun", "Welche Migrationsstrategie gilt für Postgres?", "Migrationsstrategie"},
+		{"cyrillic", "Кто основал 北京?", "北京"},
+		{"greek", "Ποιος έγραψε τον Ωμηρικό;", "Ωμηρικό"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			joined := strings.Join(splitQuery(tc.query), "|")
+			if !strings.Contains(joined, tc.want) {
+				t.Errorf("entity span %q not extracted from %q: %v", tc.want, tc.query, splitQuery(tc.query))
+			}
+		})
+	}
+}

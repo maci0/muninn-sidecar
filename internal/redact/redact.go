@@ -99,7 +99,21 @@ var patterns = []*regexp.Regexp{
 // other tail (email:password combo dumps, URL-embedded credentials) is redacted
 // together with the email. The base grammar admits no ':', so a colon in the
 // match always means the tail fired.
-var emailPattern = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}(?::\S+)?`)
+//
+// The local part and every domain label are Unicode classes, not [A-Za-z0-9]:
+// an ASCII-only grammar matches none of "user@почта.рф", "ünïcödé@dömain.de",
+// or "josé@例え.jp", so every internationalized address a user pastes into a
+// session would persist unredacted in long-term memory. \p{M} is carried in the
+// local part and labels so a decomposed (NFD) spelling — what macOS filesystems
+// and many IMAP servers hand out — still matches as one address instead of
+// breaking at the combining accent. Each label must start with a letter or
+// digit, which keeps the pattern from matching a bare "@" or a trailing
+// punctuation dot. A punycode TLD (xn--p1ai) is ASCII and already matched; the
+// display form of the same domain is what the classes above now cover.
+var emailPattern = regexp.MustCompile(
+	`[\p{L}\p{N}][\p{L}\p{N}\p{M}._%+\-]*@` +
+		`[\p{L}\p{N}\p{M}][\p{L}\p{N}\p{M}\-]*(?:\.[\p{L}\p{N}\p{M}][\p{L}\p{N}\p{M}\-]*)*` +
+		`\.[\p{L}]{2,}(?::\S+)?`)
 
 // kvPattern catches sensitive key=value / key: value assignments — the dominant
 // real-world leak vector (a pasted .env file or shell export, where the value

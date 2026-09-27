@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
@@ -305,8 +306,13 @@ func splitQuery(q string) []string {
 		}
 	}
 	for _, w := range words {
+		// unicode.IsUpper, not an 'A'..'Z' range test: a German noun ("Migrations-
+		// strategie"), a Turkish or Cyrillic proper noun, and any CJK entity carry
+		// no ASCII uppercase at all, so the range test silently extracted no
+		// sub-queries for those queries and multi-hop recall collapsed to a single
+		// recall of the whole question.
 		r := []rune(w)
-		if len(r) > 0 && r[0] >= 'A' && r[0] <= 'Z' {
+		if len(r) > 0 && unicode.IsUpper(r[0]) {
 			cur = append(cur, w)
 		} else {
 			flush()

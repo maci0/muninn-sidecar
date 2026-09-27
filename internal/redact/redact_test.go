@@ -187,3 +187,45 @@ func FuzzRedactSecrets(f *testing.F) {
 		}
 	})
 }
+
+// TestRedactInternationalEmail covers addresses an ASCII-only grammar misses
+// entirely: a non-ASCII local part, an IDN domain in display form, and a
+// decomposed (NFD) spelling as macOS filesystems and IMAP servers hand out.
+// Each of these reached long-term memory unredacted before the pattern took
+// Unicode classes.
+func TestRedactInternationalEmail(t *testing.T) {
+	// NFD: "jose" + combining acute, the form a macOS HFS+/APFS filename or an
+	// Apple Mail address arrives in. Assembled at runtime so the source file
+	// stays in one normalization form.
+	nfdJose := "jos" + "e" + string(rune(0x0301))
+	cases := []struct {
+		name  string
+		email string
+	}{
+		{"cyrillic domain", "user" + "@" + "почта.рф"},
+		{"accented local part", "jos" + string(rune(0x00E9)) + "@" + "dömain.de"},
+		{"decomposed local part", nfdJose + "@" + "example.com"},
+		{"all non-ascii", "почта" + "@" + "почта.рф"},
+		{"non-ascii with password tail", "user" + "@" + "почта.рф:hunter2pass99"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := "reach me at " + tc.email + " any time"
+			got := Secrets(in)
+			if strings.Contains(got, tc.email) {
+				t.Errorf("address survived redaction: %q", got)
+			}
+			if !strings.Contains(got, Marker) {
+				t.Errorf("no marker inserted: %q", got)
+			}
+			if !strings.HasPrefix(got, "reach me at ") || !strings.HasSuffix(got, " any time") {
+				t.Errorf("surrounding text damaged: %q", got)
+			}
+		})
+	}
+
+	// A punycode TLD and an scp remote both still classify correctly.
+	if got := Secrets("clone git" + "@" + "github.com:org/repo.git"); strings.Contains(got, Marker) {
+		t.Errorf("scp remote redacted: %q", got)
+	}
+}

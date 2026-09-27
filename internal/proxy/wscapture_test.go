@@ -3,10 +3,12 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"io"
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
@@ -267,4 +269,49 @@ func TestWSExchangeNoRequestNoStore(t *testing.T) {
 	if n := len(rec.all()); n != 0 {
 		t.Fatalf("response with no request should store nothing, got %d", n)
 	}
+}
+
+// TestWSExchangeDeltaCapClamped pins that accumulated assistant text stays
+// within wsMaxRespText even when a single delta exceeds it, and that the cap
+// never lands mid-rune. The previous form appended each delta whole, so one
+// oversized delta carried the accumulator past the cap by its full length; the
+// multi-byte delta here is the case that would also leave a partial rune, which
+// marshals as U+FFFD into stored memory.
+func TestWSExchangeDeltaCapClamped(t *testing.T) {
+	rec := &recordStore{}
+	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}, target: "t"}
+
+	ex.onClient("c->s", []byte(`{"type":"response.create","model":"gpt-5","input":[{"type":"message","role":"user","content":"q"}]}`))
+	// Each delta is 3 bytes per CJK rune, so the cap lands mid-sequence.
+	big := strings.Repeat("日", wsMaxRespText/3+100)
+	for range 4 {
+		ex.onServer("s->c", []byte(`{"type":"response.output_text.delta","delta":`+mustJSON(t, big)+`}`))
+	}
+	ex.onServer("s->c", []byte(`{"type":"response.completed"}`))
+
+	if ex.respText.Len() > wsMaxRespText {
+		t.Fatalf("accumulated %d bytes, cap is %d", ex.respText.Len(), wsMaxRespText)
+	}
+	got := rec.all()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 stored exchange, got %d", len(got))
+	}
+	var body struct {
+		Content []struct{ Text string } `json:"content"`
+	}
+	if err := json.Unmarshal(got[0].RespBody, &body); err != nil {
+		t.Fatalf("stored response body is not valid JSON: %v", err)
+	}
+	if !utf8.ValidString(body.Content[0].Text) {
+		t.Errorf("cap split a multi-byte sequence: %q", body.Content[0].Text[len(body.Content[0].Text)-8:])
+	}
+}
+
+func mustJSON(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(b)
 }

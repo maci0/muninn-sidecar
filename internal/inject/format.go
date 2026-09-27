@@ -14,11 +14,17 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
-// entryChars estimates the character length a memory contributes to a context
-// block without allocating an intermediate string. Format is
+// entryBytes estimates how many bytes a memory contributes to a context block
+// without allocating an intermediate string. Format is
 // "[" + concept + "] (relevance: X.XX)\n" + content + "\n\n"; the fixed overhead
-// is 23 chars since the "%.2f" score is always 4 chars for values in [0,1].
-func entryChars(m memory) int {
+// is 23 bytes since the "%.2f" score is always 4 bytes for values in [0,1].
+//
+// The unit is bytes, not characters: charPerToken is a bytes-per-token
+// heuristic, and tokenizers charge by encoded length, so a CJK or emoji memory
+// costs proportionally more than its character count suggests. Renaming from
+// entryChars keeps the "chars" in the names and in charPerToken from claiming
+// a precision the measurement does not have.
+func entryBytes(m memory) int {
 	return len(m.Concept) + len(m.Content) + 23
 }
 
@@ -34,25 +40,25 @@ func withinBudget(memories []memory, budget int) []memory {
 
 	// budget is user-supplied (`--inject-budget`); `budget * charPerToken`
 	// overflows int for a budget above MaxInt/4, and the wrapped negative
-	// budgetChars would then make every memory after the first exceed the
+	// budgetBytes would then make every memory after the first exceed the
 	// budget, silently degrading a huge budget to a single memory. Clamp
 	// instead: a budget that large already admits every memory.
-	budgetChars := budget
-	if budgetChars > math.MaxInt/charPerToken {
-		budgetChars = math.MaxInt
+	budgetBytes := budget
+	if budgetBytes > math.MaxInt/charPerToken {
+		budgetBytes = math.MaxInt
 	} else {
-		budgetChars *= charPerToken
+		budgetBytes *= charPerToken
 	}
-	totalChars := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
+	totalBytes := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
 
 	kept := make([]memory, 0, len(memories))
 	for _, m := range memories {
-		entryLen := entryChars(m)
-		if totalChars+entryLen > budgetChars && len(kept) > 0 {
+		entryLen := entryBytes(m)
+		if totalBytes+entryLen > budgetBytes && len(kept) > 0 {
 			break
 		}
 		kept = append(kept, m)
-		totalChars += entryLen
+		totalBytes += entryLen
 	}
 	return kept
 }
@@ -74,7 +80,7 @@ func formatContextBlock(memories []memory, budget int) (string, int, int) {
 	sb.WriteString(apiformat.ContextPrefix)
 	sb.WriteString("\n")
 
-	totalChars := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
+	totalBytes := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
 	for _, m := range kept {
 		// Defense in depth: scrub secrets from recalled content before it is
 		// injected into the outgoing request. A memory stored by another client
@@ -89,13 +95,13 @@ func formatContextBlock(memories []memory, budget int) (string, int, int) {
 		sb.WriteString(")\n")
 		sb.WriteString(content)
 		sb.WriteString("\n\n")
-		totalChars += len(concept) + len(content) + 23
+		totalBytes += len(concept) + len(content) + 23
 	}
 
 	sb.WriteString(apiformat.ContextSuffix)
 
-	tokens := totalChars / charPerToken
-	if tokens == 0 && totalChars > 0 {
+	tokens := totalBytes / charPerToken
+	if tokens == 0 && totalBytes > 0 {
 		tokens = 1
 	}
 	return sb.String(), tokens, dropped

@@ -83,8 +83,16 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 	}
 	switch env.Type {
 	case "response.output_text.delta":
-		if env.Delta != "" && e.respText.Len() < wsMaxRespText {
-			e.respText.WriteString(env.Delta)
+		// Clamp to the cap instead of testing it: a single delta is appended
+		// whole, so the previous form let a long delta overshoot wsMaxRespText by
+		// its full length. clampBytes keeps the cap from landing mid-rune, the
+		// same guard the SSE path applies to text deltas.
+		if e.respText.Len() < wsMaxRespText {
+			delta := env.Delta
+			if remaining := wsMaxRespText - e.respText.Len(); len(delta) > remaining {
+				delta = clampBytes(delta, remaining)
+			}
+			e.respText.WriteString(delta)
 		}
 	case "response.completed":
 		text := strings.TrimSpace(e.respText.String())
@@ -112,7 +120,7 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 			StatusCode: 200,
 			RespBody:   respBody,
 		})
-		slog.Debug("ws capture: stored exchange", "target", e.target, "resp_chars", len(text))
+		slog.Debug("ws capture: stored exchange", "target", e.target, "resp_bytes", len(text))
 	}
 }
 
