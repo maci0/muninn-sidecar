@@ -931,6 +931,13 @@ func redactURL(u *url.URL) string {
 	if redacted.RawQuery != "" {
 		redacted.RawQuery = "[redacted]"
 	}
+	// A URL with no "//" after the scheme is opaque, and its userinfo stays
+	// inside Opaque as literal text (net/url populates User only for the
+	// hierarchical form), so it must be redacted there too. The last '@' is
+	// the separator, matching how url.Userinfo is derived.
+	if i := strings.LastIndex(redacted.Opaque, "@"); i >= 0 {
+		redacted.Opaque = "[redacted]@" + redacted.Opaque[i+1:]
+	}
 	if redacted.User != nil {
 		redacted.User = url.User("[redacted]")
 	}

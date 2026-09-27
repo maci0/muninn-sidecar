@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"encoding/json"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/maci0/muninn-sidecar/internal/store"
@@ -181,6 +183,56 @@ func FuzzProcessChunk(f *testing.F) {
 		}
 		if out := sc.buildRespBody(); !json.Valid(out) {
 			t.Fatalf("buildRespBody produced invalid JSON after processChunk: %q", out)
+		}
+	})
+}
+
+// FuzzRedactURL drives the log-sanitizer over arbitrary request targets. The
+// URL is attacker-supplied (absolute-form request line, redirect Location),
+// and the output goes straight into logs and stored exchange records, so the
+// contract is that no credential material survives it: the userinfo, in both
+// the hierarchical form net/url parses into User and the opaque form (scheme
+// with no "//") where it stays literal text inside Opaque. The fuzzer finds
+// the URL shapes; the assertion is what makes a leak a failure.
+func FuzzRedactURL(f *testing.F) {
+	f.Add("https://api.example.com/v1/messages")
+	f.Add("https://generativelanguage.googleapis.com/v1?key=supersecret")
+	f.Add("https://user:supersecret@api.example.com/v1")
+	f.Add("https:user:supersecret@api.example.com/v1")
+	f.Add("//user:supersecret@host/p")
+	f.Add("https://host/p#access_token=supersecret")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, raw string) {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+		out := redactURL(u)
+
+		// The userinfo must be the marker and nothing else. The check is on the
+		// rendered prefix, not on a substring: a credential that also occurs in
+		// the host or path would otherwise mask a leak in either direction. The
+		// marker itself does not re-parse (brackets are illegal in userinfo), so
+		// the output cannot be round-tripped through url.Parse.
+		wantPrefix := ""
+		switch {
+		case u.User != nil:
+			sep := "://"
+			if u.Scheme == "" {
+				sep = "//" // scheme-relative reference
+			}
+			wantPrefix = u.Scheme + sep + "[redacted]@"
+		case strings.LastIndex(u.Opaque, "@") >= 0:
+			wantPrefix = u.Scheme + ":[redacted]@"
+		}
+		if wantPrefix != "" && !strings.HasPrefix(out, wantPrefix) {
+			t.Fatalf("redactURL(%q) = %q does not start with %q", raw, out, wantPrefix)
+		}
+		// Redaction may only rewrite the credential carriers: the host is what
+		// makes the log line diagnosable. A redacted userinfo is not
+		// re-parseable, so the comparison only runs when it is absent.
+		if red, err := url.Parse(out); err == nil && u.Host != "" && red.Hostname() != u.Hostname() {
+			t.Fatalf("redactURL(%q) = %q changed the host %q to %q", raw, out, u.Hostname(), red.Hostname())
 		}
 	})
 }

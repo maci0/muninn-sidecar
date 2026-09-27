@@ -2091,6 +2091,14 @@ func TestRedactURL(t *testing.T) {
 			rawURL: "https://u:p@api.example.com/v1?key=k#tok=t",
 			want:   "https://[redacted]@api.example.com/v1?[redacted]#[redacted]",
 		},
+		{
+			// An opaque URL (scheme, then no "//") keeps its userinfo inside
+			// Opaque, where url.Userinfo is never populated, so String() renders
+			// it verbatim. It reaches redactURL from a client-supplied
+			// absolute-form request target.
+			rawURL: "https:user:supersecret@api.example.com/v1",
+			want:   "https:[redacted]@api.example.com/v1",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.rawURL, func(t *testing.T) {

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"compress/flate"
 	"encoding/binary"
@@ -242,6 +243,113 @@ func FuzzReadWSFrame(f *testing.F) {
 		fr, err := readWSFrame(bytes.NewReader(data))
 		if err == nil && len(fr.payload) > wsMaxMessage {
 			t.Fatalf("payload exceeds max: %d", len(fr.payload))
+		}
+	})
+}
+
+// FuzzWSFrameStream drives the capture-side decode loop (readWSFrame feeding
+// wsMessageAssembler.add, the pair runWSParser uses) over an arbitrary frame
+// stream. Single-frame fuzzing cannot reach the stateful paths: interleaved
+// control frames inside a fragmented message, a stray continuation, an opcode
+// that restarts a message mid-reassembly, oversized payloads that flip
+// overflowed, and the deflate-desync stop. Invariants: never panic, the
+// reassembly buffer and every emitted message stay within wsMaxMessage, and a
+// deflate connection must not surface a message after add reported a desync
+// (the caller stops the stream, so nothing downstream can observe later state).
+func FuzzWSFrameStream(f *testing.F) {
+	// A fragmented text message with a ping wedged between fragments.
+	f.Add(append(append(wsBuildFrame(wsOpText, []byte("he"), true, false, false),
+		wsBuildFrame(wsOpPing, []byte("p"), true, false, false)...),
+		wsBuildFrame(wsOpContinuation, []byte("llo"), true, true, false)...), false)
+	// A binary message followed by a compressed text message (deflate path).
+	f.Add(append(wsBuildFrame(wsOpBinary, []byte{0x00}, true, true, false),
+		wsBuildFrame(wsOpText, []byte("x"), true, true, true)...), true)
+	f.Add(wsBuildFrame(wsOpContinuation, []byte("orphan"), true, true, false), false)
+	f.Add(append(wsBuildFrame(wsOpText, []byte("over"), true, false, true),
+		wsBuildFrame(wsOpContinuation, []byte("flow"), true, true, true)...), true)
+	f.Add([]byte{}, false)
+	f.Fuzz(func(t *testing.T, data []byte, deflate bool) {
+		asm := &wsMessageAssembler{deflate: deflate}
+		r := bufio.NewReader(bytes.NewReader(data))
+		for {
+			f, err := readWSFrame(r)
+			if err != nil {
+				return
+			}
+			msg, err := asm.add(f)
+			if err != nil {
+				// A desync is terminal for this stream, exactly as runWSParser
+				// treats it: stop feeding frames.
+				break
+			}
+			if msg != nil && len(msg) > wsMaxMessage {
+				t.Fatalf("emitted message of %d bytes exceeds cap %d", len(msg), wsMaxMessage)
+			}
+			if len(asm.buf) > wsMaxMessage {
+				t.Fatalf("reassembly buffer %d exceeds cap %d", len(asm.buf), wsMaxMessage)
+			}
+		}
+	})
+}
+
+// FuzzWSReassemblyRoundTrip asserts the framing contract itself: a text
+// message split across any number of continuation frames, masked and carried on
+// the wire, must come back out of readWSFrame + add byte-identical, and no
+// fragment before the FIN may yield a message. A fuzzer alone would only catch
+// panics here; this is the assertion that makes a mis-ordered or truncated
+// reassembly a failure rather than silent capture loss.
+func FuzzWSReassemblyRoundTrip(f *testing.F) {
+	f.Add("hello", uint8(1), false)
+	f.Add("", uint8(3), false)
+	f.Add("a longer message with masking and multi-byte runes: héllo ✓", uint8(5), false)
+	f.Add("x", uint8(0), true)
+	f.Fuzz(func(t *testing.T, payload string, parts uint8, masked bool) {
+		n := 1 + int(parts)%8
+		chunks := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			chunks = append(chunks, payload[i*len(payload)/n:(i+1)*len(payload)/n])
+		}
+		var wire []byte
+		for i, c := range chunks {
+			opcode := byte(wsOpContinuation)
+			if i == 0 {
+				opcode = wsOpText
+			}
+			wire = append(wire, wsBuildFrame(opcode, []byte(c), masked, i == len(chunks)-1, false)...)
+		}
+		asm := &wsMessageAssembler{}
+		r := bufio.NewReader(bytes.NewReader(wire))
+		var got []byte
+		seen := 0
+		for {
+			fr, err := readWSFrame(r)
+			if err != nil {
+				break
+			}
+			msg, err := asm.add(fr)
+			if err != nil {
+				t.Fatalf("uncompressed reassembly error: %v", err)
+			}
+			if msg == nil {
+				continue
+			}
+			seen++
+			if seen > 1 {
+				t.Fatal("more than one message from a single fragmented message")
+			}
+			got = msg
+		}
+		// An empty text message reassembles to no bytes, and add reports that
+		// as "no message", so only a non-empty payload owes exactly one.
+		want := 0
+		if payload != "" {
+			want = 1
+		}
+		if seen != want {
+			t.Fatalf("fragmented text message of %d frame(s) produced %d messages, want %d", len(chunks), seen, want)
+		}
+		if string(got) != payload {
+			t.Fatalf("reassembled %q, want %q", got, payload)
 		}
 	})
 }

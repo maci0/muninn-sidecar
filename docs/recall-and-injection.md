@@ -313,16 +313,34 @@ appear only when those paths fire.
 ## Fuzzing the parsing surfaces
 
 Every in-flight parser that ingests untrusted agent/model bytes has a Go fuzz
-target (61 of them, mostly in `fuzz_test.go` files, plus a few in the packages'
+target (65 of them, mostly in `fuzz_test.go` files, plus a few in the packages'
 main test files), since the proxy must never panic on malformed traffic:
 
 - `apiformat`: `FuzzExtractUserMessage`, `FuzzExtractAssistantMessage`,
   `FuzzDetectAndExtract`, `FuzzStripSystemReminders`, `FuzzTruncate`, `FuzzExtractSSE`
 - `inject`: `FuzzParseRecallResponse`, `FuzzParseWhereLeftOff`, `FuzzParseGuide`,
-  `FuzzInjectContext`, `FuzzSelectAndFormat`
+  `FuzzInjectContext`, `FuzzSelectAndFormat`, `FuzzParseScenarios`,
+  `FuzzParseLiveScenarios`, `FuzzTopZScore`, `FuzzCalibrateThreshold`,
+  `FuzzNDCGFuzz`, `FuzzMetricPrimitives`
 - `proxy`: `FuzzCleanRequest`, `FuzzCleanResponse`, `FuzzParseSSEDoc`,
-  `FuzzStripInjectedContextDoc`
-- `mcpclient`: `FuzzHealthURLFrom`
+  `FuzzStripInjectedContextDoc`, `FuzzInjectedBlockStart`,
+  `FuzzExtractModelAndTokens`, `FuzzSanitizeJSON`, `FuzzProcessChunk`,
+  `FuzzRedactURL`, `FuzzIsUpgradeRequest`, `FuzzShouldInterceptHost`,
+  `FuzzStripPort`, `FuzzBuildRespBody`, `FuzzReadHeaderBlock`,
+  `FuzzWSExchangeMessages`, `FuzzWSMessageType`, `FuzzWSInflate`,
+  `FuzzReadWSFrame`, `FuzzWSFrameStream`, `FuzzWSReassemblyRoundTrip`
+- `mcpclient`: `FuzzHealthURLFrom`, `FuzzClassifyResponse`
+- `mitm`: `FuzzNormalizeHost`, `FuzzParseCA`, `FuzzLeafFor`
+- `redact`: `FuzzRedactSecrets`, `FuzzSecretsMatchesUngatedReference`
+- `store`: `FuzzFormatAndDedup`, `FuzzRetryable`
+- `grounding`: `FuzzPrompt`, `FuzzParseMask`
+- `querysplit`: `FuzzSplit`
+- `agents`: `FuzzBuildArgs`, `FuzzBuildMITMEnv`
+
+`FuzzWSFrameStream` and `FuzzWSReassemblyRoundTrip` cover the stateful half of
+the WebSocket capture path: a frame stream is fed through `readWSFrame` into the
+message assembler (which only single-frame fuzzing cannot reach), and a text
+message split across continuation frames must come back byte-identical.
 
 Seed corpora run on every `go test`. To fuzz a target: `go test ./internal/<pkg>
 -run=^$ -fuzz=^FuzzName$ -fuzztime=30s`. Fuzzing hardened `truncateAt` against a

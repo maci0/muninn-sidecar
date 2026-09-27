@@ -53,6 +53,12 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   capture buffer kept the last N bytes of a stream, which can start part-way
   through a character, so its contents could no longer decode; it now advances
   to the first whole character.
+- **A URL with no `//` after the scheme no longer logs its credentials.** The
+  log sanitizer redacted userinfo held in `url.Userinfo`, but a URL parsed in
+  the opaque form (`https:user:pass@host/v1`, which a client can put in an
+  absolute-form request target) keeps that userinfo as literal text inside
+  `Opaque`, so the password reached the logs and the stored exchange verbatim.
+  Both carriers are redacted now, and a fuzz target holds the contract.
 - **A Unicode host is refused when minting a certificate.** SNI and CONNECT
   carry punycode, and a certificate SAN cannot hold a non-ASCII name, so
   `--mitm-host` or a CONNECT naming `münchen.de` failed deep inside x509 (or,
