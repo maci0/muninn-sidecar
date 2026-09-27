@@ -294,6 +294,18 @@ func TestCalibrateThreshold(t *testing.T) {
 	if got := CalibrateThreshold(uni); got != defaultMinScore {
 		t.Errorf("unimodal sample should keep default %.2f, got %.3f", defaultMinScore, got)
 	}
+
+	// A NaN sample must not index the histogram out of range, and must not
+	// count toward either Otsu cluster: dropping it leaves the same threshold
+	// the finite samples alone produce.
+	withNaN := append(append([]float64{}, scores...), math.NaN(), math.NaN())
+	if got, want := CalibrateThreshold(withNaN), CalibrateThreshold(scores); got != want {
+		t.Errorf("NaN samples changed the threshold: %.3f, want %.3f", got, want)
+	}
+	// A sample too small to bin once the NaNs are dropped keeps the prior.
+	if got := CalibrateThreshold([]float64{math.NaN(), 0.7, 0.4}); got != defaultMinScore {
+		t.Errorf("under-sized finite sample should keep default %.2f, got %.3f", defaultMinScore, got)
+	}
 }
 
 // newDetRand returns a deterministic pseudo-random generator in [0,1) without

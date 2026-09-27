@@ -90,6 +90,9 @@ func CalibrateThresholdDetail(scores []float64) (threshold, noiseMean, relMean, 
 	const bins = 50
 	hist := make([]int, bins)
 	for _, s := range scores {
+		if math.IsNaN(s) {
+			continue // math.Max/Min leave NaN alone, and int(NaN*bins) indexes hist out of range
+		}
 		s = math.Max(0, math.Min(1, s))
 		b := int(s * bins)
 		if b >= bins {
@@ -97,10 +100,17 @@ func CalibrateThresholdDetail(scores []float64) (threshold, noiseMean, relMean, 
 		}
 		hist[b]++
 	}
-	total := len(scores)
+	// total counts what the histogram actually holds, not len(scores): a
+	// skipped sample is in neither cluster, and counting it in the foreground
+	// weight would drag both Otsu means toward the background.
+	var total int
 	var sumAll float64
 	for b, c := range hist {
+		total += c
 		sumAll += float64(b) * float64(c)
+	}
+	if total < 20 {
+		return defaultMinScore, 0, 0, 0
 	}
 
 	var wB int

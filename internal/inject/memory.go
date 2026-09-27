@@ -73,14 +73,33 @@ func injectable(m memory) bool {
 // ordering, threshold, the displayed relevance) operates on cosine similarity.
 // Returns whether any memory carried a cosine — when none do, the gate is
 // operating on the recency/graph-inflated composite, which is far less reliable.
+//
+// A score the response cannot back up is dropped to 0 rather than propagated:
+// NaN fails every comparison below (the gate's `Score < minScore` is false, the
+// sort's `>` is false), so such a memory would clear the gate unranked and
+// decay to NaN; +Inf decays to +Inf and FormatFloat writes it into the injected
+// block as a 309-digit relevance. Either way the number stops being a relevance.
+// JSON cannot spell NaN or ±Inf, but it can spell 1e308, and a caller that
+// computed the score itself (the offline evaluators) can pass either.
 func normalizeRelevance(mems []memory) (anyVector bool) {
 	for i := range mems {
-		if mems[i].VectorScore > 0 {
-			mems[i].Score = mems[i].VectorScore
+		if v := mems[i].VectorScore; v > 0 && isUsableCosine(v) {
+			mems[i].Score = v
 			anyVector = true
+		}
+		if math.IsNaN(mems[i].Score) || math.IsInf(mems[i].Score, 0) {
+			mems[i].Score = 0
 		}
 	}
 	return anyVector
+}
+
+// isUsableCosine reports whether v is a cosine this package can rank on: a
+// finite number in [-1, 1]. The composite Score is not range-checked — it
+// folds in recency and graph traversal, so it legitimately exceeds 1.0 — but a
+// cosine outside the unit interval is a broken response, not a similarity.
+func isUsableCosine(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= -1 && v <= 1
 }
 
 // decayFactor is multiplied against a memory's score for each turn it is

@@ -183,6 +183,35 @@ func TestNormalizeRelevance(t *testing.T) {
 			t.Error("empty input should report anyVector=false")
 		}
 	})
+
+	t.Run("non-finite scores are dropped, not propagated", func(t *testing.T) {
+		mems := []memory{
+			{ID: "1", Score: math.NaN()},
+			{ID: "2", Score: math.Inf(1)},
+			{ID: "3", Score: 0.8, VectorScore: math.Inf(1)},
+			{ID: "4", Score: 0.8, VectorScore: 1e308},
+			{ID: "5", Score: 0.8, VectorScore: 0.42},
+		}
+		any := normalizeRelevance(mems)
+		for i, m := range mems {
+			if math.IsNaN(m.Score) || math.IsInf(m.Score, 0) {
+				t.Errorf("memory %d kept a non-finite score %v", i, m.Score)
+			}
+		}
+		// The composite fallback of memories 1 and 2 is not a cosine, so both
+		// report 0; memory 3 and 4 keep their composite rather than rank on a
+		// cosine no embedding can produce.
+		if mems[0].Score != 0 || mems[1].Score != 0 {
+			t.Errorf("non-finite composite should score 0, got %v and %v", mems[0].Score, mems[1].Score)
+		}
+		if mems[2].Score != 0.8 || mems[3].Score != 0.8 {
+			t.Errorf("out-of-range cosine should fall back to the composite, got %v and %v", mems[2].Score, mems[3].Score)
+		}
+		// Only the one in-range cosine counts as a cosine.
+		if !any || mems[4].Score != 0.42 {
+			t.Errorf("in-range cosine should still win, anyVector=%v score=%v", any, mems[4].Score)
+		}
+	})
 }
 
 func TestEnrichAnthropic(t *testing.T) {
