@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -309,6 +310,78 @@ func FuzzNormalizeHost(f *testing.F) {
 		// Never panics; result has no surrounding whitespace.
 		if got != strings.TrimSpace(got) {
 			t.Fatalf("result not trimmed: %q", got)
+		}
+	})
+}
+
+// FuzzParseCA drives the on-disk CA load path. The pair is read from the
+// user's config dir, so it is the one cryptographic parser in the proxy that
+// takes bytes this process did not mint: a panic in pem.Decode, x509, or the
+// key/cert match check kills the proxy at startup instead of on one request.
+func FuzzParseCA(f *testing.F) {
+	caPEM := func() (certPEM, keyPEM []byte) {
+		ca, err := generateCA()
+		if err != nil {
+			f.Fatal(err)
+		}
+		keyPEM, merr := marshalKeyPEM(ca.key)
+		if merr != nil {
+			f.Fatal(merr)
+		}
+		return ca.CertPEM(), keyPEM
+	}
+	certPEM, keyPEM := caPEM()
+	otherCert, otherKey := caPEM()
+	if bytes.Equal(certPEM, otherCert) {
+		f.Fatal("two generated CAs share a certificate")
+	}
+
+	// The matching pair, the mismatch pair parseCA must reject (an interrupted
+	// persistCA leaves exactly this), a truncated copy of a valid pair, and the
+	// non-PEM / wrong-block-type / empty shapes pem.Decode has to survive.
+	f.Add(certPEM, keyPEM)
+	f.Add(certPEM, otherKey)
+	f.Add(certPEM[:len(certPEM)/2], keyPEM)
+	f.Add([]byte("not pem at all"), []byte("nor this"))
+	f.Add(keyPEM, certPEM) // block type EC PRIVATE KEY where CERTIFICATE is required
+	f.Add(certPEM, []byte("-----BEGIN EC PRIVATE KEY-----\n-----END EC PRIVATE KEY-----\n"))
+	f.Add([]byte(""), []byte(""))
+	f.Fuzz(func(t *testing.T, certIn, keyIn []byte) {
+		ca, err := parseCA(certIn, keyIn)
+		if err != nil {
+			if ca != nil {
+				t.Fatalf("parseCA returned a CA alongside error %v", err)
+			}
+			return
+		}
+		if ca == nil || ca.cert == nil || ca.key == nil {
+			t.Fatalf("parseCA succeeded with an incomplete CA: %+v", ca)
+		}
+		// The rejection the caller relies on to regenerate: a key that does not
+		// belong to the cert would mint leaves whose signature never verifies.
+		if !ca.key.PublicKey.Equal(ca.cert.PublicKey) {
+			t.Fatal("parseCA accepted a key that does not match the cert")
+		}
+		if ca.cache == nil {
+			t.Fatal("parseCA left the leaf cache nil; LeafFor would panic on insert")
+		}
+		// Persist/read boundary: the certPEM a CA hands back must be the one it
+		// parsed, and re-encoding it must give back the same certificate.
+		blk, _ := pem.Decode(ca.CertPEM())
+		if blk == nil || blk.Type != "CERTIFICATE" {
+			t.Fatalf("CertPEM is not a CERTIFICATE block: %q", ca.CertPEM())
+		}
+		again, perr := x509.ParseCertificate(blk.Bytes)
+		if perr != nil {
+			t.Fatalf("re-parsing CertPEM: %v", perr)
+		}
+		if !again.Equal(ca.cert) {
+			t.Fatal("CertPEM does not round-trip to the parsed certificate")
+		}
+		// A CA that parsed must actually mint: this is the one thing a
+		// never-panics assertion cannot cover.
+		if _, err := ca.LeafFor("fuzz.example"); err != nil {
+			t.Fatalf("LeafFor on a parsed CA: %v", err)
 		}
 	})
 }

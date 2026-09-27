@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -647,4 +648,50 @@ func TestWriteMDBlockCRLF(t *testing.T) {
 	if !strings.Contains(string(data), "\r\n") {
 		t.Errorf("CRLF file lost its endings: %q", data)
 	}
+}
+
+// FuzzParseRecallPayload drives the muninn_recall reply decode: server-controlled
+// JSON, parsed twice (envelope, then the text block's payload), whose float
+// fields drive both the gate and the relevance number printed to the report.
+// The bug a "does not crash" check misses is a candidate that gets past the gate
+// carrying a score the report cannot render.
+func FuzzParseRecallPayload(f *testing.F) {
+	// Seeds span the shapes the real server returns: a text block, a non-text
+	// block that must be skipped, memories keyed on vector_score vs score, the
+	// two error envelopes, and non-finite-adjacent numbers.
+	f.Add([]byte(`{"result":{"content":[{"type":"text","text":"{\"memories\":[{\"concept\":\"c\",\"content\":\"x\",\"vector_score\":0.9}]}"}]}}`), 0.6)
+	f.Add([]byte(`{"result":{"content":[{"type":"text","text":"{\"memories\":[{\"concept\":\"c\",\"content\":\"x\",\"score\":0.42}]}"}]}}`), 0.0)
+	f.Add([]byte(`{"result":{"content":[{"type":"image","text":"{\"memories\":[]}"}]}}`), 0.0)
+	f.Add([]byte(`{"result":{"content":[{"type":"text","text":"not json"}]}}`), 0.0)
+	f.Add([]byte(`{"result":{}}`), 0.0)
+	f.Add([]byte(`[]`), 0.0)
+	f.Add([]byte(``), 0.0)
+	f.Add([]byte(`{"result":{"content":[{"type":"text","text":"{\"memories\":[{\"vector_score\":1e308},{\"vector_score\":-1e308},{\"score\":1e400}]}"}]}}`), 0.0)
+	f.Fuzz(func(t *testing.T, resp []byte, minScore float64) {
+		if math.IsNaN(minScore) {
+			return // no server-controlled input picks the threshold; a NaN gate
+			// compares false against everything and is not a parser contract
+		}
+		cands := parseRecallPayload(resp, minScore)
+		for i, c := range cands {
+			// The gate itself: nothing below the threshold may be returned.
+			if c.Score < minScore {
+				t.Fatalf("cand %d: score %v below gate %v", i, c.Score, minScore)
+			}
+			// A score that reaches the report must render as a number, not
+			// "NaN" or "+Inf": the ungated arm in main.go prints every candidate.
+			if math.IsNaN(c.Score) || math.IsInf(c.Score, 0) {
+				t.Fatalf("cand %d: non-finite score %v", i, c.Score)
+			}
+			out := formatInjected(cands, "scored")
+			if strings.Contains(out, "NaN") || strings.Contains(out, "Inf") {
+				t.Fatalf("scored rendering of non-finite score: %q", out)
+			}
+		}
+		// formatInjected is the only consumer of these; no candidates must mean
+		// no report body, not an empty header.
+		if len(cands) == 0 && formatInjected(cands, "scored") != "" {
+			t.Fatalf("empty candidate set rendered %q", formatInjected(cands, "scored"))
+		}
+	})
 }

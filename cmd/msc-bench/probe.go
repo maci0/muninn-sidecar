@@ -29,6 +29,10 @@ func seedCorpus(ctx context.Context, c *mcpclient.Client, vault string, items []
 				"content": it.Content,
 				"summary": it.Content,
 				"type":    "reference",
+				// Content-addressed, like the live store: rerunning -seed over
+				// the same corpus updates those memories instead of writing a
+				// second copy of each one.
+				"dedup_key": mcpclient.DedupKey(vault, it.Concept, it.Content),
 			})
 		}
 		if _, err := c.Call(ctx, "muninn_remember_batch", map[string]any{

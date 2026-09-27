@@ -100,6 +100,15 @@ func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query s
 	if err != nil {
 		return nil
 	}
+	return parseRecallPayload(resp, minScore)
+}
+
+// parseRecallPayload turns a raw muninn_recall JSON-RPC reply into the gated
+// candidates. Split out of recallStructured so the parse is reachable without a
+// live MCP server: this is server-controlled JSON, decoded twice (the envelope,
+// then the text content block's payload), and every one of those numbers is a
+// float the gate and formatInjected print verbatim.
+func parseRecallPayload(resp []byte, minScore float64) []cand {
 	var rpc struct {
 		Result struct {
 			Content []struct {
