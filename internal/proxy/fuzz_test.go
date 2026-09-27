@@ -18,14 +18,44 @@ func FuzzCleanRequest(f *testing.F) {
 	f.Add([]byte(`{"system":[{"type":"text","text":"<retrieved-context source=\"muninn\">m</retrieved-context>"}],"messages":[]}`))
 	f.Add([]byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"mcp__muninn__muninn_recall","id":"t1"}]}]}`))
 	f.Add([]byte(`{"tools":[{"name":"muninn_remember"},{"name":"Read"}]}`))
+	f.Add([]byte(`{"instructions":"original\n\n<retrieved-context source=\"muninn\">\n\nblock\n"}`))
+	f.Add([]byte(`{"instructions":"<retrieved-context source=\"muninn\">only the block"}`))
+	f.Add([]byte(`{"systemInstruction":{"parts":[{"text":"<global-guide source=\"muninn\">g"}]}}`))
+	f.Add([]byte(`{"request":{"systemInstruction":{"parts":[{"text":"a"},{"text":"b"}]}}}`))
+	f.Add([]byte(`{"input":[{"type":"function_call","call_id":"c1","name":"muninn_recall"}]}`))
+	f.Add([]byte(`{"system":null,"messages":null,"instructions":null}`))
+	f.Add([]byte(`{"system":42,"messages":"not an array","instructions":[]}`))
 	f.Add([]byte(`not json`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, out := cleanRequest(data, defaultFilterPatterns)
-		// cleanRequest always returns syntactically-valid JSON (it wraps non-JSON
-		// via sanitizeJSON). json.Valid checks syntax without the float64-overflow
-		// quirk of unmarshalling huge numbers into interface{}.
-		if !json.Valid(out) {
-			t.Fatalf("cleanRequest produced invalid JSON: %q", out)
+		// Both configurations run: with the default muninn patterns, and with
+		// none, which is what a deployment that turned tool filtering off sees.
+		for _, patterns := range [][]string{defaultFilterPatterns, nil} {
+			_, out := cleanRequest(data, patterns)
+			// cleanRequest always returns syntactically-valid JSON (it wraps non-JSON
+			// via sanitizeJSON). json.Valid checks syntax without the float64-overflow
+			// quirk of unmarshalling huge numbers into interface{}.
+			if !json.Valid(out) {
+				t.Fatalf("cleanRequest produced invalid JSON: %q", out)
+			}
+			var probe map[string]any
+			if err := json.Unmarshal(out, &probe); err != nil || probe == nil {
+				// Did not parse, or is JSON null: nothing was filtered, nothing to
+				// re-probe. json.Valid above already covered the forwarded bytes.
+				continue
+			}
+			// The output is re-serialized from the document whenever anything
+			// changed, so re-parsing it tests what is actually forwarded upstream
+			// rather than the caller's own map. A marker still strippable here is
+			// injected context that would be captured into a stored memory.
+			if stripInjectedContextDoc(probe) {
+				t.Fatalf("injected context survived filtering: %s", out)
+			}
+			if patterns != nil && filterMCPToolsDoc(probe, patterns) {
+				t.Fatalf("muninn tool content survived filtering: %s", out)
+			}
+			if _, again := cleanRequest(out, patterns); string(again) != string(out) {
+				t.Fatalf("cleanRequest not idempotent:\n 1st %s\n 2nd %s", out, again)
+			}
 		}
 	})
 }
@@ -35,7 +65,7 @@ func FuzzCleanResponse(f *testing.F) {
 	f.Add([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"c1","function":{"name":"muninn_recall"}}]}}]}`))
 	f.Add([]byte(`{}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, out := cleanResponse(json.RawMessage(data), defaultFilterPatterns)
+		doc, out := cleanResponse(json.RawMessage(data), defaultFilterPatterns)
 		// Contract: cleanResponse passes non-JSON through unchanged (response
 		// bodies are JSON in practice); when the input IS valid JSON, filtering
 		// must preserve syntactic validity.
@@ -44,6 +74,18 @@ func FuzzCleanResponse(f *testing.F) {
 		}
 		if !json.Valid(out) {
 			t.Fatalf("cleanResponse turned valid JSON into invalid: %q", out)
+		}
+		// doc is nil unless the body parsed and re-serialized, which is exactly
+		// when a muninn tool call could have been forwarded into the captured
+		// exchange. A second pass must find nothing left to remove.
+		if doc == nil {
+			return
+		}
+		if filterMCPToolsDoc(doc, defaultFilterPatterns) {
+			t.Fatalf("muninn tool content survived filtering: %s", out)
+		}
+		if _, again := cleanResponse(out, defaultFilterPatterns); string(again) != string(out) {
+			t.Fatalf("cleanResponse not idempotent:\n 1st %s\n 2nd %s", out, again)
 		}
 	})
 }
