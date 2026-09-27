@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -112,20 +111,7 @@ func recallSubqueries(ctx context.Context, c *mcpclient.Client, vault string, su
 }
 
 func parseRecall(body []byte) ([]recalledMemory, error) {
-	blocks, err := mcpclient.ContentTexts(body)
-	if err != nil {
-		return nil, err
-	}
-	for _, text := range blocks {
-		var inner struct {
-			Memories []recalledMemory `json:"memories"`
-		}
-		if err := json.Unmarshal([]byte(text), &inner); err != nil {
-			return nil, err
-		}
-		return inner.Memories, nil
-	}
-	return nil, nil
+	return mcpclient.RecallMemories[recalledMemory](body)
 }
 
 // --- probing ---

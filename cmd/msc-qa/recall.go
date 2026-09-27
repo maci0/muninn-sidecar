@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -20,6 +19,16 @@ type cand struct {
 	Concept string
 	Content string
 	Score   float64 // effective cosine used as the relevance shown to the reader
+}
+
+// recalledMemory is the subset of a MuninnDB recall record the harness reads.
+// mcpclient decodes the envelope into it, the same way the proxy's injector
+// decodes into its own record.
+type recalledMemory struct {
+	Concept     string  `json:"concept"`
+	Content     string  `json:"content"`
+	VectorScore float64 `json:"vector_score"`
+	Score       float64 `json:"score"`
 }
 
 // recallStructured returns the gated recall candidates (cosine >= minScore) with
@@ -83,35 +92,21 @@ func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query s
 // that decodes and carries no memories is a genuine empty result and returns
 // nil with no error.
 func parseRecallPayload(resp []byte, minScore float64) ([]cand, error) {
-	blocks, err := mcpclient.ContentTexts(resp)
+	recalled, err := mcpclient.RecallMemories[recalledMemory](resp)
 	if err != nil {
-		return nil, fmt.Errorf("parse recall envelope (%d bytes): %w", len(resp), err)
+		return nil, fmt.Errorf("parse recall payload (%d bytes): %w", len(resp), err)
 	}
-	for _, text := range blocks {
-		var inner struct {
-			Memories []struct {
-				Concept     string  `json:"concept"`
-				Content     string  `json:"content"`
-				VectorScore float64 `json:"vector_score"`
-				Score       float64 `json:"score"`
-			} `json:"memories"`
+	var parts []cand
+	for _, m := range recalled {
+		rel := m.VectorScore
+		if rel == 0 {
+			rel = m.Score
 		}
-		if err := json.Unmarshal([]byte(text), &inner); err != nil {
-			return nil, fmt.Errorf("parse recall payload (%d bytes): %w", len(text), err)
+		if rel >= minScore { // the gate
+			parts = append(parts, cand{Concept: m.Concept, Content: m.Content, Score: rel})
 		}
-		var parts []cand
-		for _, m := range inner.Memories {
-			rel := m.VectorScore
-			if rel == 0 {
-				rel = m.Score
-			}
-			if rel >= minScore { // the gate
-				parts = append(parts, cand{Concept: m.Concept, Content: m.Content, Score: rel})
-			}
-		}
-		return parts, nil
 	}
-	return nil, nil
+	return parts, nil
 }
 
 // formatInjected renders gated candidates into the context body for a given

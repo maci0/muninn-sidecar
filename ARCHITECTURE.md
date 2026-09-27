@@ -119,7 +119,10 @@ internal/
     eval_live.go          Live end-to-end evaluation against a real MuninnDB
     eval_window.go        Session-window decay study (decayFactor/decayFloor)
   grounding/grounding.go  Answer-grounding rerank (OpenAI-compatible model / CLI judge)
-  mcpclient/client.go     Shared JSON-RPC 2.0 client + result content-block decoder for MuninnDB
+  mcpclient/
+    client.go             Shared JSON-RPC 2.0 client + result content-block decoder for MuninnDB
+    recall.go             `muninn_recall` envelope decoder (memories/results/bare array), shared by
+                          the injector and both eval harnesses so they read a reply the same way
   querysplit/querysplit.go  Entity-span sub-queries for multi-recall (bench + qa harnesses)
   mitm/
     ca.go                 Local CA: generate/persist + mint cached per-host leaf certs

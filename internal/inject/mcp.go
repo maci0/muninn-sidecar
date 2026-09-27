@@ -197,46 +197,9 @@ func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error)
 // parseRecallResponse extracts memories from a JSON-RPC response.
 // JSON-RPC protocol errors are handled by mcpclient.Client.Call before
 // this function is called, so this function only receives success responses.
+//
+// The envelope is decoded by mcpclient, which every MuninnDB caller in the tree
+// shares; the only thing this adds is the memory record the injector selects on.
 func parseRecallResponse(body []byte) ([]memory, error) {
-	blocks, err := mcpclient.ContentTexts(body)
-	if err != nil {
-		return nil, fmt.Errorf("parse JSON-RPC response: %w", err)
-	}
-
-	// The recall payload is JSON text inside a content block; the first text
-	// block that parses wins. A server may prepend a human-readable summary
-	// block, so a block that does not parse is skipped rather than fatal: one
-	// unparsable block would otherwise abandon the memories in the next one.
-	var firstErr error
-	for _, text := range blocks {
-		// Try object format: {"memories": [...]} or {"results": [...]}.
-		var recallResult struct {
-			Memories []memory `json:"memories"`
-			Results  []memory `json:"results"`
-		}
-		if err := json.Unmarshal([]byte(text), &recallResult); err != nil {
-			// Try parsing as a direct array.
-			var direct []memory
-			if err2 := json.Unmarshal([]byte(text), &direct); err2 != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("parse recall result (struct: %v, array: %w)", err, err2)
-				}
-				continue
-			}
-			return direct, nil
-		}
-
-		if len(recallResult.Memories) > 0 {
-			return recallResult.Memories, nil
-		}
-		if len(recallResult.Results) > 0 {
-			return recallResult.Results, nil
-		}
-	}
-
-	// Every text block was unparsable: a corrupt reply, not an empty result.
-	if firstErr != nil {
-		return nil, firstErr
-	}
-	return nil, nil
+	return mcpclient.RecallMemories[memory](body)
 }
