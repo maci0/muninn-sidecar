@@ -64,21 +64,30 @@ func TestModelClientLabel(t *testing.T) {
 	}
 }
 
-// TestCLIClientAnswer exercises the exec path against a real command: `printf`
-// echoes the prompt's last line back, which lastNonEmptyLine then returns.
+// TestCLIClientAnswer exercises the exec path against a real command: the child
+// reports how many argv elements it received and echoes what it read on stdin.
 func TestCLIClientAnswer(t *testing.T) {
-	// `cat` echoes the prompt arg verbatim; the prompt ends with "Answer:" so the
-	// last non-empty line is "Answer:". Use a command that emits a known answer.
-	c := &cliClient{name: "echo", argv: []string{"echo", "Paris"}, timeout: 5 * time.Second}
+	// `sh -c` sees the child script as argv[0] and the caller-supplied trailing
+	// elements as $1..$n, so the reported argc is the number of arguments the
+	// client appended. It must be 0: the prompt goes on stdin, never argv, where
+	// /proc/<pid>/cmdline would expose it to every user on the host.
+	c := &cliClient{
+		name:    "sh",
+		argv:    []string{"sh", "-c", `printf 'argc=%s stdin=%s' "$#" "$(tr '\n' '~' <&0)"`},
+		timeout: 5 * time.Second,
+	}
 	got, err := c.answer(context.Background(), "What is the capital of France?", "")
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
-	// echo prints its fixed args then the appended prompt; last line is the prompt
-	// tail "Answer:". The fixed "Paris" arg is on the first line. Assert we got a
-	// non-empty trimmed line back.
-	if got == "" {
-		t.Fatalf("expected non-empty answer")
+	if !strings.HasPrefix(got, "argc=0 stdin=") {
+		t.Fatalf("prompt leaked into argv: %q", got)
+	}
+	if !strings.Contains(got, "What is the capital of France?") {
+		t.Fatalf("prompt not delivered on stdin: %q", got)
+	}
+	if !strings.Contains(got, "Answer:") {
+		t.Fatalf("instruction missing from prompt: %q", got)
 	}
 }
 

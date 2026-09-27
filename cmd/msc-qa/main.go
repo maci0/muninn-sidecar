@@ -101,7 +101,7 @@ func run() error {
 		modelURL    = flag.String("model-url", "", "OpenAI-compatible base URL (e.g. http://localhost:1234/v1); empty = build-only, no scoring")
 		modelKey    = flag.String("model-key", "", "model API key (default $OPENAI_API_KEY)")
 		model       = flag.String("model", "gpt-4o-mini", "model name(s); comma-separated to compare several")
-		modelCmd    = flag.String("model-cmd", "", "comma-separated reader CLIs (e.g. \"claude -p,codex exec --skip-git-repo-check,grok -p\"); each gets the prompt as a final arg, the last non-empty stdout line is the answer")
+		modelCmd    = flag.String("model-cmd", "", "comma-separated reader CLIs (e.g. \"claude -p,codex exec --skip-git-repo-check,grok -p\"); each reads the prompt on stdin, the last non-empty stdout line is the answer")
 		minScore    = flag.Float64("min-score", 0.6, "injection cosine threshold (the gate)")
 		n           = flag.Int("n", 100, "number of questions to evaluate")
 		sampleSeed  = flag.Int64("sample-seed", 1, "question-sampling shuffle seed: all eligible questions are shuffled deterministically then truncated to -n, so runs stay reproducible and paired across models")
@@ -822,23 +822,27 @@ func (m *modelClient) answer(ctx context.Context, question, contextBlock string)
 
 type cliClient struct {
 	name    string   // display label, e.g. "claude -p"
-	argv    []string // command + flags; the prompt is appended as a final arg
+	argv    []string // command + flags; the prompt is delivered on stdin
 	timeout time.Duration
 }
 
 func (c *cliClient) label() string { return c.name }
 
 // answer runs the CLI with a single combined prompt (system instruction +
-// optional <retrieved-context> block + question) appended as the final argv
-// element, then returns the last non-empty stdout line. Agent CLIs print a usage
-// footer or streaming chatter; the final span answer is reliably on the last
-// content line, so we take that.
+// optional <retrieved-context> block + question), then returns the last
+// non-empty stdout line. Agent CLIs print a usage footer or streaming chatter;
+// the final span answer is reliably on the last content line, so we take that.
+//
+// The prompt goes on stdin, never argv: it carries the question and the
+// recalled memory block, and /proc/<pid>/cmdline exposes argv to every user on
+// the host for the life of the call. Same reasoning as the CLI grounder in
+// internal/grounding.
 func (c *cliClient) answer(ctx context.Context, question, contextBlock string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	prompt := buildCLIPrompt(question, contextBlock)
-	args := append(append([]string(nil), c.argv[1:]...), prompt)
-	cmd := exec.CommandContext(cctx, c.argv[0], args...)
+	cmd := exec.CommandContext(cctx, c.argv[0], c.argv[1:]...)
+	cmd.Stdin = strings.NewReader(prompt)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {

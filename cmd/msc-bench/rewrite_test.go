@@ -122,6 +122,23 @@ func TestBuildRewriter(t *testing.T) {
 	}
 }
 
+// TestCLIRewriterPromptOnStdin: the prompt must not reach the child as an argv
+// element, where /proc/<pid>/cmdline would expose the user's question to every
+// user on the host for the duration of the call.
+func TestCLIRewriterPromptOnStdin(t *testing.T) {
+	// `sh -c` counts the elements the client appended as "$#". The child reports
+	// that count as a sub-query line so it survives parseSubqueries.
+	r := &cliRewriter{
+		name:    "sh",
+		argv:    []string{"sh", "-c", `printf 'argc=%s' "$#"`},
+		timeout: 5 * time.Second,
+	}
+	got := r.Rewrite(context.Background(), "who directed it", 4)
+	if len(got) != 2 || got[0] != "who directed it" || got[1] != "argc=0" {
+		t.Fatalf("prompt leaked into argv: %q", got)
+	}
+}
+
 func FuzzParseSubqueries(f *testing.F) {
 	f.Add("orig", "a\nb\nc", 4)
 	f.Add("q", "", 1)

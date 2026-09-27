@@ -142,8 +142,12 @@ func (r *cliRewriter) label() string { return "cli:" + r.name }
 func (r *cliRewriter) Rewrite(ctx context.Context, query string, max int) []string {
 	cctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
-	args := append(append([]string(nil), r.argv[1:]...), rewritePrompt(query, max))
-	cmd := exec.CommandContext(cctx, r.argv[0], args...)
+	cmd := exec.CommandContext(cctx, r.argv[0], r.argv[1:]...)
+	// The prompt carries the user's question; deliver it on stdin, never argv,
+	// where /proc/<pid>/cmdline would expose it to every user on the host for
+	// the duration of the call. Same reasoning as the CLI grounder in
+	// internal/grounding.
+	cmd.Stdin = strings.NewReader(rewritePrompt(query, max))
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil && stdout.Len() == 0 {

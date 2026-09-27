@@ -67,7 +67,7 @@ func run() error {
 		groundKey  = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
 		groundTopK = flag.Int("ground-topk", 5, "ground only the top-K candidates by cosine per probe (bounds model calls)")
 		groundTO   = flag.Duration("ground-timeout", 60*time.Second, "per grounding-call timeout")
-		rewriteCmd = flag.String("rewrite-cmd", "", "LLM query rewrite/decomposition before recall via a CLI agent (e.g. \"claude -p\")")
+		rewriteCmd = flag.String("rewrite-cmd", "", "LLM query rewrite/decomposition before recall via a CLI agent (e.g. \"claude -p\"); the prompt is delivered on stdin")
 		rewriteURL = flag.String("rewrite-url", "", "LLM query rewrite via an OpenAI-compatible URL")
 		rewriteMod = flag.String("rewrite-model", "qwen2.5:7b-instruct", "rewrite model name (for -rewrite-url)")
 		rewriteKey = flag.String("rewrite-key", "", "rewrite model API key (for -rewrite-url)")

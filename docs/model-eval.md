@@ -252,8 +252,9 @@ Even with the gold answer in context 100% of the time, injected F1 tops out
 ### Frontier reader agents (claude / codex / grok CLI)
 
 `msc-qa -model-cmd` runs any CLI agent as the reader: the prompt (instruction +
-`<retrieved-context>` block + question) is the final argv, and the last non-empty
-stdout line is the answer. Same `msc-advqa` vault (N=8, gold context 8/8). This
+`<retrieved-context>` block + question) is delivered on stdin, never as an argv
+element, and the last non-empty stdout line is the answer. Same `msc-advqa` vault
+(N=8, gold context 8/8). This
 is a pilot: at N=8 a single question moves F1 by 0.125, so the table is
 directional only:
 
