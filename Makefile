@@ -215,15 +215,25 @@ bench:
 # Run every fuzz target in the tree for a few seconds each (smoke regression of
 # all parsing/transform surfaces). FUZZTIME overrides the per-target budget.
 FUZZTIME ?= 5s
+# A package whose listing fails aborts the run (set -e on the assignment), and a
+# campaign that found no target at all fails at the end: a silently empty list
+# would turn the CI fuzz job green without fuzzing anything.
 fuzz:
-	@set -e; for pkg in $$(go list ./...); do \
-	  for fn in $$(go test -list '^Fuzz' $$pkg 2>/dev/null | grep '^Fuzz'); do \
+	@set -e; ran=0; for pkg in $$(go list ./...); do \
+	  fns="$$(go test -list '^Fuzz' $$pkg)"; \
+	  for fn in $$(printf '%s\n' "$$fns" | grep '^Fuzz'); do \
+	    ran=$$((ran + 1)); \
 	    echo "== $$pkg $$fn =="; \
 	    go test $$pkg -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) && continue; \
 	    echo "   retrying $$fn once (a real crasher is saved to testdata and re-fails; this only absorbs loaded-runner 'context deadline exceeded' flakes)"; \
 	    go test $$pkg -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) || exit 1; \
 	  done; \
-	done; echo "all fuzz targets clean"
+	done; \
+	if [ "$$ran" -eq 0 ]; then \
+	  echo "no fuzz targets found: 'go test -list ^Fuzz' matched nothing in any package" >&2; \
+	  exit 1; \
+	fi; \
+	echo "all $$ran fuzz targets clean"
 
 # The non-Go linters are required, for the same reason staticcheck is: a
 # missing copy that skips silently reports a green `make check` and turns into a

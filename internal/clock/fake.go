@@ -88,6 +88,23 @@ func (f *Fake) After(d time.Duration) <-chan time.Time {
 	return ch
 }
 
+// PendingOneShots reports how many one-shot timers (After, AfterFunc) are armed
+// and have not fired. A script that advances time to release one must wait for
+// this first: a timer armed after the advance is due relative to the advanced
+// time, so the advance that should have released it is spent and the timer
+// never fires.
+func (f *Fake) PendingOneShots() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, t := range f.timers {
+		if t.period == 0 && !t.stopped {
+			n++
+		}
+	}
+	return n
+}
+
 // NewTicker returns a ticker that ticks once per period of scripted time.
 func (f *Fake) NewTicker(d time.Duration) Ticker {
 	t := &fakeTimer{

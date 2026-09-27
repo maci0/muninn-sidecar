@@ -85,6 +85,33 @@ func TestFakeTickerRepeatsAndStops(t *testing.T) {
 	}
 }
 
+func TestFakePendingOneShotsCountsArmedTimersOnly(t *testing.T) {
+	f := NewFake()
+	if n := f.PendingOneShots(); n != 0 {
+		t.Fatalf("%d one-shots on a fresh clock, want 0", n)
+	}
+	tk := f.NewTicker(time.Second)
+	f.After(time.Minute)
+	tm := f.AfterFunc(time.Minute, func() {})
+	if n := f.PendingOneShots(); n != 2 {
+		t.Fatalf("%d one-shots with a ticker and two timers, want 2", n)
+	}
+	// A stopped timer is not armed, and a fired one is spent.
+	tm.Stop()
+	if n := f.PendingOneShots(); n != 1 {
+		t.Fatalf("%d one-shots after stopping one, want 1", n)
+	}
+	f.Advance(time.Minute)
+	if n := f.PendingOneShots(); n != 0 {
+		t.Fatalf("%d one-shots after both fired, want 0", n)
+	}
+	// A ticker is not a one-shot and is never counted, armed or not.
+	tk.Stop()
+	if n := f.PendingOneShots(); n != 0 {
+		t.Fatalf("%d one-shots with only a ticker, want 0", n)
+	}
+}
+
 func TestFakeStoppedTimerNeverFires(t *testing.T) {
 	f := NewFake()
 	fired := false

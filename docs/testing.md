@@ -20,7 +20,7 @@ process-level paths are covered by a re-exec test rather than in-package ones).
 
 ## Fuzzing
 
-61 fuzz targets cover the untrusted-input surfaces:
+62 fuzz targets cover the untrusted-input surfaces:
 
 - **apiformat** — request/response extraction, recent-context, system-reminder
   strip, truncation (UTF-8 + length invariants), SSE delta/tool-name.
@@ -46,6 +46,8 @@ process-level paths are covered by a re-exec test rather than in-package ones).
 - **store** — captured-exchange format + dedup pipeline, and the MCP retry
   decision (`retryable`: 4xx and JSON-RPC errors permanent, 5xx and transport
   failures transient, verdict stable under wrapping).
+- **querysplit** — entity-span decomposition of a question (`Split`: the full
+  query first, then each capitalized run).
 - **cmd/msc** — flag parsing, Levenshtein, closest-match.
 - **cmd/msc-bench** — recall parse, query transforms, string/number helpers
   (`itoa`), corpus generators, query-rewrite sub-query parsing + prompt build.
@@ -91,3 +93,32 @@ The `-race` targets need a C compiler on `PATH` (`go test -race` links the race
 runtime through cgo). `make doctor` checks that, the Go version against
 `go.mod`, and which CI linters are installed; `make test-fast` is the escape
 hatch on a machine without one.
+
+## Live end-to-end
+
+`go test` never touches a real provider: the proxy, the MCP client and the
+store all run against `httptest` fakes. `test-live.sh` is the other half, the
+only check that runs the whole path against a live MuninnDB and real agent
+CLIs. CI does not run it, since it needs both, so it runs only on demand:
+
+```sh
+./test-live.sh        # -d also passes -d through to msc, for the child's logs
+```
+
+What it needs, all checked at startup so a missing tool is a clear failure
+rather than a cascade of empty result sets:
+
+- `curl`, `jq`, `make` and `go` on `PATH`.
+- A MuninnDB on `MUNINN_MCP_URL` (default `http://127.0.0.1:8750/mcp`) and its
+  token in `MUNINN_TOKEN_FILE` (default `~/.muninn/mcp.token`).
+- The agent binaries for the agents it drives (`claude`, `qwen`, `codex`) on
+  `PATH`; each one it cannot launch is reported as a failed run, not skipped.
+
+It captures into a throwaway vault named `msc-test-$$`, asserts the stored
+memories (no `system-reminder` leakage, no `count_tokens` captures, no
+duplicate concepts, at least one memory) and checks that one agent recalls a
+memory written by another. The `EXIT` trap deletes that vault's memories and
+the 600-mode header file holding the token, so nothing survives the run. Tune
+`SETTLE_SECONDS`, `CURL_CONNECT_TIMEOUT` and `CURL_MAX_TIME` if your MuninnDB
+is slow or remote; the curl deadlines are what stop a dead server from hanging
+the run instead of failing it.

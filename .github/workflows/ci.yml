@@ -181,7 +181,12 @@ jobs:
   fuzz:
     name: Fuzz smoke
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # The campaign is per target, not one shared budget: ~60 targets at the
+    # 8s below, plus compile and startup per target, so a 15m cap was close
+    # enough to the real runtime that a loaded runner could kill the job with
+    # no finding to show. The cap is a backstop against a wedged target, not a
+    # budget, so give it room.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
 

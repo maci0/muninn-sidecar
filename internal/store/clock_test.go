@@ -187,7 +187,15 @@ func TestRetryBackoffRunsOnTheInjectedClock(t *testing.T) {
 		t.Fatalf("%d attempts with the clock frozen, want 1", n)
 	}
 
+	// Each advance below has to land after the store has armed the backoff that
+	// the advance is meant to release. The attempt is counted by the handler
+	// before the response is read, so counting attempts is not the same thing
+	// as the timer existing: an advance spent before clock.After() registers
+	// is lost, and the retry then waits for a period that never comes.
+	clk.Advance(2 * time.Second)
 	waitAttempts(t, clk, count, 2)
+	waitBackoffArmed(t, clk)
+	clk.Advance(4 * time.Second)
 	waitAttempts(t, clk, count, 3)
 	time.Sleep(50 * time.Millisecond)
 	if n := count(); n != 3 {
@@ -213,6 +221,22 @@ func waitAttempts(t *testing.T, clk *clock.Fake, count func() int, want int) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d attempts, got %d", want, count())
+}
+
+// waitBackoffArmed blocks until the store has registered a one-shot on the
+// scripted clock, which for the retry loop means the next backoff is waiting to
+// be released. The flush ticker is not counted, and a backoff that already
+// fired is not counted either, so this cannot pass on the wrong timer.
+func waitBackoffArmed(t *testing.T, clk *clock.Fake) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if clk.PendingOneShots() > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the retry backoff to be armed")
 }
 
 func TestDedupRingExpiresOnTheInjectedClock(t *testing.T) {

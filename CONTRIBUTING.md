@@ -102,6 +102,12 @@ make vuln               # govulncheck against the Go vulnerability DB
 make cover              # coverage report
 ```
 
+Everything above runs on `httptest` fakes. `./test-live.sh` is the one check
+that runs the whole path against a live MuninnDB and real agent CLIs, so it
+needs both and CI does not run it; see
+[docs/testing.md](docs/testing.md#live-end-to-end) for what it drives and what
+it needs.
+
 The module has **no third-party dependencies** (standard library only) — keep it
 that way unless there's a compelling reason; it's the project's strongest
 supply-chain property. `make vuln` (and CI) then mainly guards stdlib CVEs.

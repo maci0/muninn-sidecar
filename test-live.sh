@@ -8,6 +8,26 @@ cd "$(dirname "$0")" || exit 1
 unset MSC_UPSTREAM_CLAUDE MSC_UPSTREAM_CODEX MSC_UPSTREAM_QWEN \
     ANTHROPIC_BASE_URL CLAUDECODE 2>/dev/null || true
 
+# Every external command the script shells out to, named once. Without these
+# checks a missing jq turns the quality checks into a cascade of "0 matches"
+# passes and a missing curl fails somewhere in the middle of a run.
+missing=""
+for tool in curl jq make go; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+done
+if [[ -n "$missing" ]]; then
+    echo "FAIL: required tools not on PATH:$missing" >&2
+    exit 1
+fi
+
+# An unresponsive MuninnDB must fail the run, not wedge it: curl gets both a
+# connect and an overall deadline, so a socket that accepts and then says
+# nothing still ends in an error this script can report.
+CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-5}"
+CURL_MAX_TIME="${CURL_MAX_TIME:-60}"
+# MuninnDB enriches after a capture lands; the recall below reads what it wrote.
+SETTLE_SECONDS="${SETTLE_SECONDS:-2}"
+
 DEBUG=""
 if [[ "${1:-}" == "-d" ]]; then
     DEBUG="-d"
@@ -38,7 +58,8 @@ chmod 600 "$HEADER_FILE"
 mcp_call() {
     local tool="$1"
     local args="$2"
-    curl -s "$MCP_URL" \
+    curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME" \
+        "$MCP_URL" \
         -H "@$HEADER_FILE" \
         -d "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"$tool\",\"arguments\":$args},\"id\":1}"
 }
@@ -108,7 +129,7 @@ echo "=== Test 4: Codex ==="
 run_agent "codex" codex exec --full-auto "What is the capital of Italy? Reply in one word only, nothing else."
 
 # Give MuninnDB a moment to finish enrichment.
-sleep 2
+sleep "$SETTLE_SECONDS"
 
 echo "=== Vault status ==="
 mcp_call "muninn_status" "{\"vault\":\"$VAULT\"}" | jq '.result.content[0].text' -r | jq .
