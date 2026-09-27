@@ -2011,6 +2011,21 @@ func TestRedactURL(t *testing.T) {
 			rawURL: "https://generativelanguage.googleapis.com/v1/models/gemini:generateContent?key=supersecret",
 			want:   "https://generativelanguage.googleapis.com/v1/models/gemini:generateContent?[redacted]",
 		},
+		{
+			// Credentials in the userinfo component must not survive into logs.
+			rawURL: "https://user:supersecret@api.example.com/v1/messages",
+			want:   "https://[redacted]@api.example.com/v1/messages",
+		},
+		{
+			// Implicit-OAuth style fragment credentials.
+			rawURL: "https://api.example.com/callback#access_token=abc123secret&token_type=bearer",
+			want:   "https://api.example.com/callback#[redacted]",
+		},
+		{
+			// All three carriers at once.
+			rawURL: "https://u:p@api.example.com/v1?key=k#tok=t",
+			want:   "https://[redacted]@api.example.com/v1?[redacted]#[redacted]",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.rawURL, func(t *testing.T) {

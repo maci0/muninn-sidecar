@@ -694,16 +694,27 @@ func toLowerSlice(ss []string) []string {
 	return out
 }
 
-// redactURL returns a URL string with the query string replaced by "[redacted]"
-// to avoid leaking API keys that some providers pass as query parameters
-// (e.g. Gemini ?key=...).
+// redactURL returns a loggable form of a URL with every credential carrier
+// replaced by "[redacted]": the query string (providers pass keys as query
+// params, e.g. Gemini ?key=...), any userinfo (https://user:pass@host, which
+// url.String() would otherwise render verbatim), and the fragment (implicit
+// OAuth flows return #access_token=...&token_type=...). The result is safe to
+// log; the host, scheme, and path — what makes the line diagnosable — are kept.
 func redactURL(u *url.URL) string {
-	if u.RawQuery == "" {
-		return u.String()
-	}
 	redacted := *u
-	redacted.RawQuery = "[redacted]"
-	return redacted.String()
+	if redacted.RawQuery != "" {
+		redacted.RawQuery = "[redacted]"
+	}
+	if redacted.User != nil {
+		redacted.User = url.User("[redacted]")
+	}
+	if redacted.Fragment != "" {
+		redacted.Fragment = "[redacted]"
+	}
+	// String() percent-escapes the userinfo and fragment (but not the query),
+	// so the marker would render as %5Bredacted%5D there. Undo that for the
+	// marker only, so every carrier shows the same literal "[redacted]".
+	return strings.ReplaceAll(redacted.String(), "%5Bredacted%5D", "[redacted]")
 }
 
 // singleJoiningSlash joins two path segments ensuring exactly one slash between them.
