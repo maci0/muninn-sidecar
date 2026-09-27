@@ -74,6 +74,7 @@ cmd/msc-eval/            Injection-quality evaluation CLI (offline + live)
   main.go                Scenario loading, report tables, MinScore sweep, method study
 cmd/msc-bench/           Real-MuninnDB retrieval + when-to-inject benchmark
   main.go                Seed labeled corpus, probe, sweep score vs vector_score
+  dataset.go             Shared item/probe records, word banks, namespace check, default corpus
   facts.go               Distinct-subject corpus + unrelated absent probes
 cmd/msc-qa/              Downstream answer-quality eval across models (none/injected/distractor arms)
   main.go                Dataset loading, model/CLI readers, arms
@@ -82,7 +83,12 @@ internal/
   agents/agents.go        Agent registry (claude, codex, grok, qwen, agy, ...)
   apiformat/apiformat.go  Format detection & message extraction (Anthropic/OpenAI/Gemini)
   inject/
-    inject.go             Memory recall, session window with decay, selection, enrichment
+    inject.go             Config, Injector, and the Enrich request path
+    memory.go             Memory record, relevance normalization, decay arithmetic
+    window.go             Session memory window (merge + decay + snapshot)
+    select.go             Selection policy: cosine gate, dedup, contradiction resolution
+    calibrate.go          Injection threshold: default, Otsu calibration, online drift tracking
+    mcp.go                MuninnDB MCP calls and JSON-RPC response parsing
     format.go             Context block formatting, budget packing, per-format injection
     eval.go               Offline selection-quality harness (precision/recall/F1, nDCG, gate, sweep)
     eval_study.go         Synthetic scenario generator + candidate when+what methods
