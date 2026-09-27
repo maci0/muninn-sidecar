@@ -42,7 +42,14 @@ func writeMDBlock(path, manifest string, rows []string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	out := replaceMDBlock(string(existing), marker, block)
+	// A report edited on Windows (or checked out with core.autocrlf) has CRLF
+	// endings. The block is built with LF, so it has to adopt the file's ending
+	// or the file ends up with a mix of the two.
+	content := string(existing)
+	if ending := eol(content); ending != "\n" {
+		block = strings.ReplaceAll(block, "\n", ending)
+	}
+	out := replaceMDBlock(content, marker, block)
 	return os.WriteFile(path, []byte(out), 0o644)
 }
 

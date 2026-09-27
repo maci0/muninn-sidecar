@@ -88,10 +88,16 @@ const (
 )
 
 // maxWhereLeftOffEntries caps how many previous-session items the one-shot
-// session-context block lists. Each entry is already ≤200 runes; bounding the
-// count keeps this server-controlled, budget-exempt block from growing without
-// limit on the first request. 20 entries (~1k tokens) is ample session bootstrap.
+// session-context block lists. Each entry is already capped at
+// maxWhereLeftOffLabelRunes; bounding the count keeps this server-controlled,
+// budget-exempt block from growing without limit on the first request.
+// 20 entries (~1k tokens) is ample session bootstrap.
 const maxWhereLeftOffEntries = 20
+
+// maxWhereLeftOffLabelRunes caps one previous-session item's concept (or, when
+// the concept is empty, its summary). It keeps a single verbose memory from
+// crowding out the rest of the block.
+const maxWhereLeftOffLabelRunes = 200
 
 // maxGuideRunes caps the free-form guide text MuninnDB returns for a session
 // start. The guide is one opaque string prepended outside the per-memory token

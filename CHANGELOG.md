@@ -120,6 +120,16 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **A `-md` report edited on Windows grows a block per run.** The manifest
+  marker was matched against the line with only its `\n` trimmed, so in a
+  CRLF file it never matched and every rerun appended another results block.
+  Markers are now matched with the CR trimmed, and the new block adopts the
+  file's line ending instead of mixing LF into it.
+- **The bench seeder carries a dedup_key.** `msc-bench` seeds its ground-truth
+  corpus without the content-addressed key every other MuninnDB write uses, so
+  re-seeding a corpus accumulated a second copy of every memory and the recall
+  that follows measured the run's own history. The store and the live eval
+  already derived one; the bench now does too.
 - **Non-ASCII text no longer breaks at a character boundary.** The `msc-eval`
   and `msc-qa` report tables clipped a scenario name or model label by byte, so
   a multi-byte character (CJK, emoji) was cut in half and the row ended in a
@@ -129,7 +139,9 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   than just the incomplete tail; only the tail is dropped now. The bounded
   capture buffer kept the last N bytes of a stream, which can start part-way
   through a character, so its contents could no longer decode; it now advances
-  to the first whole character.
+  to the first whole character. A model name in the session summary was the one
+  cap still cut by byte, which left invalid UTF-8 in both the tracked name and
+  the line that prints it.
 - **A Unicode host is refused when minting a certificate.** SNI and CONNECT
   carry punycode, and a certificate SAN cannot hold a non-ASCII name, so
   `--mitm-host` or a CONNECT naming `münchen.de` failed deep inside x509 (or,

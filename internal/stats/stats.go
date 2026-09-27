@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 )
 
 // Stats tracks session-level counters for proxy and store activity.
@@ -136,21 +137,23 @@ func (s *Stats) Snapshot() Snapshot {
 // "other".
 const maxTrackedModels = 16
 
-// maxModelNameLen caps one model name's length. A name is client-supplied text
-// copied verbatim from the request body, so without this a single multi-megabyte
-// "model" string is retained for the session and printed into the summary.
-const maxModelNameLen = 64
+// maxModelNameRunes caps one model name's length, counted in runes. A name is
+// client-supplied text copied verbatim from the request body, so without this a
+// single multi-megabyte "model" string is retained for the session and printed
+// into the summary. Runes, not bytes: the name is a map key and lands in the
+// summary, and a byte cut would split a multi-byte character and leave invalid
+// UTF-8 in both.
+const maxModelNameRunes = 64
 
 // RecordModel increments the usage count for a model. Names past
 // maxTrackedModels are counted in ModelsDropped rather than tracked
 // individually.
-
 func (s *Stats) RecordModel(model string) {
 	if model == "" {
 		return
 	}
-	if len(model) > maxModelNameLen {
-		model = model[:maxModelNameLen]
+	if utf8.RuneCountInString(model) > maxModelNameRunes {
+		model = string([]rune(model)[:maxModelNameRunes])
 	}
 	if v, loaded := s.models.Load(model); loaded {
 		v.(*atomic.Int64).Add(1)

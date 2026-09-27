@@ -117,7 +117,7 @@ func parseWhereLeftOff(body []byte) string {
 		text := strings.TrimSpace(raw)
 		if text != "" && text != "[]" && text != "null" {
 			return apiformat.SessionContextOpen + "\n" + apiformat.ContextNotice + "\nPrevious session context:\n" +
-				apiformat.NeutralizeMarkers(apiformat.TruncateText(text, 2000)) + "\n" + apiformat.SessionContextClose
+				apiformat.NeutralizeMarkers(apiformat.TruncateText(text, maxGuideRunes)) + "\n" + apiformat.SessionContextClose
 		}
 		return ""
 	}
@@ -144,7 +144,7 @@ func parseWhereLeftOff(body []byte) string {
 		}
 		if label != "" {
 			sb.WriteString("- ")
-			sb.WriteString(apiformat.NeutralizeMarkers(apiformat.TruncateText(label, 200)))
+			sb.WriteString(apiformat.NeutralizeMarkers(apiformat.TruncateText(label, maxWhereLeftOffLabelRunes)))
 			sb.WriteString("\n")
 			shown++
 		}

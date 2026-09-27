@@ -36,6 +36,23 @@ const maxBatchSize = 10
 // carries the exact count.
 const dropLogEvery = 100
 
+// Rune caps on what one exchange contributes to a memory. A captured request
+// carries the whole conversation and can reach tens of MiB, so the concept
+// (which the live feed and the dedup key are built from) and the stored content
+// are both truncated before they leave the worker.
+const (
+	// conceptRunesBoth is the user half of a concept that shows both sides of
+	// the exchange; conceptRunesSingle is the whole concept when only one side
+	// is present. The user side gets more room because it carries the request.
+	conceptRunesBoth   = 80
+	conceptRunesSingle = 120
+	// assistantRunesPreview is the assistant half of a two-sided concept, the
+	// short one: the concept only has to be recognizable in the live feed.
+	assistantRunesPreview = 40
+	// sideRunesBody is each side's share of the stored content.
+	sideRunesBody = 4000
+)
+
 // formattedMemory holds a pre-formatted exchange ready for MuninnDB.
 type formattedMemory struct {
 	concept string
@@ -398,22 +415,23 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	var concept string
 	switch {
 	case userMsg != "" && assistantMsg != "":
-		concept = apiformat.TruncateText(userMsg, 80) + " → " + apiformat.TruncateText(assistantMsg, 40)
+		concept = apiformat.TruncateText(userMsg, conceptRunesBoth) +
+			" → " + apiformat.TruncateText(assistantMsg, assistantRunesPreview)
 	case userMsg != "":
-		concept = apiformat.TruncateText(userMsg, 120)
+		concept = apiformat.TruncateText(userMsg, conceptRunesSingle)
 	default:
-		concept = apiformat.TruncateText(assistantMsg, 120)
+		concept = apiformat.TruncateText(assistantMsg, conceptRunesSingle)
 	}
 
 	var sb strings.Builder
 	if userMsg != "" {
 		sb.WriteString("User:\n")
-		sb.WriteString(apiformat.TruncateText(userMsg, 4000))
+		sb.WriteString(apiformat.TruncateText(userMsg, sideRunesBody))
 		sb.WriteString("\n\n")
 	}
 	if assistantMsg != "" {
 		sb.WriteString("Assistant:\n")
-		sb.WriteString(apiformat.TruncateText(assistantMsg, 4000))
+		sb.WriteString(apiformat.TruncateText(assistantMsg, sideRunesBody))
 	}
 
 	content := sb.String()
