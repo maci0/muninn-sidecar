@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -267,10 +266,7 @@ func TestRunWSParserDebugLogs(t *testing.T) {
 	defer func(prev bool) { wsDebug = prev }(wsDebug)
 	wsDebug = true
 
-	var logs bytes.Buffer
-	prevLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	defer slog.SetDefault(prevLogger)
+	logs := captureLogs(t)
 
 	ch := make(chan []byte, 1)
 	ch <- wsBuildFrame(wsOpText, []byte(`{"type":"gw.message"}`), false, true, false)
@@ -326,10 +322,7 @@ func TestRunWSParserDebugOff(t *testing.T) {
 	defer func(prev bool) { wsDebug = prev }(wsDebug)
 	wsDebug = false
 
-	var logs bytes.Buffer
-	prevLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	defer slog.SetDefault(prevLogger)
+	logs := captureLogs(t)
 
 	ch := make(chan []byte, 1)
 	ch <- wsBuildFrame(wsOpText, []byte(`{"type":"gw.message"}`), false, true, false)

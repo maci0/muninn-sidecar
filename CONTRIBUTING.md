@@ -104,7 +104,7 @@ can run several times a minute. Use it while iterating and run the full
 One command runs everything the CI `test` job runs, in the same order:
 
 ```sh
-make check   # tidy-check, fmt-check, lint-available, lint (go vet + staticcheck + shellcheck + ruff + yamllint), go test -race, build-all
+make check   # tidy-check, go-version-check, fmt-check, lint-available, lint (go vet + staticcheck + shellcheck + ruff + yamllint), go test -race, build-all, check-release
 ```
 
 `lint-available` is the CI parity gate: it names every non-Go linter missing

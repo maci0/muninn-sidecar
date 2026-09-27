@@ -62,6 +62,12 @@ GOVULNCHECK_PKG = golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 RUFF_VERSION ?= 0.16.4
 YAMLLINT_VERSION ?= 1.38.0
 
+# Bare `make` is what a contributor types first, and it should print the task
+# index rather than the four pinned versions `versions` prints: the file's
+# first target would otherwise be the default goal, and a newcomer would have
+# to know to ask for help.
+.DEFAULT_GOAL := help
+
 versions:
 	@echo 'RUFF_VERSION=$(RUFF_VERSION)'
 	@echo 'YAMLLINT_VERSION=$(YAMLLINT_VERSION)'
@@ -88,6 +94,7 @@ help:
 	@echo '  make lint-go      go vet + staticcheck only, the pair CI runs'
 	@echo '  make lint-non-go  shellcheck + ruff + yamllint only, the three CI runs'
 	@echo '  make lint-ci      lint-non-go with the pinned ruff/yamllint (what the CI lint job runs)'
+	@echo '  make tidy         go mod tidy, writing the result'
 	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
 	@echo '  make go-version-check  fail if CI installs an older Go than the go.mod directive requires'
 	@echo '  make cover        race + coverage report'

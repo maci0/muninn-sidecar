@@ -1,9 +1,7 @@
 package proxy
 
 import (
-	"bytes"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,22 +11,11 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
-// captureLogs redirects the default logger to a JSON buffer at debug level for
-// the duration of the test, and returns the buffer.
-func captureLogs(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var logs bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return &logs
-}
-
 // waitForLogs polls until the buffer holds a line whose msg is want. The turn
 // line is written by a deferred handler that runs after the client has already
-// been answered, so reading the buffer straight after the response returns
-// races the logger.
-func waitForLogs(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
+// been answered, so the wait is what the test needs; the buffer itself is
+// mutex-guarded (logbuf_test.go), since polling does not remove the race.
+func waitForLogs(t *testing.T, logs *logBuffer, msg string) map[string]any {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -46,7 +33,7 @@ func waitForLogs(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
 }
 
 // turnRecords returns the parsed "turn" lines from a captured log buffer.
-func turnRecords(t *testing.T, logs *bytes.Buffer) []map[string]any {
+func turnRecords(t *testing.T, logs *logBuffer) []map[string]any {
 	t.Helper()
 	var out []map[string]any
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {

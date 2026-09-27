@@ -2373,10 +2373,7 @@ func TestRequestIDCorrelatesLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var logs bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	defer slog.SetDefault(prev)
+	logs := captureLogsLevel(t, slog.LevelWarn)
 
 	addr, err := p.Start()
 	if err != nil {
