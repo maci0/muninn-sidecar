@@ -43,6 +43,14 @@ func TestRedactSecrets(t *testing.T) {
 		{"visa card spaced", "4111 1111 1111 1111", "4111 1111 1111 1111"},
 		{"visa card dashed", "4111-1111-1111-1111", "4111-1111-1111-1111"},
 		{"ssn dashed", "123-45-6789", "123-45-6789"},
+		{"phone nanp dashed", "415-555-0132", "415-555-0132"},
+		{"phone nanp spaced", "212 555 0184", "212 555 0184"},
+		{"phone nanp parenthesized", "(212) 555-0184", "212) 555-0184"},
+		{"phone nanp with country code", "+1 415 555 0132", "415 555 0132"},
+		{"phone nanp with country code parenthesized", "+1 (415) 555-0132", "415) 555-0132"},
+		{"phone toll free dashed", "1-800-555-0199", "800-555-0199"},
+		{"phone e164", "+442079460958", "442079460958"},
+		{"phone e164 grouped", "+44 20 7946 0958", "7946 0958"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -71,6 +79,12 @@ func TestRedactSecrets(t *testing.T) {
 		"order id 1234567890123456 shipped",                    // 16 digits but not a card prefix (starts with 1)
 		"build 8888-0000-0000-0000 tagged",                     // dashed groups but not a card prefix
 		"ticket 12-34-5678 resolved",                           // not the SSN 3-2-4 grouping
+		"version 1.2.3.4 of the toolchain",                     // dotted version, not a phone
+		"host 192.168.100.100 is the staging box",              // IPv4, dots never group a phone
+		"released 2026-09-27, run 2026-09-27T10:00:00Z",        // ISO date and timestamp
+		"order 1234 5678 9012 shipped",                         // 4-4-4 grouping is not NPA-NXX-XXXX
+		"invoice 2026 400 5000 net 30",                         // exchange code may not start with 0
+		"account 1234567890",                                   // an ungrouped 10-digit run is left alone
 		"deploy task-management-service-prod now",              // "sk-" inside a word is not a key
 		"galaxai-" + strings.Repeat("m", 24),                   // "xai-" inside a word is not a key
 		"git clone git" + "@" + "github.com:org/repo.git",      // scp-style remote, not an email

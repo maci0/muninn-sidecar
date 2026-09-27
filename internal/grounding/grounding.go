@@ -26,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
 // maxGroundResponse caps the grading model's response body. Verdicts are a few
@@ -46,13 +48,21 @@ type Grounder interface {
 // Prompt builds the listwise grading prompt, calibrated for extractive QA: a
 // passage counts if it merely contains an answer span (not only if it "directly
 // answers"), which avoids over-rejecting long multi-fact passages (§B3).
+//
+// This is the one point where query and passage text leave the process for a
+// judge model that may be a third-party provider, so direct identifiers are
+// scrubbed here. Passages are recalled memory, which the write path already
+// redacts, but a memory stored by another MuninnDB client (or before write-side
+// redaction existed) reaches this call unscrubbed, and the query is the user's
+// own latest turn. The judge only decides whether a span answers a question, so
+// the redacted form grades identically.
 func Prompt(query string, passages []string) string {
 	var sb strings.Builder
 	sb.WriteString("You are a retrieval grader for extractive QA. For each numbered passage, decide if it contains a span of text that could serve as a correct answer to the question. Judge each passage independently; surrounding unrelated facts are fine.\n")
-	sb.WriteString("Question: " + query + "\n")
+	sb.WriteString("Question: " + redact.Secrets(query) + "\n")
 	sb.WriteString("Passages:\n")
 	for i, p := range passages {
-		sb.WriteString("[" + strconv.Itoa(i+1) + "] " + strings.ReplaceAll(p, "\n", " ") + "\n")
+		sb.WriteString("[" + strconv.Itoa(i+1) + "] " + strings.ReplaceAll(redact.Secrets(p), "\n", " ") + "\n")
 	}
 	sb.WriteString("Reply with one line per passage in the form \"<number>: yes\" or \"<number>: no\". Output only those lines.")
 	return sb.String()

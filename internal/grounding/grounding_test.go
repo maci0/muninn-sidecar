@@ -72,6 +72,23 @@ func TestPrompt(t *testing.T) {
 	}
 }
 
+// The judge model may be a third-party provider, so the prompt must not carry
+// direct identifiers out of the process.
+func TestPromptRedactsIdentifiers(t *testing.T) {
+	p := Prompt("what is the number for 415-555-0132?",
+		[]string{"reach dev on 212-555-0184 or mail" + "ops" + "@" + "corp.example."})
+	for _, leak := range []string{"415-555-0132", "212-555-0184", "corp.example."} {
+		if strings.Contains(p, leak) {
+			t.Errorf("identifier %q survived into the judge prompt: %q", leak, p)
+		}
+	}
+	// The graded content itself must survive: the judge needs the question
+	// and the passage to decide anything.
+	if !strings.Contains(p, "what is the number for") || !strings.Contains(p, "reach dev on") {
+		t.Errorf("prompt lost non-PII content: %q", p)
+	}
+}
+
 // stub keeps passages containing "ANSWER".
 type stub struct{ calls int }
 

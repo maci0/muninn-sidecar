@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/redact"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -343,6 +344,49 @@ func TestEnrichEmptyResults(t *testing.T) {
 	}
 	if string(result) != string(body) {
 		t.Error("expected original body for empty results")
+	}
+}
+
+// The recall query is the user's raw latest turn, so it carries whatever PII
+// they typed. Only the scrubbed form may reach the memory backend.
+func TestEnrichRedactsQueryBeforeRecall(t *testing.T) {
+	var sent string
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Arguments struct {
+					Context []string `json:"context"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			t.Errorf("recall request is not valid JSON: %v", err)
+		}
+		sent = strings.Join(rpc.Params.Arguments.Context, " ")
+		w.Write(fakeRecallResponse(nil))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
+
+	body := []byte(`{"model":"claude-3","messages":[{"role":"user","content":"email alice at 415-555-0132 about the invoice"}]}`)
+	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
+		t.Fatal(err)
+	}
+
+	if sent == "" {
+		t.Fatal("recall server received no query")
+	}
+	if strings.Contains(sent, "415-555-0132") {
+		t.Errorf("phone number survived into the recall query: %q", sent)
+	}
+	if !strings.Contains(sent, redact.Marker) {
+		t.Errorf("expected a redaction marker in the recall query, got %q", sent)
+	}
+	// The surrounding intent must survive: redaction is not a blunt drop.
+	if !strings.Contains(sent, "about the invoice") {
+		t.Errorf("recall query lost non-PII content: %q", sent)
 	}
 }
 

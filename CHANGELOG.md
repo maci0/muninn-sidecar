@@ -5,7 +5,20 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- **Phone numbers are redacted.** Phone numbers passed every existing pattern
+  and so persisted in long-term memory and were re-injected on recall. E.164
+  (contiguous and grouped) and NANP forms are now scrubbed, with NPA/NXX
+  leading-digit and grouping constraints that keep version strings, ISO dates,
+  and IPv4 addresses intact.
+
 ### Fixed
+
+- **Direct identifiers no longer reach third parties on the read path.** The
+  recall query is scrubbed before it is sent to MuninnDB, and
+  `grounding.Prompt` scrubs the query and candidate passages before they reach
+  a judge model. Both paths previously carried unredacted text off-process.
 
 - **Upgrades survive capture.** 101 Switching Protocols responses are no longer
   consumed by capture on the plain proxy path; WebSocket upgrades pass through

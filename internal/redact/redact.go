@@ -1,6 +1,7 @@
 // Package redact scrubs well-known secret formats (API keys, tokens, private
 // keys, sensitive key=value assignments) and directly-identifying personal data
-// (email addresses, payment card numbers, US Social Security numbers) from text,
+// (email addresses, payment card numbers, US Social Security numbers, phone
+// numbers) from text,
 // replacing them with a [REDACTED] marker. It is
 // shared by the store (scrub before persisting a captured exchange) and the
 // injector (scrub recalled memory content before it is injected into an outgoing
@@ -64,6 +65,28 @@ var patterns = []*regexp.Regexp{
 	// to the dashed 3-2-4 grouping, which is distinctive enough to avoid the
 	// false positives a bare 9-digit run would cause against other IDs.
 	regexp.MustCompile(`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`),
+	// Phone numbers (direct identifier: GDPR Art. 4(1), CCPA §1798.140(v)).
+	// A phone number is one of the most common directly-identifying values
+	// pasted into a coding-agent session, and it survives every pattern above,
+	// so without these it persists in long-term memory and is re-injected into
+	// later provider requests.
+	//
+	// The NANP forms require the NPA and NXX to begin with 2-9 (NANP rules) and
+	// a space/dash group separator to be present. Those two constraints are
+	// what keep version strings, ISO dates, bare numeric IDs, and IPv4
+	// addresses out: "1.2.3.4", "2026-09-27", and "192.168.100.100" all fail
+	// on the leading digit or on the grouping requirement. A phone written as
+	// one unbroken 10-digit run is deliberately left alone, being
+	// indistinguishable from the account and order numbers it would corrupt.
+	// The parenthesized form carries no leading \b because '(' is itself the
+	// delimiter.
+	//
+	// Added last so the card patterns above win on any overlap.
+	regexp.MustCompile(`\+\d{8,15}\b`),
+	regexp.MustCompile(`\+\d{1,3}[ -](?:\d{1,4}[ -]){1,3}\d{2,4}\b`),
+	regexp.MustCompile(`\+\d{1,3}[ -]\([2-9][0-9]{2}\)[ -][2-9][0-9]{2}[ -][0-9]{4}\b`),
+	regexp.MustCompile(`\b[2-9][0-9]{2}[ -][2-9][0-9]{2}[ -][0-9]{4}\b`),
+	regexp.MustCompile(`\([2-9][0-9]{2}\)[ -][2-9][0-9]{2}[ -][0-9]{4}\b`),
 }
 
 // emailPattern catches email addresses, directly-identifying personal data

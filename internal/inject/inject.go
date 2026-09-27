@@ -279,6 +279,17 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		return body, 0, nil // no message to search with
 	}
 
+	// Scrub direct identifiers before the query leaves the process. Everything
+	// downstream of here (the embed call to MuninnDB, the intent hash, the
+	// similarity tokens) is derived from this string, so the same
+	// redaction the write path applies covers the read path too. The
+	// embedding never benefits from the digits of an email, a card, or a
+	// phone number, so the recall cost is nil and the query no longer carries
+	// those values to the memory backend. Redacting before the hash also
+	// keeps the same-intent cache from treating two spellings of one
+	// identifier as different intents.
+	query = redact.Secrets(query)
+
 	slog.Debug("inject: recalling", "format", format, "query_len", len(query))
 
 	// 2000 runes balances recall quality against MCP call overhead; longer

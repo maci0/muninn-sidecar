@@ -270,13 +270,15 @@ To inspect the resolved configuration without launching anything, run `msc --dry
   blocking the agent; shutdown flushing is time-bounded (~8s). Recall/injection
   fail open — a MuninnDB hiccup never blocks or corrupts a request.
 - **Secret redaction is best-effort.** Captured content is scrubbed of well-known
-  credential formats and personal data (emails, payment-card numbers, SSNs)
+  credential formats and personal data (emails, payment-card numbers, SSNs,
+  phone numbers)
   before storage, but the patterns are conservative and not
   exhaustive — it reduces, not eliminates, the risk of a secret reaching the
   store. Don't rely on it as a reason to paste secrets into an agent. It runs both
   before storage (disable with `--no-redact` for full-fidelity local capture) and,
   always, on recalled memory content before injection (so old/cross-client secrets
-  aren't re-sent to the provider).
+  aren't re-sent to the provider), on the recall query before it reaches the memory
+  backend, and on the answer-grounding judge prompt.
 - **MITM trust.** `--mitm` is opt-in. The CA private key is generated locally,
   stored `0600`, and trusted only by the agent msc launches — never the system
   trust store (`msc ca` prints the cert for trusting it elsewhere yourself).
