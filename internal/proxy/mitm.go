@@ -118,7 +118,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return p.ca.LeafFor(stripPort(target))
 		},
 	})
-	if err := clientConn.SetReadDeadline(time.Now().Add(p.handshakeTimeout)); err != nil {
+	if err := clientConn.SetReadDeadline(socketDeadlineBase().Add(p.handshakeTimeout)); err != nil {
 		slog.Debug("mitm: could not set handshake deadline", reqid.Field, id, "target", target, "err", err)
 		return
 	}
@@ -367,10 +367,10 @@ func writeStatus(clientConn net.Conn, id, target, status string) {
 func copyTunnel(dst, src net.Conn, target, id string) error {
 	buf := make([]byte, 32*1024)
 	for {
-		if err := src.SetReadDeadline(time.Now().Add(tunnelIdleTimeout)); err != nil {
+		if err := src.SetReadDeadline(socketDeadlineBase().Add(tunnelIdleTimeout)); err != nil {
 			slog.Debug("mitm: could not set tunnel read deadline", reqid.Field, id, "target", target, "err", err)
 		}
-		if err := dst.SetWriteDeadline(time.Now().Add(tunnelIdleTimeout)); err != nil {
+		if err := dst.SetWriteDeadline(socketDeadlineBase().Add(tunnelIdleTimeout)); err != nil {
 			slog.Debug("mitm: could not set tunnel write deadline", reqid.Field, id, "target", target, "err", err)
 		}
 		n, rerr := src.Read(buf)

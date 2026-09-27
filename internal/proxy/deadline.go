@@ -69,5 +69,5 @@ func (w *idleDeadlineWriter) FlushError() error {
 
 // extend arms the write deadline one idle window ahead of now.
 func (w *idleDeadlineWriter) extend() {
-	_ = w.rc.SetWriteDeadline(time.Now().Add(w.idle))
+	_ = w.rc.SetWriteDeadline(socketDeadlineBase().Add(w.idle))
 }

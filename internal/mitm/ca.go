@@ -309,13 +309,20 @@ func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
 	}
 
 	c.mu.Lock()
-	// Bound the cache: evict an arbitrary entry once full (unless we're
-	// refreshing an existing host, which replaces in place).
+	// Bound the cache (unless we're refreshing an existing host, which replaces
+	// in place). The victim is the lexicographically smallest host, not whatever
+	// the map range happens to visit first: Go randomizes map iteration order,
+	// so an arbitrary victim leaves a different host cached from one run to the
+	// next, and a replayed run then re-mints leaves for a different set of hosts
+	// and reaches a different cache state. The scan is over a bounded cache.
 	if _, exists := c.cache[host]; !exists && len(c.cache) >= maxCacheEntries {
+		victim := ""
 		for k := range c.cache {
-			delete(c.cache, k)
-			break
+			if victim == "" || k < victim {
+				victim = k
+			}
 		}
+		delete(c.cache, victim)
 	}
 	c.cache[host] = leaf
 	c.mu.Unlock()

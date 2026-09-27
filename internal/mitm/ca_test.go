@@ -270,6 +270,39 @@ func TestLeafCacheBounded(t *testing.T) {
 	}
 }
 
+// The eviction victim is part of the state a run reaches, so it has to be the
+// same host every time. Go randomizes map iteration order, so evicting the
+// first key a range visits would pick a different victim from run to run: the
+// bounded-cache test above still passed while the set of cached leaves moved,
+// and a replay from a failing run's script re-minted a different set of
+// hosts. Two runs of the same fill must evict the same host, the
+// lexicographically smallest one.
+func TestLeafCacheEvictsTheSameHostEveryRun(t *testing.T) {
+	const victim = "host-0000.example"
+	fill := func() bool {
+		ca := mustGenCA(t)
+		future := time.Now().Add(time.Hour)
+		for i := 0; i < maxCacheEntries; i++ {
+			ca.cache[fmt.Sprintf("host-%04d.example", i)] = &tls.Certificate{
+				Leaf: &x509.Certificate{NotAfter: future},
+			}
+		}
+		if _, err := ca.LeafFor("brand-new.example"); err != nil {
+			t.Fatal(err)
+		}
+		_, stillCached := ca.cache[victim]
+		return !stillCached
+	}
+
+	// Repeat well past Go's per-range rotation so an order-dependent victim
+	// cannot pass by luck.
+	for i := 0; i < 8; i++ {
+		if !fill() {
+			t.Fatalf("run %d: %s survived, so the victim was not the smallest host", i, victim)
+		}
+	}
+}
+
 func TestLeafForConcurrent(t *testing.T) {
 	ca := mustGenCA(t)
 	var wg sync.WaitGroup

@@ -299,7 +299,7 @@ func runWSParser(id, dir string, ch <-chan []byte, deflate bool, onMessage func(
 // and permessage-deflate negotiation is detected.
 func (p *Proxy) spliceWithCapture(client net.Conn, clientBuf *bufio.Reader, backend net.Conn, target, id string) {
 	backendBuf := bufio.NewReader(backend)
-	if err := backend.SetReadDeadline(time.Now().Add(p.upgradeHandshakeTimeout)); err != nil {
+	if err := backend.SetReadDeadline(socketDeadlineBase().Add(p.upgradeHandshakeTimeout)); err != nil {
 		slog.Debug("ws capture: could not set backend handshake deadline", reqid.Field, id, "target", target, "err", err)
 		return
 	}
