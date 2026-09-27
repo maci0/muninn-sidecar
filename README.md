@@ -265,7 +265,7 @@ time=2026-09-27T11:41:21.950+08:00 level=ERROR msg="proxy error" request_id=req-
 
 With `--log-json` the same lines are JSON objects, so a log pipeline can key on `level`, `msg`, and `request_id` without parsing a message string.
 
-A 4xx/5xx from the provider is a warn (the provider refused) and counts as an upstream error; a failure msc itself causes is an error and counts as a proxy error; a request you cancelled (Ctrl-C in the agent) is debug-level noise and counts as neither. See [ARCHITECTURE.md](ARCHITECTURE.md#observability) for the full picture.
+A 4xx/5xx from the provider is a warn (the provider refused) and counts as an upstream error; a failure msc itself causes is an error and counts as a proxy error; a request you cancelled (Ctrl-C in the agent) is debug-level noise and counts as neither. The grounding judge fails open to the plain recall gate by design, so a judge that is down is invisible in the counters; it warns with the judge label, the reason, and the running failure count, throttled to the first failure and every 20th after it. See [ARCHITECTURE.md](ARCHITECTURE.md#observability) for the full picture.
 
 ## Configuration
 

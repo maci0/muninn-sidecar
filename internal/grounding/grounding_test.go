@@ -1,7 +1,10 @@
 package grounding
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -323,4 +326,53 @@ func FuzzParseMask(f *testing.F) {
 			t.Fatalf("ParseMask(%q,%d) len=%d", s, n, len(mask))
 		}
 	})
+}
+
+// TestFailOpenWarnsAndThrottles pins the operator-visible half of failing open:
+// the first failure of a judge warns, the ones after it stay quiet until the
+// throttle interval, and a different judge is counted on its own. Without the
+// warning a judge that never worked is indistinguishable from one that graded
+// every turn; without the throttle a judge that is down for a session buries
+// the log with one repeating line.
+func TestFailOpenWarnsAndThrottles(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	label := "test:throttle"
+	failOpenCounts.Delete(label)
+	for i := range 2 * failOpenEvery {
+		warnFailOpen(label, "request failed", "err", errors.New("boom"))
+		if got := strings.Count(logs.String(), "failing open to the retrieval gate"); got != expectedWarnings(i+1) {
+			t.Fatalf("after failure %d: %d warnings, want %d", i+1, got, expectedWarnings(i+1))
+		}
+	}
+	if !strings.Contains(logs.String(), "judge="+label) {
+		t.Errorf("warning must name the judge, got %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "failures=20") {
+		t.Errorf("throttled warning must report the running count, got %q", logs.String())
+	}
+
+	// A second judge has its own counter: a broken HTTP judge must not throttle
+	// the CLI judge's failures away.
+	logs.Reset()
+	failOpenCounts.Delete("test:other")
+	warnFailOpen("test:other", "request failed")
+	if strings.Count(logs.String(), "failing open to the retrieval gate") != 1 {
+		t.Errorf("a different judge must warn on its first failure, got %q", logs.String())
+	}
+}
+
+// expectedWarnings is how many of the first n failures warn: the first, then
+// every failOpenEvery-th.
+func expectedWarnings(n int) int {
+	w := 0
+	for i := 1; i <= n; i++ {
+		if i == 1 || i%failOpenEvery == 0 {
+			w++
+		}
+	}
+	return w
 }

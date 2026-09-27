@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/reqid"
 	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
@@ -135,7 +136,7 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 			if len(data) <= maxStreamBuf {
 				sc.lineBuf = append(sc.lineBuf[:0], data...)
 			} else {
-				slog.Warn("SSE line buffer exceeded limit, dropping partial line", "request_id", sc.ctx.id, "len", len(data), "path", sc.ctx.path)
+				slog.Warn("SSE line buffer exceeded limit, dropping partial line", reqid.Field, sc.ctx.id, "len", len(data), "path", sc.ctx.path)
 			}
 			break
 		}
@@ -155,7 +156,7 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 		// holds a second copy, so drop an implausibly long one instead of
 		// retaining it. No real SSE event is this long.
 		if len(lineBytes) > maxRetainedLine {
-			slog.Warn("SSE line exceeded limit, dropping", "request_id", sc.ctx.id, "len", len(lineBytes), "limit", maxRetainedLine, "path", sc.ctx.path)
+			slog.Warn("SSE line exceeded limit, dropping", reqid.Field, sc.ctx.id, "len", len(lineBytes), "limit", maxRetainedLine, "path", sc.ctx.path)
 			continue
 		}
 

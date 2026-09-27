@@ -529,7 +529,7 @@ func degradedReasons(snap stats.Snapshot, q storeQueue) []string {
 func (p *Proxy) instrument(w http.ResponseWriter, r *http.Request, start time.Time) (*http.Request, bool) {
 	id := requestID(r.Context())
 	capture := p.shouldCapture(r.URL.Path)
-	slog.Debug("request", "request_id", id, "path", r.URL.Path, "capture", capture)
+	slog.Debug("request", reqid.Field, id, "path", r.URL.Path, "capture", capture)
 	if !capture {
 		return r, true
 	}
@@ -539,12 +539,12 @@ func (p *Proxy) instrument(w http.ResponseWriter, r *http.Request, start time.Ti
 		var err error
 		reqBody, err = io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize+1))
 		if err != nil {
-			slog.Warn("failed to read request body for capture", "request_id", id, "path", r.URL.Path, "err", err)
+			slog.Warn("failed to read request body for capture", reqid.Field, id, "path", r.URL.Path, "err", err)
 			writeJSONError(w, http.StatusInternalServerError, "failed to read request body")
 			return r, false
 		}
 		if int64(len(reqBody)) > maxRequestBodySize {
-			slog.Warn("request body exceeds size limit", "request_id", id, "path", r.URL.Path, "limit", maxRequestBodySize)
+			slog.Warn("request body exceeds size limit", reqid.Field, id, "path", r.URL.Path, "limit", maxRequestBodySize)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body exceeds proxy size limit")
 			return r, false
 		}
@@ -609,7 +609,8 @@ func (p *Proxy) rewrite(pr *httputil.ProxyRequest) {
 		pr.Out.URL.Path = singleJoiningSlash(p.upstream.Path, pr.Out.URL.Path)
 	}
 
-	slog.Debug("proxying", "method", pr.Out.Method, "url", redactURL(pr.Out.URL))
+	slog.Debug("proxying", reqid.Field, requestID(pr.In.Context()),
+		"method", pr.Out.Method, "url", redactURL(pr.Out.URL))
 }
 
 // captureResponse is called after the upstream responds. For non-streaming
@@ -630,7 +631,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// Reading it here would block on (and then destroy) the upgraded stream, so
 	// skip capture and let the reverse proxy splice the connection natively.
 	if resp.StatusCode == http.StatusSwitchingProtocols {
-		slog.Debug("skipping capture of protocol upgrade response", "request_id", ctx.id, "path", ctx.path)
+		slog.Debug("skipping capture of protocol upgrade response", reqid.Field, ctx.id, "path", ctx.path)
 		return nil
 	}
 
@@ -643,7 +644,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// actionable) and counted for the session summary.
 	if resp.StatusCode >= 400 {
 		slog.Warn("upstream error response",
-			"request_id", ctx.id,
+			reqid.Field, ctx.id,
 			"status", resp.StatusCode,
 			"method", ctx.method,
 			"path", ctx.path,
@@ -658,7 +659,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// protobuf, not JSON — the extractors can't read them and storing the binary
 	// would only add noise. Skip capture; the response still forwards untouched.
 	if strings.Contains(contentType, "application/grpc") {
-		slog.Debug("skipping gRPC response capture (protobuf not decodable)", "request_id", ctx.id, "path", ctx.path)
+		slog.Debug("skipping gRPC response capture (protobuf not decodable)", reqid.Field, ctx.id, "path", ctx.path)
 		return nil
 	}
 
@@ -669,7 +670,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// and only add noise to the memory store. Skip capture (same reasoning as the
 	// gRPC skip); the body still forwards to the agent untouched.
 	if enc := resp.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "gzip") {
-		slog.Debug("skipping capture of non-gzip encoded response", "request_id", ctx.id, "encoding", enc, "path", ctx.path)
+		slog.Debug("skipping capture of non-gzip encoded response", reqid.Field, ctx.id, "encoding", enc, "path", ctx.path)
 		return nil
 	}
 
@@ -694,7 +695,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 		return err
 	}
 	if int64(len(body)) > maxNonStreamBodySize {
-		slog.Warn("non-streaming response exceeds size limit", "request_id", ctx.id, "path", ctx.path, "limit", maxNonStreamBodySize)
+		slog.Warn("non-streaming response exceeds size limit", reqid.Field, ctx.id, "path", ctx.path, "limit", maxNonStreamBodySize)
 		return fmt.Errorf("response body exceeds %d-byte limit", maxNonStreamBodySize)
 	}
 
@@ -705,14 +706,14 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 		gr, err := gzip.NewReader(bytes.NewReader(body))
 		if err != nil {
-			slog.Warn("failed to decompress gzip response, storing raw", "request_id", ctx.id, "path", ctx.path, "err", err)
+			slog.Warn("failed to decompress gzip response, storing raw", reqid.Field, ctx.id, "path", ctx.path, "err", err)
 		} else {
 			decompressed, err := io.ReadAll(io.LimitReader(gr, maxDecompressSize+1))
 			gr.Close()
 			if err != nil {
-				slog.Warn("gzip decompression incomplete, storing raw", "request_id", ctx.id, "path", ctx.path, "err", err)
+				slog.Warn("gzip decompression incomplete, storing raw", reqid.Field, ctx.id, "path", ctx.path, "err", err)
 			} else if int64(len(decompressed)) > maxDecompressSize {
-				slog.Warn("gzip response exceeds decompression limit, serving compressed", "request_id", ctx.id, "path", ctx.path, "limit", maxDecompressSize)
+				slog.Warn("gzip response exceeds decompression limit, serving compressed", reqid.Field, ctx.id, "path", ctx.path, "limit", maxDecompressSize)
 			} else {
 				body = decompressed
 				resp.Header.Del("Content-Encoding")
@@ -746,10 +747,10 @@ func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) 
 	// not a proxy fault: log at debug and skip the 502 so it doesn't generate
 	// error-level noise that masks real upstream failures.
 	if errors.Is(err, context.Canceled) {
-		slog.Debug("proxy request canceled by client", "request_id", requestID(r.Context()), "method", r.Method, "path", r.URL.Path)
+		slog.Debug("proxy request canceled by client", reqid.Field, requestID(r.Context()), "method", r.Method, "path", r.URL.Path)
 		return
 	}
-	slog.Error("proxy error", "request_id", requestID(r.Context()), "err", err, "method", r.Method, "path", r.URL.Path, "agent", p.agentName)
+	slog.Error("proxy error", reqid.Field, requestID(r.Context()), "err", err, "method", r.Method, "path", r.URL.Path, "agent", p.agentName)
 	if p.stats != nil {
 		p.stats.ProxyErrors.Add(1)
 	}

@@ -61,6 +61,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if target == "" {
 		target = r.URL.Host
 	}
+	// The CONNECT's own correlation ID, minted in ServeHTTP. Every line below
+	// happens before the tunnel serves a request of its own, so without it a
+	// tunnel that dies at the handshake is the one failure an operator cannot
+	// tie back to the agent turn that opened it.
+	id := requestID(r.Context())
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -69,7 +74,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
-		slog.Debug("mitm: hijack failed", "target", target, "err", err)
+		slog.Debug("mitm: hijack failed", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	defer clientConn.Close()
@@ -90,12 +95,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// API). Everything else is blind-tunneled untouched, so package registries,
 	// OAuth, and cert-pinned services keep working and aren't needlessly decrypted.
 	if !p.shouldInterceptHost(stripPort(target)) {
-		p.blindTunnel(clientConn, target)
+		p.blindTunnel(clientConn, target, id)
 		return
 	}
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
-		slog.Debug("mitm: could not confirm tunnel to client", "target", target, "err", err)
+		slog.Debug("mitm: could not confirm tunnel to client", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 
@@ -114,20 +119,20 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err := clientConn.SetReadDeadline(time.Now().Add(p.handshakeTimeout)); err != nil {
-		slog.Debug("mitm: could not set handshake deadline", "target", target, "err", err)
+		slog.Debug("mitm: could not set handshake deadline", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	if err := tlsConn.Handshake(); err != nil {
-		slog.Debug("mitm: TLS handshake failed", "target", target, "err", err)
+		slog.Debug("mitm: TLS handshake failed", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	// Drop the deadline: the tunnel is now a long-lived connection whose reads
 	// are bounded by the http.Server serving it (ReadHeaderTimeout/ReadTimeout).
 	if err := clientConn.SetReadDeadline(time.Time{}); err != nil {
-		slog.Debug("mitm: could not clear handshake deadline", "target", target, "err", err)
+		slog.Debug("mitm: could not clear handshake deadline", reqid.Field, id, "target", target, "err", err)
 		return
 	}
-	slog.Debug("mitm: intercepting tunnel", "target", target, "sni", tlsConn.ConnectionState().ServerName)
+	slog.Debug("mitm: intercepting tunnel", reqid.Field, id, "target", target, "sni", tlsConn.ConnectionState().ServerName)
 
 	// One reverse proxy per tunnel, forwarding to the real host over TLS.
 	rp := &httputil.ReverseProxy{
@@ -189,7 +194,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// accept or parse failure) at debug: the tunnel is torn down either way,
 	// but a dropped reason here is the only trace of a failed MITM exchange.
 	if err := srv.Serve(newSingleConnListener(tlsConn)); err != nil && !errors.Is(err, net.ErrClosed) {
-		slog.Debug("mitm: tunnel server stopped", "target", target, "err", err)
+		slog.Debug("mitm: tunnel server stopped", reqid.Field, id, "target", target, "err", err)
 	}
 }
 
@@ -268,21 +273,23 @@ func (p *Proxy) shouldInterceptHost(host string) bool {
 // blindTunnel forwards an opaque TCP stream between the client and the real
 // target without touching TLS — a plain CONNECT proxy. Used for hosts we don't
 // intercept. The 200 is sent only after the upstream dial succeeds so the client
-// sees a real failure if the host is unreachable.
-func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
+// sees a real failure if the host is unreachable. id is the CONNECT's
+// correlation ID, carried on every line so a tunnel that dies is tied to the
+// turn that opened it.
+func (p *Proxy) blindTunnel(clientConn net.Conn, target, id string) {
 	upstream, err := net.DialTimeout("tcp", target, tunnelDialTimeout)
 	if err != nil {
-		slog.Debug("mitm: blind-tunnel dial failed", "target", target, "err", err)
+		slog.Debug("mitm: blind-tunnel dial failed", reqid.Field, id, "target", target, "err", err)
 		writeStatus(clientConn, nil, target, "502 Bad Gateway")
 		return
 	}
 	defer upstream.Close()
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
-		slog.Debug("mitm: could not confirm tunnel to client", "target", target, "err", err)
+		slog.Debug("mitm: could not confirm tunnel to client", reqid.Field, id, "target", target, "err", err)
 		return
 	}
-	slog.Debug("mitm: blind-tunnel", "target", target)
+	slog.Debug("mitm: blind-tunnel", reqid.Field, id, "target", target)
 
 	// Pipe both directions; return once both sides finish. The CloseWrite
 	// half-close unblocks the peer copy, so waiting for both cannot deadlock,
@@ -292,8 +299,8 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
 		// A copy error here is the normal end of one direction (a peer closing
 		// mid-stream); log it so a tunnel that dies for any other reason leaves
 		// a trace instead of ending silently.
-		if err := copyTunnel(dst, src, src, target); err != nil {
-			slog.Debug("mitm: tunnel copy ended with an error", "target", target, "err", err)
+		if err := copyTunnel(dst, src, src, target, id); err != nil {
+			slog.Debug("mitm: tunnel copy ended with an error", reqid.Field, id, "target", target, "err", err)
 		}
 		// Unblock the peer copy: a half-close lets the other direction drain.
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
@@ -322,15 +329,16 @@ func writeStatus(clientConn net.Conn, ctx context.Context, target, status string
 // copyTunnel pipes r (reads taken from src, which is normally src itself or a
 // buffered reader over it) into dst, re-arming tunnelIdleTimeout on the read and
 // the write side before every chunk. A deadline error is returned like any other
-// copy error; the caller logs it and closes its half.
-func copyTunnel(dst net.Conn, src net.Conn, r io.Reader, target string) error {
+// copy error; the caller logs it and closes its half. id is the correlation ID of
+// the CONNECT that opened the tunnel.
+func copyTunnel(dst net.Conn, src net.Conn, r io.Reader, target, id string) error {
 	buf := make([]byte, 32*1024)
 	for {
 		if err := src.SetReadDeadline(time.Now().Add(tunnelIdleTimeout)); err != nil {
-			slog.Debug("mitm: could not set tunnel read deadline", "target", target, "err", err)
+			slog.Debug("mitm: could not set tunnel read deadline", reqid.Field, id, "target", target, "err", err)
 		}
 		if err := dst.SetWriteDeadline(time.Now().Add(tunnelIdleTimeout)); err != nil {
-			slog.Debug("mitm: could not set tunnel write deadline", "target", target, "err", err)
+			slog.Debug("mitm: could not set tunnel write deadline", reqid.Field, id, "target", target, "err", err)
 		}
 		n, rerr := r.Read(buf)
 		if n > 0 {

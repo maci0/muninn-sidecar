@@ -24,6 +24,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
@@ -176,6 +178,32 @@ func allTrue(n int) []bool {
 	return m
 }
 
+// failOpenEvery throttles the fail-open warning: the first failure for a judge
+// warns and every failOpenEvery-th after it. A judge that is down for a whole
+// session fails once per turn, and one line per turn would bury the rest of the
+// log with one repeating reason; the counter on the line says how many have
+// happened, so a throttled warning still reports the scale.
+const failOpenEvery = 20
+
+// failOpenCounts maps a judge label to the number of times it has failed open.
+var failOpenCounts sync.Map // label → *atomic.Int64
+
+// warnFailOpen reports that a judge call could not be made or read and grading
+// degraded to the gate alone. Fail-open is by design, but a silent one is
+// invisible: the session summary counts a judged turn and no memory is dropped,
+// so a judge that has been unreachable all session looks exactly like a judge
+// doing its job. Warn, once the operator can act on it, with the reason and the
+// running failure count.
+func warnFailOpen(label, reason string, attrs ...any) {
+	v, _ := failOpenCounts.LoadOrStore(label, &atomic.Int64{})
+	n := v.(*atomic.Int64).Add(1)
+	if n != 1 && n%failOpenEvery != 0 {
+		return
+	}
+	slog.Warn("grounding: judge unavailable, failing open to the retrieval gate",
+		append([]any{"judge", label, "reason", reason, "failures", n}, attrs...)...)
+}
+
 // --- HTTP (OpenAI-compatible) grounder ---
 
 type httpGrounder struct {
@@ -197,7 +225,7 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		slog.Debug("grounding: build request failed, failing open", "judge", g.Label(), "err", err)
+		warnFailOpen(g.Label(), "could not build request", "err", err)
 		return allTrue(len(passages))
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -211,8 +239,8 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 	resp, err := g.client.Do(req)
 	if err != nil {
 		// Fail-open is by design (a flaky judge must never drop real hits), but a
-		// silent one is undebuggable — surface why grounding degraded to the gate.
-		slog.Debug("grounding: request failed, failing open", "judge", g.Label(), "err", err)
+		// silent one is undebuggable: warnFailOpen says why grounding degraded.
+		warnFailOpen(g.Label(), "request failed", "err", err)
 		return allTrue(len(passages))
 	}
 	defer resp.Body.Close()
@@ -221,15 +249,15 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 	// connection, say) is the actual cause worth reporting.
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxGroundResponse+1))
 	if resp.StatusCode >= 300 {
-		slog.Debug("grounding: non-2xx response, failing open", "judge", g.Label(), "status", resp.StatusCode)
+		warnFailOpen(g.Label(), "non-2xx response", "status", resp.StatusCode)
 		return allTrue(len(passages))
 	}
 	if readErr != nil {
-		slog.Debug("grounding: response read failed, failing open", "judge", g.Label(), "err", readErr)
+		warnFailOpen(g.Label(), "response read failed", "err", readErr)
 		return allTrue(len(passages))
 	}
 	if int64(len(data)) > maxGroundResponse {
-		slog.Debug("grounding: response exceeds size limit, failing open", "judge", g.Label(), "limit", maxGroundResponse)
+		warnFailOpen(g.Label(), "response exceeds size limit", "limit", maxGroundResponse)
 		return allTrue(len(passages))
 	}
 	var out struct {
@@ -238,7 +266,7 @@ func (g *httpGrounder) Relevant(ctx context.Context, query string, passages []st
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil || len(out.Choices) == 0 {
-		slog.Debug("grounding: unparseable or empty response, failing open", "judge", g.Label(), "err", err)
+		warnFailOpen(g.Label(), "unparseable or empty response", "err", err)
 		return allTrue(len(passages))
 	}
 	return ParseMask(out.Choices[0].Message.Content, len(passages))
@@ -268,7 +296,7 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	if err != nil && out == "" {
 		// Fail-open with a trace: a misconfigured argv or a judge that timed out
 		// (the call's deadline) otherwise degrades to the gate with no signal why.
-		slog.Debug("grounding: CLI judge failed with no output, failing open", "judge", g.Label(), "err", err)
+		warnFailOpen(g.Label(), "CLI judge failed with no output", "err", err)
 		return allTrue(len(passages))
 	}
 	// Agents may print chatter then the verdict lines. Pass the whole output to

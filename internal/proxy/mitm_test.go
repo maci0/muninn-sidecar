@@ -2,12 +2,14 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -503,7 +505,7 @@ func TestBlindTunnelDrainsBothDirections(t *testing.T) {
 	}
 	defer clientConn.Close()
 
-	go (&Proxy{}).blindTunnel(clientConn, upLn.Addr().String())
+	go (&Proxy{}).blindTunnel(clientConn, upLn.Addr().String(), "req-test")
 
 	testEnd.SetDeadline(time.Now().Add(5 * time.Second))
 	br := bufio.NewReader(testEnd)
@@ -947,4 +949,54 @@ func TestSetMITMRootsDuringForwarding(t *testing.T) {
 		t.Fatalf("forward leg failed while roots were being swapped: %v", err)
 	}
 	st.Drain()
+}
+
+// TestTunnelLogLinesCarryRequestID pins the correlation contract on the tunnel
+// path. Every line handleConnect, blindTunnel, and copyTunnel emit happens
+// before the tunnel serves a request of its own, so the CONNECT's correlation ID
+// is the only thing tying a failed tunnel to the agent turn that opened it.
+func TestTunnelLogLinesCarryRequestID(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	// Dialing an unreachable target fails before any byte moves, and the
+	// failure line is the one an operator has to be able to attribute. A real
+	// TCP pair, not net.Pipe: the pipe is unbuffered, so blindTunnel's write
+	// would block with no reader.
+	upLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upLn.Close()
+	clientConn, err := net.Dial("tcp", upLn.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientConn.Close()
+	go func() { io.Copy(io.Discard, clientConn) }() // drain whatever blindTunnel writes
+
+	(&Proxy{}).blindTunnel(clientConn, "127.0.0.1:1", "req-42")
+
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Msg       string `json:"msg"`
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line is not valid JSON: %v (%s)", err, line)
+		}
+		if entry.Msg != "mitm: blind-tunnel dial failed" {
+			continue
+		}
+		if entry.RequestID != "req-42" {
+			t.Errorf("tunnel log line lost the CONNECT's request_id: %s", line)
+		}
+		return
+	}
+	t.Fatalf("blind-tunnel dial failure was not logged: %s", logs.String())
 }
