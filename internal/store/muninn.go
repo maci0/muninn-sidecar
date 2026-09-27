@@ -621,7 +621,7 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, dedup *dedupWindow, p
 	return &formattedMemory{
 		concept:   concept,
 		content:   content,
-		tags:      buildTags(ex),
+		tags:      s.tagsFor(ex),
 		requestID: ex.RequestID,
 		hash:      hash,
 	}
@@ -802,10 +802,31 @@ func retryable(err error) bool {
 	return !errors.As(err, &re)
 }
 
+// maxModelTagRunes caps the model name carried in a memory tag. ex.Model is
+// whatever the client put in the request body's "model" field (or the response's),
+// so it is untrusted, arbitrary-length text that would otherwise be copied
+// verbatim onto every memory the exchange writes. Matched to the stats
+// sidecar's own cap so the two views of a run cannot disagree about which
+// model was in use.
+const maxModelTagRunes = 64
+
 func buildTags(ex *CapturedExchange) []string {
 	tags := []string{"sidecar", ex.Agent, "status:" + strconv.Itoa(ex.StatusCode)}
 	if ex.Model != "" {
-		tags = append(tags, "model:"+ex.Model)
+		tags = append(tags, "model:"+apiformat.TruncateText(ex.Model, maxModelTagRunes))
 	}
 	return tags
+}
+
+// tagsFor is buildTags with the store's write-side redaction applied to the
+// model name. Every other field that reaches a memory is scrubbed in
+// formatAndDedup under the same toggle; the model name was the one exception,
+// and it is client-supplied like the rest.
+func (s *MuninnStore) tagsFor(ex *CapturedExchange) []string {
+	if s.redact.Load() && ex.Model != "" {
+		scrubbed := *ex
+		scrubbed.Model = redact.Secrets(ex.Model)
+		return buildTags(&scrubbed)
+	}
+	return buildTags(ex)
 }

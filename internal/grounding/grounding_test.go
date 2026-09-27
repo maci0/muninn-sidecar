@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -375,4 +376,50 @@ func expectedWarnings(n int) int {
 		}
 	}
 	return w
+}
+
+// The judge prompt is the one place query and passage text leave the process
+// for a model that may be a third-party provider, and passages arrive from the
+// vault with no size limit of their own. The prompt must stay inside its budget
+// however large the recalled memories are, and the passage ids it does emit
+// must stay contiguous so ParseMask still lines the verdicts up.
+func TestPromptBoundsSize(t *testing.T) {
+	huge := strings.Repeat("a", maxPassageRunes*8)
+	passages := make([]string, 200)
+	for i := range passages {
+		passages[i] = huge
+	}
+	p := Prompt(strings.Repeat("q", maxQueryRunes*4), passages)
+
+	// Header, question fence and the closing instruction are written
+	// unconditionally, so the bound is those plus one passage.
+	overhead := len(p) - len(strings.Repeat("a", maxPassageRunes))
+	if len(p) > maxPromptBytes+overhead {
+		t.Errorf("prompt is %d bytes, over the %d-byte budget", len(p), maxPromptBytes)
+	}
+	if !strings.Contains(p, `<passage id="1">`) {
+		t.Fatalf("the first passage was dropped: %q", p)
+	}
+	// Passages past the budget are dropped whole rather than clipped, so the
+	// ids the prompt does emit must stay contiguous from 1: ParseMask lines
+	// verdicts up by index, and a gap would shift them.
+	n := strings.Count(p, "<passage id=")
+	for i := 1; i <= n; i++ {
+		if !strings.Contains(p, `<passage id="`+fmt.Sprint(i)+`">`) {
+			t.Fatalf("passage ids are not contiguous up to %d: %q", n, p)
+		}
+	}
+}
+
+// A single oversized memory is capped per passage, not only in aggregate: the
+// judge has to see the question, and a passage that fills the whole context
+// buries it.
+func TestPromptCapsSinglePassage(t *testing.T) {
+	p := Prompt("where?", []string{strings.Repeat("b", maxPassageRunes*4)})
+	if len(p) > maxPromptBytes {
+		t.Errorf("one passage produced a %d-byte prompt, over the budget", len(p))
+	}
+	if !strings.Contains(p, "where?") {
+		t.Errorf("the question was lost to an oversized passage: %q", p)
+	}
 }

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/redact"
@@ -1371,6 +1372,13 @@ func TestSetPreparerConcurrentWithStore(t *testing.T) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 
+	// Install once, synchronously, before any capture is enqueued. The setter
+	// goroutine below re-installs continuously to overlap the swap with live
+	// captures, but its first run is not ordered against the capture loop, so
+	// without this a capture could legitimately reach the server before any
+	// preparer existed and the assertion below would fire on a correct store.
+	s.SetPreparer(func(ex *CapturedExchange) { ex.Model = "test-model" })
+
 	// Reinstall the preparer continuously while captures flow, so the worker's
 	// read and the caller's write overlap no matter how the two are scheduled.
 	wg.Add(1)
@@ -1801,5 +1809,36 @@ func TestBatchRequestIDsNamesTheLostTurns(t *testing.T) {
 				t.Errorf("batchRequestIDs() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// ex.Model is the client's own "model" field, so it is untrusted text that
+// reaches a tag copied onto every memory the exchange writes. It must be
+// clipped like any other untrusted field, and scrubbed when write-side
+// redaction is on, like the message texts beside it.
+func TestBuildTagsClipsAndRedactsModel(t *testing.T) {
+	long := strings.Repeat("m", maxModelTagRunes*10)
+	got := buildTags(&CapturedExchange{Agent: "claude", Model: long})[3]
+	// TruncateText marks a clip with a trailing ellipsis, so the bound is the
+	// cap plus that one mark.
+	if n := utf8.RuneCountInString(got); n > len("model:")+maxModelTagRunes+1 {
+		t.Errorf("model tag is %d runes, over the %d-rune cap", n, maxModelTagRunes)
+	}
+
+	leaky := "sk-" + strings.Repeat("a", 40)
+	ex := &CapturedExchange{Agent: "claude", Model: leaky}
+
+	s := &MuninnStore{}
+	if got := s.tagsFor(ex)[3]; !strings.Contains(got, "sk-aaaa") {
+		t.Fatalf("redaction off: model name was scrubbed anyway: %q", got)
+	}
+
+	s.redact.Store(true)
+	got = s.tagsFor(ex)[3]
+	if strings.Contains(got, "sk-aaaa") {
+		t.Errorf("redaction on: model tag carries the secret: %q", got)
+	}
+	if !strings.Contains(got, "model:") {
+		t.Errorf("redaction dropped the model tag entirely: %q", got)
 	}
 }
