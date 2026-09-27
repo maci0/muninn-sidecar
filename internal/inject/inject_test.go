@@ -1581,6 +1581,25 @@ func TestSupersedes(t *testing.T) {
 	if supersedes(mkStale("c", "2026-01-01T00:00:00Z", false), mkStale("k", "2026-05-01T00:00:00Z", false)) {
 		t.Error("older created_at should not supersede")
 	}
+	// A fractional second sorts lexically *before* the whole second it belongs
+	// to, so the later instant must win on the parsed value, not the string.
+	if !supersedes(mkStale("c", "2026-05-01T00:00:00.5Z", false), mkStale("k", "2026-05-01T00:00:00Z", false)) {
+		t.Error("a later fractional second should supersede despite sorting earlier lexically")
+	}
+	// Non-UTC offsets: 14:00+02:00 is 12:00Z, older than 12:00:01Z even though
+	// its wall-clock text is later.
+	if supersedes(mkStale("c", "2026-05-01T14:00:00+02:00", false), mkStale("k", "2026-05-01T12:00:01Z", false)) {
+		t.Error("created_at must be compared as an instant, not by wall-clock text")
+	}
+	// Equal instants in different spellings → keep the incumbent.
+	if supersedes(mkStale("c", "2026-05-01T12:00:00+00:00", false), mkStale("k", "2026-05-01T12:00:00Z", false)) {
+		t.Error("equal instants should not supersede")
+	}
+	// Unparseable values still fall back to lexical order rather than dropping
+	// the staleness-based comparison entirely.
+	if !supersedes(mkStale("c", "2026-06-01", false), mkStale("k", "2026-01-01", false)) {
+		t.Error("date-only created_at should fall back to lexical order")
+	}
 }
 
 func TestConflictsHelper(t *testing.T) {

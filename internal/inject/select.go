@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"time"
 )
 
 // dupTokenOverlap is the Jaccard similarity (over lowercased word sets) above
@@ -137,13 +138,35 @@ func conflicts(a, b memory) bool {
 
 // supersedes reports whether candidate should replace the kept same-concept
 // memory: a non-stale memory supersedes a stale one (MuninnDB's annotation is
-// authoritative); when staleness matches, the one with the later created_at wins
-// (RFC3339 UTC compares lexically). Equal on both → keep the incumbent.
+// authoritative); when staleness matches, the one with the later created_at wins.
+// Equal on both → keep the incumbent.
 func supersedes(candidate, kept memory) bool {
 	if candidate.Annotations.Stale != kept.Annotations.Stale {
 		return !candidate.Annotations.Stale // candidate wins iff it is the fresh (non-stale) one
 	}
+	ct, cok := createdAtInstant(candidate.CreatedAt)
+	kt, kok := createdAtInstant(kept.CreatedAt)
+	if cok && kok {
+		if !ct.Equal(kt) {
+			return ct.After(kt)
+		}
+		return false
+	}
 	return candidate.CreatedAt > kept.CreatedAt
+}
+
+// createdAtInstant parses an RFC3339 created_at into an instant. Lexical
+// comparison only agrees with chronological order for the exact shape
+// "…THH:MM:SSZ": a fractional second ("…:02.5Z") sorts *before* the whole
+// second it belongs to, and "+02:00" offsets sort by local time, not instant.
+// A value that does not parse as RFC3339 (missing, malformed, or a date-only
+// field from an older server) reports false and falls back to lexical order.
+func createdAtInstant(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // normalizeConcept lowercases and trims a concept for duplicate detection so
