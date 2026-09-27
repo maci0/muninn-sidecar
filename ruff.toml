@@ -22,7 +22,30 @@ select = [
     "RUF",  # ruff-specific, incl. RUF100 (dead noqa)
     "S",    # bandit: assert/eval/weak-hash/subprocess misuse
     "BLE",  # blind except
+    "ANN",  # missing type annotations
+    "ARG",  # unused function arguments
+    "TID",  # banned imports (relative imports above the top level, etc.)
+    "TC",   # typing-only imports belong in a TYPE_CHECKING block
+    "FA",   # __future__ imports that the pinned target already defaults to
+    "A",    # builtin shadowing (a parameter named `id` or `type`)
+    "T10",  # debugger left in the source
+    "EM",   # exception messages must not be string literals
+    "TRY",  # try/except/finally footguns
+    "G",    # logging format
+    "PERF", # per-call performance traps
+    "FURB", # modern rewrites of the same semantics
+    "SLOT", # dataclass __slots__ sanity
+    "SLF",  # private member access from outside the class
+    "PTH",  # os.path/open() where pathlib belongs
+    "DTZ",  # naive datetimes where an aware one is meant
+    "ISC",  # implicit string concat that reads as one token
+    "LOG",  # logger misuse
+    "FBT",  # boolean trap (positional bools)
+    "Q",    # quote consistency beyond the formatter's style
+    "EXE",  # shebang and executable-bit agreement
 ]
+# `COM` is deliberately absent: COM812's missing trailing commas are the
+# formatter's call, and the two rules disagree on the same lines.
 ignore = [
     # Dataset converters carry their thresholds inline (page counts, minimum
     # answer length): they are read next to the filter that uses them, and

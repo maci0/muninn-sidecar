@@ -682,3 +682,38 @@ func FuzzParseRecallPayload(f *testing.F) {
 		}
 	})
 }
+
+// The append branch has its own line-ending hazard: a first run into a CRLF
+// file with no marker yet, and one whose last line was left unterminated by an
+// editor. Both must come out CRLF end to end.
+func TestWriteMDBlockAppendCRLF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.md")
+	rows := []string{mdRow("modelX", 10, [3]armAgg{})}
+	// An existing CRLF note with no trailing newline, so the separator has to be
+	// synthesized too.
+	if err := os.WriteFile(path, []byte("| existing |\r\n| note | no final break |"), 0o644); err != nil {
+		t.Fatalf("seed CRLF file: %v", err)
+	}
+	if err := writeMDBlock(path, "manifest-A", rows); err != nil {
+		t.Fatalf("writeMDBlock: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	got := string(data)
+	if n := countSub(got, mdManifestPrefix); n != 1 {
+		t.Errorf("append wrote %d manifest comments, want 1: %q", n, got)
+	}
+	if !strings.Contains(got, "manifest-A -->\r\n") {
+		t.Errorf("appended block used the wrong line ending: %q", got)
+	}
+	if !strings.Contains(got, "| note | no final break |\r\n") {
+		t.Errorf("the unterminated last line did not gain a CRLF: %q", got)
+	}
+	for i, l := range strings.Split(got, "\n")[:len(strings.Split(got, "\n"))-1] {
+		if !strings.HasSuffix(l, "\r") {
+			t.Errorf("line %d lost its CR: %q", i, l)
+		}
+	}
+}

@@ -11,6 +11,29 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   the content-addressed `dedup_key` every other write path carries, so a rerun
   of `-seed` stored a second copy of the whole corpus. The duplicates crowd
   recall's top-k and skew the retrieval numbers the tool exists to measure.
+- **A CRLF results file no longer grows without bound.** The `msc-qa` report
+  writer matched a run's manifest marker against the line with only its newline
+  trimmed, so in a file with Windows line endings the marker was never found and
+  every rerun appended another block instead of replacing its own. The marker is
+  now matched with the carriage return trimmed too, and a replacement block is
+  written with the line ending the file already uses, so a report stays CRLF end
+  to end.
+- **Non-ASCII text no longer breaks at a character boundary.** The `msc-eval`
+  and `msc-qa` report tables clipped a scenario name or model label by byte, so
+  a multi-byte character (CJK, emoji) was cut in half and the row ended in a
+  replacement character; both count characters now. A capped text delta in the
+  SSE and WebSocket paths trimmed bytes from the end until the string decoded,
+  which discarded every character after a stray invalid byte in the delta rather
+  than just the incomplete tail; only the tail is dropped now. The bounded
+  capture buffer kept the last N bytes of a stream, which can start part-way
+  through a character, so its contents could no longer decode; it now advances
+  to the first whole character.
+- **A Unicode host is refused when minting a certificate.** SNI and CONNECT
+  carry punycode, and a certificate SAN cannot hold a non-ASCII name, so
+  `--mitm-host` or a CONNECT naming `münchen.de` failed deep inside x509 (or,
+  when only interception was scoped, silently blind-tunneled the host). The
+  error now names the punycode form to use, and a host with an explicit DNS
+  root (`api.openai.com.`) mints the same leaf as one without.
 
 ### Changed
 

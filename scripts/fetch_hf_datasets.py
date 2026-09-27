@@ -21,11 +21,11 @@ difficulty and the per-vault gate vary (see docs/model-eval.md, docs/experiments
 """
 
 import json
-import os
 import sys
 import tempfile
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 # One datasets-server row / one SQuAD article. The field set is per-dataset and
@@ -247,11 +247,11 @@ CONVERTERS = {
 }
 
 
-def _output_path(name: str, argv: list[str]) -> str:
+def _output_path(name: str, argv: list[str]) -> Path:
     """An explicit [out.json] wins; otherwise every dataset goes to the temp dir."""
     if argv[1] != "all" and len(argv) > 2 and not argv[2].startswith("--"):
-        return argv[2]
-    return os.path.join(tempfile.gettempdir(), f"{name}.json")
+        return Path(argv[2])
+    return Path(tempfile.gettempdir()) / f"{name}.json"
 
 
 def main(argv: list[str]) -> int:
@@ -265,7 +265,7 @@ def main(argv: list[str]) -> int:
     for name in names:
         data = CONVERTERS[name](pages)
         out = _output_path(name, argv)
-        with open(out, "w") as f:
+        with out.open("w") as f:
             json.dump({"data": data}, f)
         print(f"{name}: {len(data)} examples -> {out}")
     return 0

@@ -225,14 +225,24 @@ fuzz:
 	  done; \
 	done; echo "all fuzz targets clean"
 
-# The non-Go linters are optional, so they skip when missing. Gate presence with
-# `if` and run the tool in a separate statement: `command -v X && X ... || echo
-# skip` also fires the skip on the tool's non-zero exit, so a real finding would
-# print "not installed" and the target would still succeed.
+# The non-Go linters are required, for the same reason staticcheck is: a
+# missing copy that skips silently reports a green `make check` and turns into a
+# red CI run. Gate presence with `command -v` and fail in a separate statement:
+# `command -v X && X ... || echo skip` also fires the skip on the tool's own
+# non-zero exit, so a real finding would print "not installed" and the target
+# would still succeed. CI runs the same three, so the local and remote rule sets
+# are the same set; the version pin for CI's ephemeral ruff lives in ci.yml.
 lint: lint-go
-	@if command -v shellcheck >/dev/null 2>&1; then shellcheck test-live.sh; else echo "shellcheck not installed, skipping"; fi
-	@if command -v ruff >/dev/null 2>&1; then ruff check scripts/ && ruff format --check scripts/; else echo "ruff not installed, skipping"; fi
-	@if command -v yamllint >/dev/null 2>&1; then yamllint .; else echo "yamllint not installed, skipping"; fi
+	@command -v shellcheck >/dev/null 2>&1 || { \
+	  echo "shellcheck is required (CI runs it): https://www.shellcheck.net/#install" >&2; exit 1; }
+	shellcheck test-live.sh
+	@command -v ruff >/dev/null 2>&1 || { \
+	  echo "ruff is required (CI runs it): uv tool install ruff" >&2; exit 1; }
+	ruff check scripts/
+	ruff format --check scripts/
+	@command -v yamllint >/dev/null 2>&1 || { \
+	  echo "yamllint is required (CI runs it): uv tool install yamllint" >&2; exit 1; }
+	yamllint .
 
 # `make lint` treats the non-Go linters as optional, so a contributor without
 # them still gets the Go checks. That leniency is wrong for `make check`, which

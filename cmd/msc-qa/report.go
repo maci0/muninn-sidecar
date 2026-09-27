@@ -46,6 +46,26 @@ func writeMDBlock(path, manifest string, rows []string) error {
 	return os.WriteFile(path, []byte(out), 0o644)
 }
 
+// eol returns the line ending content already uses: "\r\n" if any line ends
+// with a carriage return, "\n" otherwise. A report edited on Windows, or
+// checked out with core.autocrlf, is CRLF end to end, and a block written back
+// with LF endings would leave the file with both.
+func eol(content string) string {
+	if strings.Contains(content, "\r\n") {
+		return "\r\n"
+	}
+	return "\n"
+}
+
+// withEOL rewrites the LF line endings in s to the given ending, leaving a
+// string that already carries them alone.
+func withEOL(s, ending string) string {
+	if ending == "\n" || strings.Contains(s, "\r\n") {
+		return s
+	}
+	return strings.ReplaceAll(s, "\n", ending)
+}
+
 // replaceMDBlock swaps the block opened by marker for block, dropping whatever
 // followed that block up to the next manifest comment (or end of file). When
 // marker is absent, the block is appended. Returns the full new file contents.
@@ -55,12 +75,8 @@ func replaceMDBlock(content, marker, block string) string {
 	// so the new block adopts whichever ending the file already uses. Marker
 	// matching trims the CR as well: without that the marker never matches on a
 	// CRLF file and every rerun appends another block.
-	eol := "\n"
-	if strings.Contains(content, "\r\n") {
-		eol = "\r\n"
-	}
-	block = strings.ReplaceAll(block, "\n", eol)
-
+	ending := eol(content)
+	block = withEOL(block, ending)
 	lines := strings.SplitAfter(content, "\n")
 	start := -1
 	for i, l := range lines {
@@ -70,8 +86,8 @@ func replaceMDBlock(content, marker, block string) string {
 		}
 	}
 	if start < 0 {
-		if content != "" && !strings.HasSuffix(content, eol) {
-			content += eol
+		if content != "" && !strings.HasSuffix(content, ending) {
+			content += ending
 		}
 		return content + block
 	}
