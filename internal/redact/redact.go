@@ -75,20 +75,26 @@ var patterns = []rule{
 	{re: regexp.MustCompile(`\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}`),
 		lit: "sk-"},
 	// AWS access key ID.
-	{re: regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
+	{re: regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
+		lit: "AKIA"},
 	// GitHub tokens (PAT / OAuth / refresh / server / user-to-server).
-	{re: regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`)},
+	{re: regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`),
+		lit: "gh"},
 	// Google API key.
-	{re: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
+	{re: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`),
+		lit: "AIza"},
 	// Slack tokens.
-	{re: regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`)},
+	{re: regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`),
+		lit: "xox"},
 	// xAI (Grok) API keys. \b as for sk- above.
 	{re: regexp.MustCompile(`\bxai-[A-Za-z0-9]{20,}`),
 		lit: "xai-"},
 	// Google OAuth access tokens (gcloud / OAuth-mode agents such as agy).
-	{re: regexp.MustCompile(`ya29\.[0-9A-Za-z_-]{20,}`)},
+	{re: regexp.MustCompile(`ya29\.[0-9A-Za-z_-]{20,}`),
+		lit: "ya29."},
 	// JSON Web Tokens (three base64url segments).
-	{re: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`)},
+	{re: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
+		lit: "eyJ"},
 	// Bearer tokens in headers/prose.
 	{re: regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
 		folds: []string{"bearer"}},
@@ -96,9 +102,11 @@ var patterns = []rule{
 	{re: regexp.MustCompile(`(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{16,}`),
 		folds: []string{"live", "test"}},
 	// GitHub fine-grained personal access token.
-	{re: regexp.MustCompile(`github_pat_[0-9A-Za-z_]{60,}`)},
+	{re: regexp.MustCompile(`github_pat_[0-9A-Za-z_]{60,}`),
+		lit: "github_pat_"},
 	// npm access token.
-	{re: regexp.MustCompile(`npm_[0-9A-Za-z]{36}`)},
+	{re: regexp.MustCompile(`npm_[0-9A-Za-z]{36}`),
+		lit: "npm_"},
 	// HTTP Basic auth header (base64 user:pass).
 	{re: regexp.MustCompile(`(?i)authorization:\s*basic\s+[A-Za-z0-9+/]{16,}=*`),
 		folds: []string{"authorization:"}},
@@ -364,7 +372,10 @@ func resolveHomePattern() (*regexp.Regexp, string) {
 // keeping the path that follows it.
 func redactHome(s string) string {
 	re, home := homePattern()
-	if re == nil {
+	if re == nil || !strings.Contains(s, home) {
+		return s
+	}
+	if !re.MatchString(s) {
 		return s
 	}
 	return re.ReplaceAllStringFunc(s, func(m string) string {

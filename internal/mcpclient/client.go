@@ -37,8 +37,13 @@ var requestID atomic.Int64
 // with a different answer is a new memory. SHA-256 keeps collisions out of
 // reach for content-length memory.
 func DedupKey(vault, concept, content string) string {
-	sum := sha256.Sum256([]byte(vault + "\x00" + concept + "\x00" + content))
-	return hex.EncodeToString(sum[:])
+	h := sha256.New()
+	io.WriteString(h, vault)
+	h.Write([]byte{0})
+	io.WriteString(h, concept)
+	h.Write([]byte{0})
+	io.WriteString(h, content)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // NextRequestID reserves a fresh JSON-RPC request ID. A caller that will retry
