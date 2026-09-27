@@ -83,6 +83,24 @@ func fakeEmptyGuideResponse() []byte {
 	return resp
 }
 
+// fakeWhereLeftOffWithMemory returns a where_left_off response carrying one
+// memory, i.e. a session start that actually has continuity to hand over.
+func fakeWhereLeftOffWithMemory(concept, summary string) []byte {
+	inner, _ := json.Marshal(map[string]any{
+		"memories": []map[string]any{{"concept": concept, "summary": summary}},
+	})
+	resp, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": string(inner)},
+			},
+		},
+		"id": 1,
+	})
+	return resp
+}
+
 // newRecallServer creates a test server that handles both where_left_off
 // (returning an empty memories array) and recall (delegating to the given handler).
 func newRecallServer(handler http.HandlerFunc) *httptest.Server {
@@ -404,6 +422,108 @@ func TestNegativeCacheExpires(t *testing.T) {
 	inj.Enrich(t.Context(), body)
 	if got := recalls.Load(); got != 2 {
 		t.Errorf("recall fired %d times, want 2 after the intent cache expired", got)
+	}
+}
+
+// A cached miss runs on a shorter clock than a cached hit. The vault it claims
+// is empty is the one this sidecar is writing the answer to, so a re-ask has to
+// reach the vault long before intentCacheTTL would allow.
+func TestNegativeCacheExpiresBeforeIntentTTL(t *testing.T) {
+	var recalls atomic.Int32
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		recalls.Add(1)
+		w.Write(fakeRecallResponse(nil))
+	})
+	defer srv.Close()
+
+	clk := clock.NewFake()
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Clock: clk})
+
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"how do we deploy"}]}`)
+	inj.Enrich(t.Context(), body)
+	inj.Enrich(t.Context(), body)
+	if got := recalls.Load(); got != 1 {
+		t.Fatalf("recall fired %d times inside the negative TTL, want 1", got)
+	}
+
+	// Still inside the intent cache's TTL, so a hit would have been reused; the
+	// miss must already be re-queried.
+	if negativeCacheTTL >= intentCacheTTL {
+		t.Fatal("the negative cache must expire before the intent cache does")
+	}
+	clk.Advance(negativeCacheTTL + time.Second)
+	inj.Enrich(t.Context(), body)
+	if got := recalls.Load(); got != 2 {
+		t.Errorf("recall fired %d times, want 2 once the negative cache expired", got)
+	}
+}
+
+// A session-start fetch that comes back empty is not the answer: the MCP
+// endpoint can still be coming up when the sidecar starts. The pair is
+// re-fetched on a later turn and the continuity context arrives.
+func TestSessionContextRetriesAfterEmptyFetch(t *testing.T) {
+	var whereLeftOffCalls atomic.Int32
+	srv := newFakeServer(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		switch rpc.Params.Name {
+		case "muninn_where_left_off":
+			if whereLeftOffCalls.Add(1) <= 2 {
+				w.Write(fakeWhereLeftOffEmpty())
+				return
+			}
+			w.Write(fakeWhereLeftOffWithMemory("auth module", "Implementing OAuth flow"))
+		case "muninn_guide":
+			w.Write(fakeEmptyGuideResponse())
+		default:
+			w.Write(fakeRecallResponse(nil))
+		}
+	})
+	defer srv.Close()
+
+	clk := clock.NewFake()
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Clock: clk})
+
+	body := []byte(`{"model":"claude-3","system":"You are helpful","messages":[{"role":"user","content":"hello"}]}`)
+
+	// The backend is down: nothing to inject, and no retry storm either.
+	inj.Enrich(t.Context(), body)
+	inj.Enrich(t.Context(), body)
+	if n := whereLeftOffCalls.Load(); n != 1 {
+		t.Fatalf("where_left_off called %d times, want 1 (a retry must wait out sessionInitRetryInterval)", n)
+	}
+
+	// Once the retry interval passes, the fetch runs again and this time
+	// returns context.
+	clk.Advance(sessionInitRetryInterval)
+	inj.Enrich(t.Context(), body)
+	inj.Enrich(t.Context(), body)
+	if n := whereLeftOffCalls.Load(); n != 2 {
+		t.Fatalf("where_left_off called %d times, want 2 after the retry interval", n)
+	}
+
+	clk.Advance(sessionInitRetryInterval)
+	out, _ := inj.Enrich(t.Context(), body)
+	if !strings.Contains(string(out), "auth module") {
+		t.Error("a retried session start must inject the continuity context it finally got")
+	}
+
+	// The result is consumed once and settled: no further fetching.
+	clk.Advance(sessionInitRetryInterval)
+	out, _ = inj.Enrich(t.Context(), body)
+	if strings.Contains(string(out), "auth module") {
+		t.Error("session context must be injected only once")
+	}
+	if n := whereLeftOffCalls.Load(); n != 3 {
+		t.Errorf("where_left_off called %d times, want 3 (a settled session start never refetches)", n)
 	}
 }
 

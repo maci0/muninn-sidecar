@@ -126,6 +126,28 @@ const maxQueryRunes = 2000
 // outlast a round trip, not the session.
 const intentCacheTTL = 2 * time.Minute
 
+// negativeCacheTTL bounds how long a cached "recalled nothing" may suppress a
+// fresh query. It is far shorter than intentCacheTTL because the staleness it
+// tolerates is self-inflicted: the exchange answering the question that just
+// recalled nothing is captured and flushed into the same vault within seconds
+// (the store ticks every 2s), so the miss stops being true almost
+// immediately, and a re-ask of the same question must reach the vault to see
+// it. It only has to outlast the round trip inside one tool-use chain, where
+// the agent resends the same user message.
+const negativeCacheTTL = 10 * time.Second
+
+// sessionInitRetryInterval is how long the injector waits after an empty
+// session-start fetch before trying again on a later turn. The MCP endpoint is
+// the same one the store writes to, so at process start it can still be coming
+// up; a 200ms timeout at t=0 must not void the session's continuity context.
+const sessionInitRetryInterval = 5 * time.Second
+
+// maxSessionInitAttempts caps the session-start fetches so a vault that is
+// genuinely empty (or a backend that is genuinely down) is not polled for the
+// life of the process. Attempts are driven by incoming turns, never by a
+// timer, so an idle session makes none.
+const maxSessionInitAttempts = 6
+
 // Injector enriches LLM API requests with recalled memories from MuninnDB.
 // It maintains a session-level memory window: recalled memories persist across
 // turns with decaying scores, so context from earlier turns fades gradually
@@ -158,19 +180,31 @@ type Injector struct {
 	// lastQuery* track the most recent recall query so continuations (the same
 	// user message resent with new tool results) reuse the session window
 	// instead of firing a redundant recall. lastWasEmpty drives the negative
-	// cache (a repeated intent that already recalled nothing skips re-querying).
-	// lastQueryAt bounds that reuse: the vault gains memories mid-session, so a
-	// verdict older than intentCacheTTL is re-queried rather than trusted.
-	// Guarded by mu.
+	// cache (a repeated intent that already recalled nothing skips re-querying),
+	// which lastEmptyAt expires on its own shorter clock. lastQueryAt bounds the
+	// reuse: the vault gains memories mid-session, so a verdict older than
+	// intentCacheTTL is re-queried rather than trusted. Guarded by mu.
 	lastQueryHash   uint64
 	lastQueryTokens []string
 	hasLastQuery    bool
 	lastWasEmpty    bool
 	lastQueryAt     time.Time
+	lastEmptyAt     time.Time // when lastWasEmpty was recorded; bounds the negative cache
 
-	// Session-start: call where_left_off and guide once on first enrichment.
-	sessionOnce sync.Once
-	sessionCtx  string // one-shot session-start context (where_left_off + guide); eagerly cleared when first read during enrichment
+	// Session-start: where_left_off and guide are fetched once and kept for the
+	// life of the process. A fetch that comes back empty (backend still coming
+	// up, a timeout) is NOT a durable answer: it is retried on later turns, at
+	// most maxSessionInitAttempts times and never sooner than
+	// sessionInitRetryInterval apart. sessionSettled is set only by a fetch
+	// that actually returned context, so that result is the one that sticks.
+	// sessionMu serializes fetches so concurrent enrichments do not stampede
+	// the backend; sessionAttempts/sessionRetryAfter/sessionSettled/sessionCtx
+	// are guarded by mu.
+	sessionMu         sync.Mutex
+	sessionAttempts   int
+	sessionRetryAfter time.Time
+	sessionSettled    bool
+	sessionCtx        string // one-shot session-start context (where_left_off + guide); eagerly cleared when first read during enrichment
 
 	// Session memory window: rolling set of memories injected across turns.
 	mu             sync.Mutex
@@ -247,69 +281,12 @@ func New(cfg Config) *Injector {
 // token count. Every failure is handled gracefully by returning the
 // original body unchanged.
 //
-// On the first call (session start), it also calls muninn_where_left_off and
-// muninn_guide to provide continuity from the previous session and global guidelines.
+// At session start it also calls muninn_where_left_off and muninn_guide to
+// provide continuity from the previous session and global guidelines. That
+// pair is cached for the life of the process, but only once a call has
+// actually returned it (see fetchSessionContext).
 func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
-	// On first call, fetch where_left_off context and guide concurrently (best-effort).
-	// Use context.Background() instead of the request context because sync.Once
-	// never retries — if the request context is cancelled (client disconnect,
-	// timeout), the session initialization would be permanently lost.
-	inj.sessionOnce.Do(func() {
-		var wg sync.WaitGroup
-		var wlo, guide string
-
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			ctxW, cancelW := context.WithTimeout(context.Background(), inj.timeout)
-			defer cancelW()
-			wlo = inj.fetchWhereLeftOff(ctxW)
-		}()
-
-		go func() {
-			defer wg.Done()
-			ctxG, cancelG := context.WithTimeout(context.Background(), inj.timeout)
-			defer cancelG()
-			guide = inj.fetchGuide(ctxG)
-		}()
-
-		wg.Wait()
-
-		var sb strings.Builder
-		if wlo != "" {
-			sb.WriteString(wlo)
-		}
-		if guide != "" {
-			if sb.Len() > 0 {
-				sb.WriteString("\n")
-			}
-			sb.WriteString(guide)
-		}
-		// where_left_off is bounded at the source by entry count (parseWhereLeftOff,
-		// maxWhereLeftOffEntries) and the guide by length (parseGuide,
-		// maxGuideRunes), so the assembled session context is well-formed and
-		// bounded without truncating the string (which would cut the closing
-		// marker).
-		//
-		// Defense in depth: scrub secrets/PII before injecting, the same as the
-		// per-memory recall block (formatContextBlock). where_left_off and guide are
-		// recalled memory content too — a secret stored by another client (or before
-		// write-side redaction existed) must not be re-transmitted to the provider.
-		inj.mu.Lock()
-		inj.sessionCtx = redact.Secrets(sb.String())
-		inj.mu.Unlock()
-
-		// Both fetches are best-effort and the session context is cached for the
-		// life of the process, so an empty result means this session permanently
-		// loses its continuity context. That has to be countable, or a backend
-		// that was down at startup is indistinguishable from a session with
-		// nothing to carry over.
-		if wlo == "" && guide == "" {
-			if inj.stats != nil {
-				inj.stats.InjectionErrors.Add(1)
-			}
-		}
-	})
+	inj.fetchSessionContext()
 
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
@@ -388,7 +365,10 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 		(inj.querySimReuse < 1 && len(inj.lastQueryTokens) > 0 &&
 			jaccard(curTokens, inj.lastQueryTokens) >= inj.querySimReuse))
 	windowEmpty := len(inj.recentMemories) == 0
-	negCached := sameIntent && windowEmpty && inj.lastWasEmpty
+	// A cached miss expires on its own, shorter clock (negativeCacheTTL): the
+	// vault it says is empty is the one this sidecar is writing the answer to.
+	negCached := sameIntent && windowEmpty && inj.lastWasEmpty &&
+		inj.clock.Now().Sub(inj.lastEmptyAt) < negativeCacheTTL
 	inj.mu.Unlock()
 
 	minScore := inj.currentMinScore()
@@ -449,6 +429,9 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 		inj.hasLastQuery = true
 		inj.lastWasEmpty = len(inj.recentMemories) == 0
 		inj.lastQueryAt = inj.clock.Now()
+		if inj.lastWasEmpty {
+			inj.lastEmptyAt = inj.lastQueryAt
+		}
 		inj.mu.Unlock()
 	}
 
@@ -521,6 +504,93 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 // that owns the injector stops serving, so the idle connections to MuninnDB and
 // their goroutines do not outlive the session that opened them.
 func (inj *Injector) Close() { inj.mcp.Close() }
+
+// fetchSessionContext fills the one-shot session-start context (where_left_off
+// + guide) and caches it for the life of the process.
+//
+// An empty result is not treated as the answer: the MCP endpoint is the same
+// one the store writes to, so at process start it can still be coming up, and a
+// timeout there would otherwise void the session's continuity context until the
+// process restarts. So an empty fetch is retried on a later turn, no sooner
+// than sessionInitRetryInterval and at most maxSessionInitAttempts times; the
+// first fetch that returns content settles the cache for good.
+//
+// Use context.Background() for the calls, not the request context: a client
+// disconnect or request timeout must not decide whether the session ever gets
+// its continuity context.
+func (inj *Injector) fetchSessionContext() {
+	inj.sessionMu.Lock()
+	defer inj.sessionMu.Unlock()
+
+	inj.mu.Lock()
+	due := !inj.sessionSettled &&
+		inj.sessionAttempts < maxSessionInitAttempts &&
+		!inj.clock.Now().Before(inj.sessionRetryAfter)
+	inj.mu.Unlock()
+	if !due {
+		return
+	}
+
+	var wg sync.WaitGroup
+	var wlo, guide string
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ctxW, cancelW := context.WithTimeout(context.Background(), inj.timeout)
+		defer cancelW()
+		wlo = inj.fetchWhereLeftOff(ctxW)
+	}()
+
+	go func() {
+		defer wg.Done()
+		ctxG, cancelG := context.WithTimeout(context.Background(), inj.timeout)
+		defer cancelG()
+		guide = inj.fetchGuide(ctxG)
+	}()
+
+	wg.Wait()
+
+	var sb strings.Builder
+	if wlo != "" {
+		sb.WriteString(wlo)
+	}
+	if guide != "" {
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(guide)
+	}
+	// where_left_off is bounded at the source by entry count (parseWhereLeftOff,
+	// maxWhereLeftOffEntries) and the guide by length (parseGuide,
+	// maxGuideRunes), so the assembled session context is well-formed and
+	// bounded without truncating the string (which would cut the closing
+	// marker).
+	//
+	// Defense in depth: scrub secrets/PII before injecting, the same as the
+	// per-memory recall block (formatContextBlock). where_left_off and guide are
+	// recalled memory content too — a secret stored by another client (or before
+	// write-side redaction existed) must not be re-transmitted to the provider.
+	sessionCtx := redact.Secrets(sb.String())
+
+	inj.mu.Lock()
+	inj.sessionAttempts++
+	inj.sessionRetryAfter = inj.clock.Now().Add(sessionInitRetryInterval)
+	if sessionCtx != "" {
+		inj.sessionSettled = true
+		inj.sessionCtx = sessionCtx
+	}
+	inj.mu.Unlock()
+
+	// Both fetches are best-effort, so an empty result is counted on every
+	// attempt: a backend that never came up has to be distinguishable from a
+	// session with nothing to carry over.
+	if wlo == "" && guide == "" {
+		if inj.stats != nil {
+			inj.stats.InjectionErrors.Add(1)
+		}
+	}
+}
 
 // currentMinScore returns the live injection threshold under the lock (it may be
 // retuned by online calibration between turns).

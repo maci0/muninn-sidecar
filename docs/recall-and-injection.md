@@ -134,6 +134,13 @@ goes stale against the vault the injector itself keeps changing. Past the TTL
 the query is re-asked. A tool-use round trip is seconds, so the bound costs
 nothing on the path reuse exists for.
 
+A cached **miss** runs on a shorter clock, `negativeCacheTTL` (10 seconds). The
+stale vault it suppresses is the one this sidecar is writing the answer to: the
+exchange that answers a question recalled nothing is flushed within seconds, so
+a re-ask of that question has to reach the vault long before the window TTL
+would allow it. The miss only has to outlast one tool-use round, which the
+resent user message makes.
+
 ### 2. How to recall — `semantic`
 
 MuninnDB offers four recall presets. Benchmarked on a labeled SQuAD corpus
