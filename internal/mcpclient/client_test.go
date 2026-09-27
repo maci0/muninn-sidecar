@@ -202,6 +202,50 @@ func TestCallResultIsNotAnError(t *testing.T) {
 
 // Two writes of the same memory derive the same dedup key, so a redelivered or
 // re-seeded write collapses onto the stored one instead of adding a second.
+// TestCheckEnvelopeRejectsUnconfirmedWrites: a 2xx that is not a JSON-RPC
+// response object confirms nothing was stored. A caller that discards the body
+// and reports success on it loses a whole batch silently.
+func TestCheckEnvelopeRejectsUnconfirmedWrites(t *testing.T) {
+	valid := []string{
+		`{"jsonrpc":"2.0","id":1,"result":{"id":"ok"}}`,
+		`{"jsonrpc":"2.0","error":{"code":-32000,"message":"x"},"id":1}`,
+		`{"result":{}}`,
+	}
+	for _, body := range valid {
+		if err := CheckEnvelope([]byte(body)); err != nil {
+			t.Errorf("CheckEnvelope(%s) = %v, want nil", body, err)
+		}
+	}
+	invalid := []string{"", "<html>502 Bad Gateway</html>", `{"unrelated":true}`, "null"}
+	for _, body := range invalid {
+		if err := CheckEnvelope([]byte(body)); err == nil {
+			t.Errorf("CheckEnvelope(%s) = nil, want an error", body)
+		}
+	}
+}
+
+// TestToolErrorHasItsOwnCode: a tool refusal sent no code of its own, and 0 is
+// JSON-RPC's "no error"; a code-based classifier would read it as success.
+func TestToolErrorHasItsOwnCode(t *testing.T) {
+	if ToolErrorCode == 0 {
+		t.Fatal("ToolErrorCode must not be JSON-RPC's reserved no-error code")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"nope"}]}}`))
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL, "", 5*time.Second).Call(context.Background(), "muninn_remember_batch", map[string]any{})
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("expected *RPCError, got %T: %v", err, err)
+	}
+	if rpcErr.Code != ToolErrorCode {
+		t.Errorf("tool error code = %d, want %d", rpcErr.Code, ToolErrorCode)
+	}
+}
+
 func TestDedupKeyIsContentAddressed(t *testing.T) {
 	a := DedupKey("v", "concept", "content")
 	if a != DedupKey("v", "concept", "content") {

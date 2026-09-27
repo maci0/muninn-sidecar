@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -22,24 +24,32 @@ type cand struct {
 }
 
 func recallContext(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) string {
-	return strings.Join(recallCandidates(ctx, mcp, vault, query, minScore, multi), "\n")
+	cands, err := recallCandidates(ctx, mcp, vault, query, minScore, multi)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  warn: recall for context %q failed: %v\n", query, err)
+		return ""
+	}
+	return strings.Join(cands, "\n")
 }
 
 // recallCandidates returns the gated recall passages' content in recall order
 // (bare content — used for grounding and the distractor arm).
-func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) []string {
-	cands := recallStructured(ctx, mcp, vault, query, minScore, multi)
+func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) ([]string, error) {
+	cands, err := recallStructured(ctx, mcp, vault, query, minScore, multi)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]string, len(cands))
 	for i, c := range cands {
 		out[i] = c.Content
 	}
-	return out
+	return out, nil
 }
 
 // recallStructured returns the gated recall candidates (cosine >= minScore) with
 // concept and relevance, in MuninnDB's return order (already score-ranked; the
 // multi-query path concatenates per-sub-query results, not a global ranking).
-func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) []cand {
+func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) ([]cand, error) {
 	if multi {
 		// Dedup by content, keeping the best score across sub-queries: a memory
 		// scoring low vs the full question but high vs an entity sub-query must
@@ -47,7 +57,11 @@ func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query s
 		seen := map[string]int{}
 		var parts []cand
 		for _, sub := range querysplit.Split(query) {
-			for _, c := range recallStructured(ctx, mcp, vault, sub, minScore, false) {
+			cs, err := recallStructured(ctx, mcp, vault, sub, minScore, false)
+			if err != nil {
+				return nil, err
+			}
+			for _, c := range cs {
 				if c.Content == "" {
 					continue
 				}
@@ -61,15 +75,18 @@ func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query s
 				parts = append(parts, c)
 			}
 		}
-		return parts
+		return parts, nil
 	}
 	resp, err := mcp.Call(ctx, "muninn_recall", map[string]any{
 		"vault": vault, "context": []string{query}, "limit": 5, "threshold": 0.05, "mode": "semantic",
 	})
 	if err != nil {
-		return nil
+		// An empty candidate set is the QA harness's worst outcome: every arm is
+		// built from it and the run reports answer-coverage 0/100 as a
+		// measurement. Surface the failure instead.
+		return nil, fmt.Errorf("recall %q from vault %q: %w", query, vault, err)
 	}
-	return parseRecallPayload(resp, minScore)
+	return parseRecallPayload(resp, minScore), nil
 }
 
 // parseRecallPayload turns a raw muninn_recall JSON-RPC reply into the gated

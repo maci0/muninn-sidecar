@@ -106,9 +106,16 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 		}
 		// Say why the on-disk CA was replaced: regenerating silently would make a
 		// recurring "every agent re-trusts the CA" cycle look like a fresh install.
-		if err != nil {
+		switch {
+		case err != nil:
 			slog.Debug("mitm: existing CA is unreadable, regenerating", "err", err)
-		} else {
+		case certErr != nil || keyErr != nil:
+			// A read that failed (a missing half of the pair, a permission
+			// change) also replaces the CA, invalidating the trust every agent
+			// was told to install. Name the read error; it is the reason.
+			slog.Warn("mitm: cannot read existing CA, regenerating",
+				"cert", certPath, "cert_err", certErr, "key", keyPath, "key_err", keyErr)
+		default:
 			slog.Debug("mitm: existing CA is expiring, regenerating",
 				"not_after", ca.cert.NotAfter.Format(time.RFC3339))
 		}
@@ -290,16 +297,15 @@ func (c *CA) mintLeaf(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mitm: sign leaf: %w", err)
 	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, fmt.Errorf("mitm: parse freshly signed leaf for %s: %w", host, err)
+	}
 	return &tls.Certificate{
 		Certificate: [][]byte{der, c.cert.Raw}, // leaf + CA so clients can chain
 		PrivateKey:  key,
-		Leaf:        mustParse(der),
+		Leaf:        leaf,
 	}, nil
-}
-
-func mustParse(der []byte) *x509.Certificate {
-	cert, _ := x509.ParseCertificate(der)
-	return cert
 }
 
 func randomSerial() (*big.Int, error) {

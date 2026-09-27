@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"strconv"
@@ -317,9 +318,13 @@ func (s *MuninnStore) Drain() {
 	s.drainOnce.Do(func() {
 		// Bound shutdown: cancel flush retries after drainTimeout so a queued
 		// backlog against an unreachable MuninnDB can't hang exit. Normal flushes
-		// before this fires keep their full retry budget.
-		s.clock.AfterFunc(drainTimeout, s.flushCancel)
+		// before this fires keep their full retry budget. A drain that finishes
+		// early stops the timer, so a fast shutdown does not leave a pending
+		// callback holding the store for the full drainTimeout.
+		timer := s.clock.AfterFunc(drainTimeout, s.flushCancel)
 		close(s.queue)
+		<-s.done
+		timer.Stop()
 	})
 	<-s.done
 	s.flushCancel() // release the context once the worker has exited
@@ -667,9 +672,17 @@ func (s *MuninnStore) callTool(name string, args map[string]any) error {
 			}
 		}
 
-		_, lastErr = s.mcp.CallWithID(s.flushCtx, id, name, args)
+		body, err := s.mcp.CallWithID(s.flushCtx, id, name, args)
+		lastErr = err
 		if lastErr == nil {
-			return nil
+			// A 2xx that is not a JSON-RPC response object confirms nothing:
+			// an intermediary's HTML page or a truncated body would be
+			// reported as a flushed batch with nothing stored.
+			if envErr := mcpclient.CheckEnvelope(body); envErr != nil {
+				lastErr = fmt.Errorf("%s: %w", name, envErr)
+			} else {
+				return nil
+			}
 		}
 		// Stop retrying once the flush context is cancelled (shutdown deadline).
 		if s.flushCtx.Err() != nil {

@@ -64,6 +64,10 @@ func ParseLiveScenarios(data []byte) ([]LiveScenario, error) {
 // before the probe; tune via settle.
 func RunLive(ctx context.Context, cfg Config, scenarios []LiveScenario, settle time.Duration) ([]LiveResult, error) {
 	inj := New(cfg)
+	// The injector owns a private MCP transport, so every exit from this
+	// function would otherwise leave its idle connections and their read/write
+	// goroutines behind for the life of the process.
+	defer inj.Close()
 
 	results := make([]LiveResult, 0, len(scenarios))
 	for _, s := range scenarios {

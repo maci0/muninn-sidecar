@@ -110,7 +110,11 @@ func (m *modelClient) answer(ctx context.Context, question, contextBlock string)
 		return "", err
 	}
 	if len(out.Choices) == 0 {
-		return "", nil
+		// A 200 with no choices is a failed call, not an empty answer: scoring
+		// it as "" would count the arm as wrong and, since the injected
+		// prompts are the longest, bias the whole run against injection. The
+		// caller excludes a failed call (agg.fail) instead.
+		return "", fmt.Errorf("%s: response carried no choices", m.model)
 	}
 	return out.Choices[0].Message.Content, nil
 }
@@ -146,6 +150,11 @@ func (c *cliClient) answer(ctx context.Context, question, contextBlock string) (
 	// exit non-zero on warnings); prefer any captured line over the error.
 	if line := lastNonEmptyLine(stdout); line != "" {
 		return line, nil
+	}
+	// Exit 0 with nothing on stdout is a failed call, not a wrong answer: it is
+	// excluded rather than scored, for the same reason as the HTTP arm.
+	if err == nil {
+		return "", fmt.Errorf("%s: exited 0 with no output", c.name)
 	}
 	return "", err
 }

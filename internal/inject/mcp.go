@@ -113,7 +113,17 @@ func parseWhereLeftOff(body []byte) string {
 		} `json:"memories"`
 	}
 	if err := json.Unmarshal([]byte(raw), &wloResult); err != nil {
-		// If not JSON, use the raw text if it's meaningful.
+		// The raw-text fallback is for a backend that answers with prose, not
+		// JSON. A payload that IS JSON but has the wrong shape means the
+		// protocol moved under us; injecting the raw response as "previous
+		// session context" would put unvetted backend text in the system prompt
+		// with no signal, so that case is dropped and logged.
+		if json.Valid([]byte(raw)) {
+			slog.Warn("inject: where_left_off payload is JSON with an unexpected shape, skipping",
+				"bytes", len(raw), "err", err)
+			return ""
+		}
+		// Not JSON, use the raw text if it's meaningful.
 		text := strings.TrimSpace(raw)
 		if text != "" && text != "[]" && text != "null" {
 			return apiformat.SessionContextOpen + "\n" + apiformat.ContextNotice + "\nPrevious session context:\n" +

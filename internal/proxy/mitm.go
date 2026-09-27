@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -36,6 +38,16 @@ const handshakeTimeout = 30 * time.Second
 // client conn, the backend conn, and the serving goroutine forever. Copied into
 // Proxy.upgradeHandshakeTimeout at construction, like handshakeTimeout.
 const upgradeHandshakeTimeout = 30 * time.Second
+
+// tunnelIdleTimeout bounds the gap between two chunks flowing through a
+// hijacked tunnel. Once a CONNECT tunnel is hijacked the http.Server no longer
+// owns the socket, so neither its ReadTimeout nor IdleTimeout applies: a peer
+// that stops sending without closing (a stalled backend, a client that
+// finishes its turn and leaves the socket open) would otherwise pin two
+// goroutines and two sockets for the life of the process. A tunnel that is
+// genuinely idle longer than this is not carrying a request, so tearing it
+// down costs the client one reconnect.
+const tunnelIdleTimeout = 5 * time.Minute
 
 // handleConnect terminates a CONNECT tunnel and intercepts its TLS traffic. The
 // agent (configured with HTTPS_PROXY pointing at msc, and trusting msc's CA)
@@ -83,6 +95,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+		slog.Debug("mitm: could not confirm tunnel to client", "target", target, "err", err)
 		return
 	}
 
@@ -216,7 +229,7 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	backend, err := tls.DialWithDialer(&net.Dialer{Timeout: tunnelDialTimeout}, "tcp", target, cfg)
 	if err != nil {
 		slog.Debug("mitm: upgrade backend dial failed", reqid.Field, requestID(req.Context()), "target", target, "err", err)
-		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		writeStatus(clientConn, req.Context(), target, "502 Bad Gateway")
 		return
 	}
 	defer backend.Close()
@@ -256,12 +269,13 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
 	upstream, err := net.DialTimeout("tcp", target, tunnelDialTimeout)
 	if err != nil {
 		slog.Debug("mitm: blind-tunnel dial failed", "target", target, "err", err)
-		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		writeStatus(clientConn, nil, target, "502 Bad Gateway")
 		return
 	}
 	defer upstream.Close()
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+		slog.Debug("mitm: could not confirm tunnel to client", "target", target, "err", err)
 		return
 	}
 	slog.Debug("mitm: blind-tunnel", "target", target)
@@ -274,7 +288,7 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
 		// A copy error here is the normal end of one direction (a peer closing
 		// mid-stream); log it so a tunnel that dies for any other reason leaves
 		// a trace instead of ending silently.
-		if _, err := io.Copy(dst, src); err != nil {
+		if err := copyTunnel(dst, src, src, target); err != nil {
 			slog.Debug("mitm: tunnel copy ended with an error", "target", target, "err", err)
 		}
 		// Unblock the peer copy: a half-close lets the other direction drain.
@@ -287,6 +301,46 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target string) {
 	go cp(clientConn, upstream)
 	<-done
 	<-done
+}
+
+// writeStatus sends a bare status line to a hijacked client, for the paths
+// where the CONNECT could not be honored and the request never reaches an
+// http.ResponseWriter. A failed write means the client is already gone; it is
+// still worth a trace, since the agent sees only a closed socket and the log
+// is the only record of why the tunnel was refused.
+func writeStatus(clientConn net.Conn, ctx context.Context, target, status string) {
+	if _, err := fmt.Fprintf(clientConn, "HTTP/1.1 %s\r\nContent-Length: 0\r\n\r\n", status); err != nil {
+		slog.Debug("mitm: could not report tunnel failure to client",
+			reqid.Field, requestID(ctx), "target", target, "status", status, "err", err)
+	}
+}
+
+// copyTunnel pipes r (reads taken from src, which is normally src itself or a
+// buffered reader over it) into dst, re-arming tunnelIdleTimeout on the read and
+// the write side before every chunk. A deadline error is returned like any other
+// copy error; the caller logs it and closes its half.
+func copyTunnel(dst net.Conn, src net.Conn, r io.Reader, target string) error {
+	buf := make([]byte, 32*1024)
+	for {
+		if err := src.SetReadDeadline(time.Now().Add(tunnelIdleTimeout)); err != nil {
+			slog.Debug("mitm: could not set tunnel read deadline", "target", target, "err", err)
+		}
+		if err := dst.SetWriteDeadline(time.Now().Add(tunnelIdleTimeout)); err != nil {
+			slog.Debug("mitm: could not set tunnel write deadline", "target", target, "err", err)
+		}
+		n, rerr := r.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return fmt.Errorf("write to tunnel peer: %w", werr)
+			}
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("read from tunnel peer: %w", rerr)
+		}
+	}
 }
 
 // prefixConn is a net.Conn whose reads drain r (buffered bytes the HTTP server

@@ -309,8 +309,20 @@ func (p *Proxy) mitmRootCAs() *x509.CertPool {
 // current root pool under the lock. It replaces the transport's own TLS setup
 // so a SetMITMRoots call after Start cannot race the transport cloning its
 // TLSClientConfig on another goroutine.
+//
+// The dial honors the request context, so an agent that disconnects mid-turn
+// stops the connect attempt instead of holding it for the full dial timeout.
 func (p *Proxy) dialMITMTLS(ctx context.Context, network, addr string) (net.Conn, error) {
-	return tls.DialWithDialer(&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}, network, addr, p.mitmTLSDialConfig(addr))
+	raw, err := (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	tlsConn := tls.Client(raw, p.mitmTLSDialConfig(addr))
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, fmt.Errorf("tls handshake with %s: %w", addr, err)
+	}
+	return tlsConn, nil
 }
 
 // mitmTLSDialConfig builds the client TLS config for a forward-leg connection to

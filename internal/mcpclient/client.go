@@ -231,7 +231,7 @@ func (c *Client) CallWithID(ctx context.Context, id int64, toolName string, args
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("%s %s: request failed: %w", toolName, c.url, err)
 	}
 	defer resp.Body.Close()
 
@@ -240,10 +240,10 @@ func (c *Client) CallWithID(ctx context.Context, id int64, toolName string, args
 	// that fails downstream with a misleading parse error.
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, fmt.Errorf("%s %s: read response: %w", toolName, c.url, err)
 	}
 	if int64(len(respBody)) > maxResponseSize {
-		return nil, fmt.Errorf("MCP response exceeds %d-byte limit", maxResponseSize)
+		return nil, fmt.Errorf("%s %s: MCP response exceeds %d-byte limit", toolName, c.url, maxResponseSize)
 	}
 
 	return classifyResponse(resp.StatusCode, respBody)
@@ -298,8 +298,46 @@ func classifyResponse(status int, body []byte) ([]byte, error) {
 		if msg == "" {
 			msg = "tool reported an error without a message"
 		}
-		return nil, &RPCError{Message: msg}
+		return nil, &RPCError{Code: ToolErrorCode, Message: msg}
 	}
 
 	return body, nil
+}
+
+// ToolErrorCode is the code reported on an RPCError built from a tool-level
+// refusal (result.isError). The server sends no code of its own for that
+// shape, and 0 is JSON-RPC's "no error" code: a code-based classifier would
+// read a refusal as success.
+const ToolErrorCode = -32000
+
+// CheckEnvelope reports whether a 2xx body is the JSON-RPC response object the
+// protocol requires. A server answering 200 with truncated JSON, an HTML error
+// page from an intermediary, or an empty body yields no confirmation that the
+// write happened, and such a response is otherwise indistinguishable from a
+// successful one. Callers that discard the response body must call this before
+// reporting success; a caller that parses the body downstream has already
+// learned what it holds and does not need it.
+func CheckEnvelope(body []byte) error {
+	var env struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return fmt.Errorf("response is not a JSON-RPC object: %w (body: %s)", err, bodySummary(body))
+	}
+	if env.JSONRPC == "" && env.Result == nil && env.Error == nil {
+		return fmt.Errorf("response is JSON but carries no jsonrpc, result, or error field: %s", bodySummary(body))
+	}
+	return nil
+}
+
+// bodySummary renders an untrusted response body for an error message, capped
+// so a large HTML page does not land whole in a log line.
+func bodySummary(body []byte) string {
+	const maxSummary = 200
+	if len(body) <= maxSummary {
+		return string(body)
+	}
+	return string(body[:maxSummary]) + "..."
 }

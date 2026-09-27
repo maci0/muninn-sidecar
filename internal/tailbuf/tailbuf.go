@@ -20,8 +20,15 @@ type Buffer struct {
 	limit int
 }
 
-// New returns a Buffer keeping at most limit bytes.
-func New(limit int) *Buffer { return &Buffer{limit: limit} }
+// New returns a Buffer keeping at most limit bytes. A negative limit is
+// clamped to 0 (keep nothing) rather than slicing backwards on the first
+// Write, which would panic.
+func New(limit int) *Buffer {
+	if limit < 0 {
+		limit = 0
+	}
+	return &Buffer{limit: limit}
+}
 
 func (b *Buffer) Write(p []byte) (int, error) {
 	b.buf = append(b.buf, p...)

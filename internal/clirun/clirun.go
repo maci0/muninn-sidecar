@@ -13,6 +13,7 @@ package clirun
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"time"
@@ -38,7 +39,7 @@ const maxOutput = 4 << 20 // 4 MiB
 // the subqueries — survives a child that outran the cap.
 func Run(ctx context.Context, argv []string, stdin string, timeout time.Duration) (string, error) {
 	if len(argv) == 0 {
-		return "", nil
+		return "", errors.New("clirun: empty argv, nothing to run")
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

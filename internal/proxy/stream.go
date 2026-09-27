@@ -80,13 +80,18 @@ func (sc *streamCapture) Close() error {
 // than in captureResponse, which would only have seen the first byte.
 func (sc *streamCapture) finalize() {
 	sc.once.Do(func() {
-		if sc.store == nil {
-			return
-		}
 		respBody := sc.buildRespBody()
 		ex := buildExchange(clockOrSystem(sc.clock), sc.ctx, sc.statusCode, respBody)
+		// Latency is a property of the turn, not of whether it was stored, so
+		// it is recorded on every stream. The non-streaming path
+		// (captureResponse) samples unconditionally too; skipping here would
+		// silently drop every streaming turn from the latency stats under
+		// --no-store.
 		if sc.stats != nil {
 			sc.stats.ObserveLatency(ex.DurationMs)
+		}
+		if sc.store == nil {
+			return
 		}
 		sc.store.Store(ex)
 	})

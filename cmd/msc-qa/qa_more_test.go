@@ -316,8 +316,27 @@ func TestAnswerAndRecallContext(t *testing.T) {
 	}))
 	defer muninn.Close()
 	cl := mcpclient.New(muninn.URL, "", time.Second)
-	if got := contents(recallStructured(context.Background(), cl, "v", "q", 0.6, false)); got != "relevant fact" {
+	cands, err := recallStructured(context.Background(), cl, "v", "q", 0.6, false)
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if got := contents(cands); got != "relevant fact" {
 		t.Errorf("recall should gate at 0.6, got %q", got)
+	}
+}
+
+// TestRecallErrorIsReported: a failing vault must surface as an error, not as
+// an empty candidate set, or every arm is built from nothing and the run
+// reports answer-coverage 0/100 as a measurement.
+func TestRecallErrorIsReported(t *testing.T) {
+	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer muninn.Close()
+	cl := mcpclient.New(muninn.URL, "", time.Second)
+	defer cl.Close()
+	if _, err := recallStructured(context.Background(), cl, "v", "q", 0.6, false); err == nil {
+		t.Fatal("expected an error when the recall call fails")
 	}
 }
 
@@ -520,7 +539,11 @@ func TestMultiRecall(t *testing.T) {
 	}))
 	defer muninn.Close()
 	cl := mcpclient.New(muninn.URL, "", time.Second)
-	if got := contents(recallStructured(context.Background(), cl, "v", "Did Alice and Bob meet?", 0.6, true)); got != "fact A" {
+	merged, err := recallStructured(context.Background(), cl, "v", "Did Alice and Bob meet?", 0.6, true)
+	if err != nil {
+		t.Fatalf("multi recall: %v", err)
+	}
+	if got := contents(merged); got != "fact A" {
 		t.Errorf("multi recall should dedup-merge to 'fact A', got %q", got)
 	}
 }
@@ -541,7 +564,10 @@ func TestMultiRecallDedupKeepsMaxScore(t *testing.T) {
 	}))
 	defer muninn.Close()
 	cl := mcpclient.New(muninn.URL, "", time.Second)
-	cands := recallStructured(context.Background(), cl, "v", "who coached Danny Green?", 0, true)
+	cands, err := recallStructured(context.Background(), cl, "v", "who coached Danny Green?", 0, true)
+	if err != nil {
+		t.Fatalf("multi recall: %v", err)
+	}
 	if len(cands) != 1 {
 		t.Fatalf("expected 1 deduped candidate, got %v", cands)
 	}

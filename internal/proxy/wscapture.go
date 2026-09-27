@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -56,10 +57,12 @@ type wsExchange struct {
 	requestID string
 	mu        sync.Mutex
 	lastReq   []byte          // most recent unpaired response.create payload (the request); nil once a completion has consumed it
+	reqAt     time.Time       // when lastReq arrived, the start of the turn
 	respText  strings.Builder // assistant text accumulated from output_text deltas (s->c goroutine only)
 }
 
-// onClient handles client→server messages: remember the latest request. A new
+// onClient handles client→server messages: remember the latest request and the
+// time it arrived, which starts the turn the latency sample measures. A new
 // response.create replaces any unpaired one, so the pairing below always sees
 // the most recent turn.
 func (e *wsExchange) onClient(_ string, msg []byte) {
@@ -71,6 +74,7 @@ func (e *wsExchange) onClient(_ string, msg []byte) {
 	}
 	e.mu.Lock()
 	e.lastReq = append([]byte(nil), msg...)
+	e.reqAt = e.p.now()
 	e.mu.Unlock()
 }
 
@@ -119,6 +123,7 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 		e.mu.Lock()
 		req := e.lastReq
 		e.lastReq = nil // consumed: this completion is the only one that may pair it
+		reqAt := e.reqAt
 		e.mu.Unlock()
 		if req == nil {
 			return
@@ -128,6 +133,13 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 		respBody, _ := json.Marshal(map[string]any{
 			"content": []map[string]any{{"type": "text", "text": text}},
 		})
+		// Full stream time (request sent to response.completed), matching what
+		// the HTTP streaming path samples. Without it every codex turn is
+		// stored with duration_ms 0 and never reaches the latency stats.
+		var durationMs int64
+		if !reqAt.IsZero() {
+			durationMs = e.p.now().Sub(reqAt).Milliseconds()
+		}
 		e.p.store.Store(&store.CapturedExchange{
 			Agent:      e.p.agentName,
 			RequestID:  e.requestID,
@@ -135,6 +147,7 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 			ReqBody:    req,
 			StatusCode: 200,
 			RespBody:   respBody,
+			DurationMs: durationMs,
 		})
 		slog.Debug("ws capture: stored exchange", reqid.Field, e.requestID, "target", e.target, "resp_bytes", len(text))
 	}
@@ -244,6 +257,13 @@ func runWSParser(dir string, ch <-chan []byte, deflate bool, onMessage func(dir 
 	for {
 		f, err := readWSFrame(r)
 		if err != nil {
+			// Capture ends for this connection here. A frame-read stop is
+			// either the stream ending (io.EOF) or an unrecoverable framing
+			// error such as the size caps; both need a trace, because the
+			// only other sign is a missing memory much later.
+			if !errors.Is(err, io.EOF) {
+				slog.Debug("ws capture: frame read stopped", "dir", dir, "err", err)
+			}
 			return
 		}
 		msg, err := asm.add(f)

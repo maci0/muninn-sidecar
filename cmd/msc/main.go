@@ -236,9 +236,10 @@ func run() int {
 	// early returns (dry-run, health check failure). The store's drainOnce
 	// makes the second call from the normal shutdown path a no-op. Close
 	// releases its MCP connection pool; the injector created below gets its
-	// own Close on the same path.
-	defer muninn.Drain()
+	// own Close on the same path. Defers run last-in-first-out, so Close is
+	// registered first: the pool stays open until the final flush is done.
 	defer muninn.Close()
+	defer muninn.Drain()
 
 	// Health check: verify MuninnDB is reachable before launching the agent.
 	// The whole point of msc is to capture traffic — silently dropping captures

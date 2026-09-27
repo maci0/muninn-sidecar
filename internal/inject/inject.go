@@ -287,10 +287,29 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 		inj.mu.Lock()
 		inj.sessionCtx = redact.Secrets(sb.String())
 		inj.mu.Unlock()
+
+		// Both fetches are best-effort and the session context is cached for the
+		// life of the process, so an empty result means this session permanently
+		// loses its continuity context. That has to be countable, or a backend
+		// that was down at startup is indistinguishable from a session with
+		// nothing to carry over.
+		if wlo == "" && guide == "" {
+			if inj.stats != nil {
+				inj.stats.InjectionErrors.Add(1)
+			}
+		}
 	})
 
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
+		// Every other skip or fallback in Enrich reports itself; an unparseable
+		// body used to pass through with no log and no counter, so a run that
+		// never injects anything looks identical to a healthy sidecar.
+		slog.WarnContext(ctx, "inject: request body is not JSON, passing through",
+			reqid.Field, reqid.From(ctx), "bytes", len(body), "err", err)
+		if inj.stats != nil {
+			inj.stats.InjectionErrors.Add(1)
+		}
 		return body, 0 // not JSON, pass through
 	}
 

@@ -163,7 +163,13 @@ func run() error {
 	// left empty with a warning.
 	ungated := make([][]cand, len(questions))
 	for i, q := range questions {
-		ungated[i] = recallStructured(ctx, mcp, *vault, q.Question, 0, *multiRecall)
+		cands, err := recallStructured(ctx, mcp, *vault, q.Question, 0, *multiRecall)
+		if err != nil {
+			// Every arm below is built from this set, and an unreachable or
+			// failing vault would otherwise be reported as answer-coverage 0/100.
+			return fmt.Errorf("question %d: %w", i, err)
+		}
+		ungated[i] = cands
 	}
 	var coverage, distEmpty, distGold, groundCalls, groundPassages int
 	for i, q := range questions {
