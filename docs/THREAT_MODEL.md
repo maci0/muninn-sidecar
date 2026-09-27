@@ -1,10 +1,14 @@
 # Threat model: muninn-sidecar (msc)
 
 Last reviewed: 2026-09-27. Scope: the `msc` proxy path (`cmd/msc` plus the
-`internal/` packages it wires). The eval/bench/qa CLIs (`cmd/msc-eval`,
-`cmd/msc-bench`, `cmd/msc-qa`) are developer tools that read local datasets and
-talk to a local MuninnDB; they share `internal/config` and `internal/mcpclient`
-and are covered only where they differ materially.
+`internal/` packages it wires), and the eval/bench/qa CLIs (`cmd/msc-eval`,
+`cmd/msc-bench`, `cmd/msc-qa`) as far as they differ from it. Those three are
+developer tools that read local dataset files and talk to a MuninnDB, but each
+also dials an operator-named model or judge endpoint and can exec a
+`--ground-cmd` / `--rewrite-cmd` / `--model-cmd`, so their own surface is
+enumerated in section 1 rather than waved away. They share
+`internal/config`, `internal/mcpclient`, `internal/grounding`, and
+`internal/store` with `msc`, so a change to a shared package moves all four.
 
 No owner and no review cadence are recorded for this document. The repository
 does not name one.
@@ -25,10 +29,11 @@ Ranked by exploitability on a single-user developer machine, then by impact.
 
 ## 1. Attack surface inventory
 
-Entry points, all of them local. Nothing in this repository listens on a
+Entry points. Nothing in this repository listens on a
 non-loopback address, and no third-party Go module is linked (`go.mod` has no
 `require` block), so the dependency surface is the standard library plus
-whatever the launched agent and MuninnDB themselves load.
+whatever the launched agent and MuninnDB themselves load. No entry point is
+remote-facing; the only outbound sockets are to operator-named endpoints.
 
 | Entry point | Address | File |
 |-------------|---------|------|
@@ -47,6 +52,21 @@ whatever the launched agent and MuninnDB themselves load.
 | Optional grounding judge (HTTP URL or local CLI) | `--ground-url`, `--ground-cmd` | `internal/grounding/grounding.go:307`, `:269` |
 | Launched child process | agent binary resolved via `PATH` | `internal/agents/agents.go:520` (MITM launch at `:486`) |
 | Scheduled jobs | none | — |
+
+Eval/bench/qa surface. Same trust posture as `msc`, different reach: each
+reads a dataset file the operator points it at, and each can send that content
+off the machine.
+
+| Entry point | What it takes | File |
+|-------------|---------------|------|
+| `msc-eval` flags and its MuninnDB client | CLI argv; `-token` or `MUNINN_TOKEN` | `cmd/msc-eval/main.go:81` |
+| `msc-qa` model endpoint (`-model-url`, `-model-key`) | corpus questions plus recalled passages, with a bearer key | `cmd/msc-qa/main.go:57`, `:58`, `cmd/msc-qa/models.go:33` |
+| `msc-qa` grounding endpoint (`-ground-url`, `-ground-key`) | the same text, through `internal/grounding` | `cmd/msc-qa/main.go:68` |
+| `msc-qa` dataset files (`-dataset`, `-squad-file`) | arbitrary local JSON, read whole into memory | `cmd/msc-qa/dataset.go:19`, `:67` |
+| `msc-bench` corpus files (`-squad-file`, HotpotQA) | arbitrary local JSON | `cmd/msc-bench/squad.go:211`, `cmd/msc-bench/hotpot.go:21` |
+| `msc-bench` rewrite endpoint (`-rewrite-url`, `-rewrite-key`) and judge (`-ground-url`, `-ground-key`) | the probe query, plus `OPENAI_API_KEY` if set | `cmd/msc-bench/main.go:66`, `:72` |
+| `msc-bench` / `msc-qa` `-ground-cmd` / `-rewrite-cmd` / `-model-cmd` | operator-named CLIs, whitespace-split or CSV, exec'd with the prompt on stdin | `internal/grounding/grounding.go:269`, `cmd/msc-qa/models.go:156`, `cmd/msc-bench/rewrite.go:190` |
+| `msc-bench -dump-qa` | writes a JSON file the operator names | `cmd/msc-bench/main.go:59`, `:186` |
 
 Deployment surface: there is no container image, service unit, or compose file
 in the tree, so msc has no admin port, no container-exposed listener, and no
@@ -71,7 +91,15 @@ agent and the provider (`internal/proxy/proxy.go:546`, `:697`), the MuninnDB
 JSON-RPC response (`internal/mcpclient/client.go:251`), the WebSocket frames
 (`internal/proxy/wsframe.go`), the usage counters taken from an upstream body
 (`internal/proxy/proxy.go:870`), and every recalled memory string
-(`internal/inject/format.go:185`).
+(`internal/inject/format.go:185`). The eval CLIs treat their dataset files the
+same way in kind but not in size: `os.ReadFile` with no cap
+(`cmd/msc-qa/dataset.go:19`, `cmd/msc-bench/hotpot.go:21`), so a hostile
+multi-gigabyte file is an operator mistake, not a remote input. Model and
+judge responses from a non-loopback endpoint are parsed as untrusted data and
+capped (`cmd/msc-qa/models.go:52`, `internal/grounding/grounding.go:250`), but
+their text lands in a scoring report on the operator's terminal, not in an
+agent's system prompt, so the injection consequence of section 2 boundary 4
+does not apply to them.
 
 ## 2. Trust boundaries
 
@@ -106,7 +134,16 @@ JSON-RPC response (`internal/mcpclient/client.go:251`), the WebSocket frames
    from fixed paths in the user's home.
 7. **CLI flag → subprocess.** `--ground-cmd` is split on whitespace and executed
    with the query and recalled passages on stdin, never argv
-   (`internal/grounding/grounding.go:269`).
+   (`internal/grounding/grounding.go:269`). `msc-qa -model-cmd` takes the same
+   shape as a comma-separated list (`cmd/msc-qa/main.go:60`).
+8. **Dataset file → eval tool → model endpoint.** A path from the operator's
+   command line selects a corpus to parse (`cmd/msc-qa/dataset.go:94`), and a
+   second operator flag names where the questions and recalled passages go
+   (`cmd/msc-qa/main.go:57`, `cmd/msc-bench/main.go:72`). Two independently
+   chosen names sit on either side of one network hop, and the second defaults
+   to nothing, so the exposure is a configuration choice rather than a
+   default. The same pattern exists for the grounding judge in `msc`, where
+   `OPENAI_API_KEY` may follow it (`cmd/msc/main.go:328`).
 
 Privilege transitions: the agent's API key, the MuninnDB bearer token, and the
 CA signing key are the three credentials msc holds in the request path. None is
@@ -190,7 +227,23 @@ the token and the memory traffic.
 arbitrary command from the operator's own command line, bounded by a timeout,
 with the query and passages on stdin. The blast radius is the user's own shell
 authority, so this is a documented capability rather than a boundary crossing
-by an attacker.
+by an attacker. `msc-qa -model-cmd` is the same capability with a wider fan-out:
+it runs a comma-separated list of reader CLIs and takes the last non-empty
+stdout line from each as an answer (`cmd/msc-qa/main.go:275`).
+
+**Dataset file → model endpoint (information disclosure, spoofing).** The
+corpus is whatever the operator's path resolves to, including a
+`scripts/fetch_hf_datasets.py` download, and the recipient is a host named on a
+second flag. The endpoint is unauthenticated from the server's side: nothing
+verifies that the model host is the one the operator had in mind beyond a
+warning for a non-OpenAI, non-loopback host
+(`cmd/msc-qa/main.go:129`). Secrets in the question are redacted and the
+question is fenced before it is sent (`cmd/msc-qa/models.go:194`), which
+lowers the content exposure but does nothing for the endpoint's identity.
+Spoofing the DNS or the endpoint captures the
+corpus, and a response is parsed as a model answer and folded into a score, so
+a hostile endpoint also chooses the numbers the run reports. The cap on the
+response (`cmd/msc-qa/models.go:52`) bounds memory, not trust.
 
 ## 5. Mitigations, mapped
 
@@ -219,13 +272,20 @@ by an attacker.
 | Bounded async queue (256) and 8s drain | capture loss under store outage, unbounded growth | `internal/store/muninn.go:201`, `:133` |
 | Sanitized JSON error responses; query, userinfo, and fragment redacted in logs | stack traces and API keys in logs and client bodies | `internal/proxy/proxy.go:769`, `:965` |
 | Warnings for plaintext HTTP to a non-loopback MuninnDB, and for `OPENAI_API_KEY` to a non-OpenAI or non-TLS grounding endpoint | silent credential exposure to an operator-misconfigured host | `cmd/msc/main.go:206`, `:328` |
+| Warning naming the process list and shell history when a secret is passed as a flag, in all four binaries | token or API key exposed through `ps` and the shell's history | `internal/config/config.go:93`, `cmd/msc/main.go:204`, `cmd/msc-eval/main.go:81`, `cmd/msc-bench/main.go:152`, `cmd/msc-qa/main.go:142` |
+| Eval endpoint URLs scheme- and host-validated at startup; `OPENAI_API_KEY` fallback warns for a non-OpenAI, non-loopback `-model-url` | an undialable or hostile endpoint reached only after the corpus is in flight | `cmd/msc-qa/main.go:107`, `:129`, `config.ValidateURL` at `internal/config/config.go:121` |
+| Model and judge responses capped (4 MiB each), judge stdout into a fixed tail buffer | a hostile or broken model endpoint exhausting memory or unbounded output | `cmd/msc-qa/models.go:40`, `internal/grounding/grounding.go:39`, `internal/tailbuf/tailbuf.go` |
+| Dataset loaders reject an empty or wrong-shaped file instead of reporting a run over zero questions | a silent all-zeros evaluation read as a passing one | `cmd/msc-qa/main.go:153` |
+| Secret redaction and prompt fencing on the eval model and rewrite paths too, not just on `msc` | a credential inside a corpus question reaching an operator-named endpoint | `cmd/msc-qa/models.go:194`, `cmd/msc-bench/rewrite.go:52` |
 
 No mitigation, by threat: the local listener accepts unauthenticated clients
 and answers `/__msc/health` to any of them (risk 1); vault content is not
 treated as untrusted instruction text (risk 2); redaction is pattern-based and
 cannot be complete (risk 3); the plaintext-HTTP token path is a warning, not a
 refusal (risk 4); the default vault name is directory-derived with no project
-scoping (risk 7).
+scoping (risk 7). On the eval side, nothing verifies that a model or judge
+endpoint is the host the operator intended, and a response is scored without
+being attributed, so abuse case 9 rests on a warning alone.
 
 Single points of failure worth naming: the redaction pattern set is the only
 control between captured content and the store, and the relevance gate is the
@@ -268,6 +328,21 @@ These are scenarios with the enabling code path named. None was attempted.
 8. **Judge redirection.** A user who leaves `--ground-url` pointing at a
    third-party endpoint sends the query and the recalled passages of every
    turn there; msc warns once and continues (`cmd/msc/main.go:328`).
+9. **Corpus exfiltration through an eval flag.** An `msc-qa` or `msc-bench`
+   invocation against a downloaded corpus with `-model-url`,
+   `-ground-url`, or `-rewrite-url` pointed at a host the run does not own
+   sends questions and recalled memory text there, and the responses decide
+   the scores the run prints (`cmd/msc-qa/models.go:33`,
+   `cmd/msc-bench/main.go:72`). An operator who copied a command line from
+   [docs/experiments.md](experiments.md) has this one flag away.
+10. **Secret in the process list.** `-token`, `-model-key`, `-ground-key`,
+   and `-rewrite-key` take secrets on argv, where `ps` and the shell history
+   expose them. All four binaries warn, and none refuses
+   (`internal/config/config.go:93`).
+11. **Retaliatory reader CLIs.** `-model-cmd` runs an operator-named list of
+   CLIs, comma-separated, once per question (`cmd/msc-qa/main.go:275`), so a
+   long `-n` multiplies process spawns; the timeout bounds each call, not the
+   count.
 
 ## 7. SECURITY.md accuracy
 
@@ -282,6 +357,14 @@ agent's system prompt. Two further surfaces were added on this pass: the
 grounding judge as a third-party recipient of the query and the recalled
 passages, and `msc ca` as the documented way to widen the CA's trust beyond the
 launched child.
+
+The eval CLIs were the one scope claim this document did not back with an
+inventory. They are now enumerated in section 1, carry a boundary
+(section 2, #8), a threat (section 4), four mitigation rows (section 5), and
+three abuse cases (section 6), and [SECURITY.md](../SECURITY.md) now names
+their endpoint and argv-secret exposure, which it previously did not mention at
+all. The claims added there were checked against `cmd/msc-qa/models.go:194`,
+`cmd/msc-qa/main.go:129`, and `internal/config/config.go:93`.
 
 ## 8. Response readiness
 

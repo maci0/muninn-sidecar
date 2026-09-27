@@ -436,13 +436,15 @@ func systemRootsPEM() []byte {
 	return nil
 }
 
-// HasSystemCABundle reports whether a system root bundle exists to combine
-// with msc's CA, which decides whether writeCombinedCABundle writes one and
-// whether MITMOverrides sets the trust-store-replacing variables. ExecMITM
-// leaves the trust-store-replacing variables unset when it has no system
-// roots, so a dry-run preview has to ask before listing them. It is the same
-// probe writeCombinedCABundle makes, so the preview and the real launch
-// cannot disagree about it.
+// HasSystemCABundle reports whether a system PEM root bundle was found to
+// combine msc's CA with. False on Windows, which keeps its trusted roots in the
+// OS certificate store rather than a PEM file, and on a system with no bundle
+// installed at all. The answer decides whether writeCombinedCABundle writes one
+// and whether MITMOverrides sets the trust-store-replacing variables: ExecMITM
+// leaves those variables unset when it has no system roots, so a dry-run
+// preview asks here instead of writing a bundle. It is the same probe
+// writeCombinedCABundle makes, so the preview and the real launch cannot
+// disagree about it.
 func HasSystemCABundle() bool {
 	return systemRootsPEM() != nil
 }

@@ -54,6 +54,14 @@ warrant care:
   warns when the endpoint is plaintext HTTP to a non-loopback host, or is not
   `api.openai.com`. Redaction runs on the prompt, but the passages are still
   your content leaving the machine.
+- **The eval CLIs reach whatever host you name.** `msc-eval`, `msc-bench`, and
+  `msc-qa` read a local dataset and, when `-model-url`, `-ground-url`, or
+  `-rewrite-url` is set, send questions and recalled passages to that endpoint
+  with a bearer key (`OPENAI_API_KEY` by default). They redact secrets from the
+  prompt first, but the endpoint itself is trusted on name alone. `-token`,
+  `-model-key`, `-ground-key`, and `-rewrite-key` pass secrets on the command
+  line, where `ps` and shell history expose them; msc warns and proceeds.
+  Treat a copied command line as a disclosure decision.
 - **Vault content reaches the agent's system prompt.** Memories recalled from
   MuninnDB are injected as system-level context, so anything written into a
   vault by any client or session can steer a later agent turn. Recall is gated

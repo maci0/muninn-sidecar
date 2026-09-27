@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -150,6 +151,44 @@ func TestPrintDryRunPreviewsTheChildsOverrides(t *testing.T) {
 	// --force skips the health probe, so no "unreachable" claim may appear.
 	if strings.Contains(out, "unreachable") {
 		t.Errorf("--force preview must report the DB unchecked, not unreachable:\n%s", out)
+	}
+}
+
+// The MITM branch of the preview is where the trust-store env vars come from,
+// and whether they appear at all depends on the host having a system root
+// bundle to combine with. Previewing the trust-replacing variables on a host
+// that has no bundle would tell the operator msc writes one when it does not,
+// and previewing them with the CA alone would tell them the child can still
+// verify blind-tunneled hosts, which it cannot.
+func TestPrintDryRunMITMTrustVars(t *testing.T) {
+	const upstream = "https://api.anthropic.com"
+	agent := agents.Agent{Command: "claude", EnvKey: "ANTHROPIC_BASE_URL"}
+	caCertPath := filepath.Join(t.TempDir(), "ca-cert.pem")
+
+	out := captureStdout(t, func() {
+		if rc := printDryRun(&opts{mitm: true}, "claude", agent, upstream, "http://127.0.0.1:9/mcp", "vault", nil, caCertPath); rc != 0 {
+			t.Errorf("printDryRun rc = %d, want 0", rc)
+		}
+	})
+
+	bundlePath := ""
+	if agents.HasSystemCABundle() {
+		bundlePath = agents.CABundlePath(caCertPath)
+	}
+	want := agent.MITMOverrides("http://127.0.0.1:<port>", upstream, caCertPath, bundlePath)
+	for k, v := range want {
+		if !strings.Contains(out, k+"="+v) {
+			t.Errorf("MITM preview missing child env %s=%s:\n%s", k, v, out)
+		}
+	}
+	// Every trust-replacing variable moves together, so assert the whole set
+	// against the same condition ExecMITM uses, not one key.
+	for _, k := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"} {
+		_, listed := want[k]
+		if got := strings.Contains(out, k+"="); got != listed {
+			t.Errorf("%s present = %t, want %t (system bundle present: %t):\n%s",
+				k, got, listed, agents.HasSystemCABundle(), out)
+		}
 	}
 }
 

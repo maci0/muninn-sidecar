@@ -153,6 +153,14 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
   loosened checks turned it green just as silently. Both now carry a version in
   the Makefile, overridable the same way, and `make lint` and `make vuln` warn
   when the copy on `PATH` is not the pinned one.
+- **The threat model inventories the eval CLIs.** The document claimed the
+  `msc-eval`, `msc-bench`, and `msc-qa` scope was covered "only where they
+  differ materially" without ever listing what that is. Their entry points,
+  the dataset-file-to-model-endpoint boundary, the mitigations that apply
+  (argument-secret warnings, endpoint validation, response caps, redaction
+  before prompting) and three abuse cases are now written down with file
+  references, and `SECURITY.md` names the model and judge endpoint and the
+  flags that put a secret in the process list, which it did not mention.
 - **CI and `make lint` run the same linter invocations.** The `Lint` job kept
   its own copy of the four non-Go linter commands while the Makefile kept a
   second one, so the two could check different rules without either change
