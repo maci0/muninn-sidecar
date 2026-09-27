@@ -10,6 +10,8 @@
 // still parses.
 package tailbuf
 
+import "unicode/utf8"
+
 // Buffer accumulates the tail of a stream that may outgrow any fixed budget.
 // Writes past the limit drop the oldest bytes. It is not safe for concurrent
 // use; exec.Cmd writes to it from a single goroutine.
@@ -24,7 +26,24 @@ func New(limit int) *Buffer { return &Buffer{limit: limit} }
 func (b *Buffer) Write(p []byte) (int, error) {
 	b.buf = append(b.buf, p...)
 	if len(b.buf) > b.limit {
-		b.buf = append(b.buf[:0], b.buf[len(b.buf)-b.limit:]...)
+		tail := b.buf[len(b.buf)-b.limit:]
+		// Writes are arbitrary byte runs, so the kept tail can begin part-way
+		// through a multi-byte character. Advance to the first complete rune so
+		// String reports decodable text: a JSON parser reading the capture would
+		// otherwise see invalid UTF-8 at the head.
+		for len(tail) > 0 {
+			r, size := utf8.DecodeRune(tail)
+			if r == utf8.RuneError && size <= 1 {
+				tail = tail[1:] // stray invalid byte
+				continue
+			}
+			if !utf8.FullRune(tail) {
+				tail = tail[1:] // truncated sequence
+				continue
+			}
+			break
+		}
+		b.buf = append(b.buf[:0], tail...)
 	}
 	return len(p), nil
 }

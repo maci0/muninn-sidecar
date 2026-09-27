@@ -107,11 +107,36 @@ func TestNormalizeHost(t *testing.T) {
 		"[::1]:443":          "::1",
 		"[2001:db8::1]":      "2001:db8::1",
 		"127.0.0.1:443":      "127.0.0.1",
+		"api.openai.com.":    "api.openai.com", // explicit DNS root
 	}
 	for in, want := range cases {
-		if got := normalizeHost(in); got != want {
+		got, err := normalizeHost(in)
+		if err != nil {
+			t.Errorf("normalizeHost(%q): %v", in, err)
+			continue
+		}
+		if got != want {
 			t.Errorf("normalizeHost(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A Unicode (U-label) host cannot be named by a certificate SAN and never
+// matches the punycode form a client actually connects with, so it is refused
+// with an error naming the punycode spelling rather than deep inside x509.
+func TestNormalizeHostRejectsNonASCII(t *testing.T) {
+	if got, err := normalizeHost("münchen.de"); err == nil {
+		t.Errorf("normalizeHost(non-ASCII) = %q, want an error", got)
+	}
+	if got, err := normalizeHost("xn--mnchen-3ya.de"); err != nil || got != "xn--mnchen-3ya.de" {
+		t.Errorf("normalizeHost(punycode) = %q, %v; want the host unchanged", got, err)
+	}
+	ca, err := LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ca.LeafFor("münchen.de"); err == nil {
+		t.Error("LeafFor should refuse a non-ASCII host")
 	}
 }
 
@@ -274,7 +299,10 @@ func FuzzNormalizeHost(f *testing.F) {
 	f.Add("[::1]:443")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, host string) {
-		got := normalizeHost(host)
+		got, err := normalizeHost(host)
+		if err != nil {
+			return // rejected input, nothing to check
+		}
 		if got != strings.ToLower(got) {
 			t.Fatalf("result not lowercased: %q", got)
 		}

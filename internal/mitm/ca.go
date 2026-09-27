@@ -215,7 +215,10 @@ func (c *CA) CertPEM() []byte { return c.certPEM }
 // signed by the CA. Minted leaves are cached per host (bounded to
 // maxCacheEntries) and re-minted once expired. Safe for concurrent use.
 func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
-	host = normalizeHost(host)
+	host, err := normalizeHost(host)
+	if err != nil {
+		return nil, err
+	}
 	// A DNS name can't exceed 253 octets (RFC 1035); reject implausibly long
 	// hosts rather than minting a cert with a giant SAN — that wastes work
 	// (ASN.1-encoding + signing a huge string) on input that can't be a real

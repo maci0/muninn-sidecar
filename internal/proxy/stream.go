@@ -256,9 +256,14 @@ func (sc *streamCapture) buildSyntheticResp() json.RawMessage {
 	return json.RawMessage(b)
 }
 
-// clampBytes truncates s to at most max bytes without splitting a UTF-8
-// sequence, so a cap landing mid-rune cannot leave a partial rune (which would
-// marshal as a replacement character) in the accumulated text.
+// clampBytes truncates s to at most max bytes, backing the cut off to a
+// character boundary so a cap landing mid-rune cannot leave a partial rune
+// (which would marshal as a replacement character) in the accumulated text.
+//
+// Only the tail of the clip is trimmed. A pre-existing invalid byte earlier in
+// s is left in place: re-validating the whole string and dropping bytes from
+// the end would discard every character after that byte, losing text the cap
+// never touched.
 func clampBytes(s string, max int) string {
 	if max <= 0 {
 		return ""
@@ -267,8 +272,16 @@ func clampBytes(s string, max int) string {
 		return s
 	}
 	s = s[:max]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		s = s[:len(s)-1]
+	for len(s) > 0 {
+		// A last rune that decodes to RuneError at width 1 is either a
+		// continuation byte of a sequence the cap cut in half or a stray
+		// invalid byte; both go, and only they: a valid character ending
+		// inside the cap ends the trim.
+		if r, size := utf8.DecodeLastRuneInString(s); r == utf8.RuneError && size <= 1 {
+			s = s[:len(s)-1]
+			continue
+		}
+		break
 	}
 	return s
 }

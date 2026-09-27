@@ -33,6 +33,9 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/inject"
 )
 
+// ellipsis marks a value trunc shortened to fit its report column.
+const ellipsis = "…"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "msc-eval:", err)
@@ -283,11 +286,19 @@ func printLiveReport(results []inject.LiveResult) {
 	}
 }
 
+// trunc clips s to at most n characters, replacing the last one with an
+// ellipsis. The budget is characters, counted as runes: a byte count would cut
+// a multi-byte character in half, leaving a replacement character at the end of
+// a non-ASCII scenario name.
 func trunc(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	if n <= 1 {
+		return ellipsis
+	}
+	return string(r[:n-1]) + ellipsis
 }
 
 // --- MuninnDB config resolution (shared with the other msc binaries) ---

@@ -22,6 +22,10 @@ func TestClampBytes(t *testing.T) {
 		{"clean multi-byte cut", em, 5, "héll"},
 		{"zero", "abc", 0, ""},
 		{"negative", "abc", -1, ""},
+		// The cap may only remove the tail of the clip. Valid text after a
+		// stray invalid byte is not the cap's to discard.
+		{"keeps text after invalid byte", "ok\xfftail", 3, "ok"},
+		{"invalid byte inside clip", "ok\xfftail", 6, "ok\xfftai"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
