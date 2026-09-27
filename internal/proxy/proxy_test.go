@@ -1509,6 +1509,38 @@ func TestStreamCaptureNDJSON(t *testing.T) {
 	}
 }
 
+// TestStreamCaptureNDJSONIndentedPayload pins that an ndjson line indented with
+// spaces is a usable event. isNDJSONLine accepts the leading blanks, so the
+// payload slice handed to the parser has to start where the '{' is: passing it
+// untrimmed made every accepted event unparseable, and the turn was stored as
+// the raw last event instead of the assembled answer.
+func TestStreamCaptureNDJSONIndentedPayload(t *testing.T) {
+	sc := &streamCapture{
+		ReadCloser: io.NopCloser(strings.NewReader("")),
+		ctx:        &captureCtx{start: time.Now()},
+		statusCode: 200,
+	}
+	sc.processChunk([]byte(strings.Join([]string{
+		`  {"choices":[{"delta":{"content":"ind-"}}]}`,
+		"\t{\"choices\":[{\"delta\":{\"content\":\"ented\"}}]}",
+		``,
+	}, "\n")))
+
+	respBody := sc.buildRespBody()
+	var doc map[string]any
+	if err := json.Unmarshal(respBody, &doc); err != nil {
+		t.Fatalf("invalid synthetic response: %v", err)
+	}
+	content, ok := doc["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("expected assembled content from indented ndjson deltas, got %s", respBody)
+	}
+	block, _ := content[0].(map[string]any)
+	if block["text"] != "ind-ented" {
+		t.Errorf("expected accumulated text 'ind-ented', got %v", block["text"])
+	}
+}
+
 // TestStreamCaptureDropsOversizedLine pins the bound on a single SSE line that
 // arrives complete inside one Read. The partial line carried between Reads is
 // already capped, but a complete line's length is otherwise whatever the

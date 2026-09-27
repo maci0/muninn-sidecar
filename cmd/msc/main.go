@@ -80,9 +80,10 @@ func run() int {
 	case actionHelp:
 		// 'msc list --help' is a request for that command's help, not the
 		// global one: the global usage cannot document flags that apply to a
-		// single command.
+		// single command or agent. The README documents this form and
+		// 'msc help <topic>' as the same request, so both resolve here.
 		if len(remaining) > 0 {
-			if text, ok := commandUsage(remaining[0]); ok {
+			if text, ok := printHelpTopic(remaining[0]); ok {
 				fmt.Fprint(os.Stdout, text)
 				return 0
 			}

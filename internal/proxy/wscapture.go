@@ -114,6 +114,17 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 			}
 			e.respText.WriteString(delta)
 		}
+	case "response.failed", "response.incomplete", "response.error", "response.cancelled", "response.canceled":
+		// A turn can end without ever reaching response.completed, and those
+		// partial deltas are not the next turn's answer. The accumulator was
+		// only ever cleared by a completion, so a rate-limited turn's text
+		// stayed pending and was stored, concatenated, against the question
+		// that came after it. The pending request goes with it: there is no
+		// answer to pair it with.
+		e.respText.Reset()
+		e.mu.Lock()
+		e.lastReq = nil
+		e.mu.Unlock()
 	case "response.completed":
 		text := strings.TrimSpace(e.respText.String())
 		e.respText.Reset()

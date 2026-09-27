@@ -108,11 +108,18 @@ func (sc *streamCapture) finalize() {
 // shape an ndjson stream uses instead of an SSE "data: " line. SSE control
 // lines never start with '{', so the first byte separates the two formats.
 func isNDJSONLine(line []byte) bool {
+	t := trimLeadingBlank(line)
+	return len(t) > 0 && t[0] == '{'
+}
+
+// trimLeadingBlank drops the spaces and tabs an ndjson line may carry before
+// its JSON payload, so the slice starts where the payload does.
+func trimLeadingBlank(line []byte) []byte {
 	i := 0
 	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
 		i++
 	}
-	return i < len(line) && line[i] == '{'
+	return line[i:]
 }
 
 // processChunk scans the chunk for complete event lines ("data: ..." for SSE,
@@ -178,9 +185,17 @@ func (sc *streamCapture) processEvent(lineBytes []byte) {
 		if len(dBytes) > 0 && dBytes[0] == ' ' {
 			dBytes = dBytes[1:]
 		}
-	} else if !isNDJSONLine(dBytes) {
-		// SSE control lines (event:, id:, retry:, ":") carry no event payload.
-		return
+	} else {
+		if !isNDJSONLine(dBytes) {
+			// SSE control lines (event:, id:, retry:, ":") carry no event
+			// payload.
+			return
+		}
+		// isNDJSONLine accepts an indented payload, so the slice handed to
+		// parseSSEDoc has to start at the '{' it approved. Passing the
+		// untrimmed slice left the accepted event unparseable, and the turn
+		// was stored as the raw last event instead of the assembled answer.
+		dBytes = trimLeadingBlank(dBytes)
 	}
 	if bytes.Equal(dBytes, sseDone) {
 		return

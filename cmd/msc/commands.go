@@ -273,25 +273,42 @@ func cmdHelp(args []string) int {
 		return 0
 	}
 
-	topic := args[0]
-	if text, ok := commandUsage(topic); ok {
-		fmt.Fprint(os.Stdout, text)
-		return 0
+	text, ok := printHelpTopic(args[0])
+	if !ok {
+		unknownHelpTopic(args[0])
+		return exitUsage
 	}
-	if a, ok := agents.Registry[topic]; ok {
-		envKey := a.EnvKey
-		if len(a.ExtraEnvKeys) > 0 {
-			envKey += " (also: " + strings.Join(a.ExtraEnvKeys, ", ") + ")"
-		}
-		fmt.Fprintf(os.Stdout, "msc %s - wrap the %s agent, capturing its API traffic through MuninnDB\n\n", topic, topic)
-		fmt.Fprintf(os.Stdout, "  Base URL override: %s\n", envKey)
-		fmt.Fprintf(os.Stdout, "  Default upstream:   %s\n", a.DefaultURL)
-		fmt.Fprintf(os.Stdout, "  Launch:             msc [flags] %s [agent-args...]\n", topic)
-		fmt.Fprintf(os.Stdout, "  Preview:            msc --dry-run %s\n\n", topic)
-		fmt.Fprint(os.Stdout, "  Run 'msc --help' for the flags msc accepts before the agent name.\n")
-		return 0
-	}
+	fmt.Fprint(os.Stdout, text)
+	return 0
+}
 
+// printHelpTopic returns the help text for one command or agent. `msc help
+// <topic>` and `msc <topic> --help` are the same request in the README, so both
+// come through here and cannot disagree. A topic it does not know is reported
+// with ok false and no output, leaving each caller to decide what an unknown
+// topic means for the form it was given in.
+func printHelpTopic(topic string) (text string, ok bool) {
+	if text, ok := commandUsage(topic); ok {
+		return text, true
+	}
+	a, ok := agents.Registry[topic]
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf(`msc %s - wrap the %s agent, capturing its API traffic through MuninnDB
+
+  Base URL override: %s
+  Default upstream:   %s
+  Launch:             msc [flags] %s [agent-args...]
+  Preview:            msc --dry-run %s
+
+  Run 'msc --help' for the flags msc accepts before the agent name.
+`, topic, topic, a.BaseURLSource(), a.DefaultURL, topic, topic), true
+}
+
+// unknownHelpTopic reports a help topic that names no command and no agent, and
+// suggests the nearest one.
+func unknownHelpTopic(topic string) {
 	topics := helpTopics()
 	if s := closestMatch(topic, topics); s != "" {
 		logerr("unknown help topic: %s. Did you mean %q?", topic, s)
@@ -299,7 +316,6 @@ func cmdHelp(args []string) int {
 		logerr("unknown help topic: %s", topic)
 	}
 	logf("topics: %s", strings.Join(topics, ", "))
-	return exitUsage
 }
 
 // helpTopics lists every topic 'msc help' accepts, in the order it prints them.

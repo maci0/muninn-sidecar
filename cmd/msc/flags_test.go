@@ -66,6 +66,18 @@ func TestParseFlags(t *testing.T) {
 		}
 	})
 
+	// A command of only whitespace names no executable. grounding.New splits it
+	// to an empty argv and returns no grounder, so the run would proceed with
+	// grounding silently off under flags that asked for it.
+	t.Run("ground-cmd must name a command", func(t *testing.T) {
+		for _, raw := range []string{" ", "   ", "\t"} {
+			_, _, err := parseFlags([]string{"--ground-cmd", raw, "claude"}, &opts{})
+			if err == nil || !strings.Contains(err.Error(), "--ground-cmd requires a non-empty value") {
+				t.Errorf("parseFlags(--ground-cmd %q) = %v, want a non-empty-value error", raw, err)
+			}
+		}
+	})
+
 	t.Run("ground-url must be dialable", func(t *testing.T) {
 		for _, raw := range []string{"localhost:1234/v1", "htp://localhost/v1", "http://"} {
 			o := &opts{}

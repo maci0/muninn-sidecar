@@ -570,6 +570,32 @@ func TestHelpAgent(t *testing.T) {
 	}
 }
 
+// The README documents `msc help <topic>` and `msc <topic> --help` as the same
+// request, so both forms must print the same text for a command and for an
+// agent. The flag form used to fall through to the global usage for every agent.
+func TestHelpTopicFormsAgree(t *testing.T) {
+	for _, topic := range []string{"status", "claude", "qwen"} {
+		helpCode, helpOut := runArgsCapture(t, "help", topic)
+		flagCode, flagOut := runArgsCapture(t, "--help", topic)
+		if helpCode != flagCode {
+			t.Errorf("%s: 'help %s' exit %d, '%s --help' exit %d", topic, topic, helpCode, topic, flagCode)
+		}
+		if helpOut != flagOut {
+			t.Errorf("%s: 'help %s' and '%s --help' disagree:\n%s\n---\n%s", topic, topic, topic, helpOut, flagOut)
+		}
+	}
+}
+
+// qwen is ArgsRouted: msc injects the proxy through --openai-base-url and
+// deliberately does not write its EnvKey, so help must not name one. `msc list`
+// already reports the flag, and the two could disagree.
+func TestHelpAgentNamesTheBaseURLSource(t *testing.T) {
+	_, out := runArgsCapture(t, "help", "qwen")
+	if !strings.Contains(out, agents.Registry["qwen"].BaseURLSource()) {
+		t.Errorf("qwen help should name %q, got:\n%s", agents.Registry["qwen"].BaseURLSource(), out)
+	}
+}
+
 // TestRunAgentNotFound pins the exit code for an agent binary that is not
 // installed: 127, the shell's "command not found", so a script can tell a
 // mistyped agent name apart from an agent that ran and failed.

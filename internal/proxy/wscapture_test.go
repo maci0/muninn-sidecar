@@ -104,6 +104,40 @@ func TestWSExchangeReasoningOnlySkipped(t *testing.T) {
 	}
 }
 
+// TestWSExchangeFailedTurnDoesNotLeak pins the turn boundary. A turn can end
+// without ever reaching response.completed (a rate limit, a cancelled request);
+// its partial deltas are that turn's text, not the next one's. The accumulator
+// was cleared only by a completion, so a failed turn's answer stayed pending
+// and was stored, concatenated, against the question that came after it.
+func TestWSExchangeFailedTurnDoesNotLeak(t *testing.T) {
+	rec := &recordStore{}
+	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}}
+
+	ex.onClient("c->s", []byte(`{"type":"response.create","input":[{"type":"message","role":"user","content":"how do I reverse a list"}]}`))
+	ex.onServer("s->c", []byte(`{"type":"response.output_text.delta","delta":"You can call reversed()."}`))
+	ex.onServer("s->c", []byte(`{"type":"response.failed","response":{"error":{"code":"rate_limit"}}}`))
+	if n := len(rec.all()); n != 0 {
+		t.Fatalf("a failed turn stores nothing, got %d", n)
+	}
+
+	ex.onClient("c->s", []byte(`{"type":"response.create","input":[{"type":"message","role":"user","content":"now write the tests"}]}`))
+	ex.onServer("s->c", []byte(`{"type":"response.output_text.delta","delta":"Here is the test file."}`))
+	ex.onServer("s->c", []byte(`{"type":"response.completed"}`))
+	got := rec.all()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 stored exchange, got %d: %+v", len(got), got)
+	}
+	if !bytes.Contains(got[0].ReqBody, []byte("now write the tests")) {
+		t.Errorf("stored against the wrong question: %s", got[0].ReqBody)
+	}
+	if !bytes.Contains(got[0].RespBody, []byte("Here is the test file.")) {
+		t.Errorf("stored the wrong answer: %s", got[0].RespBody)
+	}
+	if bytes.Contains(got[0].RespBody, []byte("reversed()")) {
+		t.Errorf("the failed turn's text leaked into the next turn's answer: %s", got[0].RespBody)
+	}
+}
+
 func TestWSExchangeCompletionStoredOnce(t *testing.T) {
 	rec := &recordStore{}
 	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}}

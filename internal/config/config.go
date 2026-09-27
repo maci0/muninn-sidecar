@@ -205,12 +205,15 @@ func TokenFilePath() string {
 // Token resolves the MuninnDB bearer token: the flag value if non-empty, else
 // MUNINN_TOKEN, else the token file (MUNINN_TOKEN_FILE, or ~/.muninn/mcp.token).
 // Returns "" when none is set; a server that needs no auth is the only correct
-// consumer of an empty token.
+// consumer of an empty token. Every source is trimmed, so the same token copied
+// out of a file, out of a `cat` into an export, or off a command line produces
+// the same Authorization header: only the file path was trimmed, so a trailing
+// newline anywhere else reached MuninnDB and every call answered 401.
 func Token(flagVal string) string {
-	if flagVal != "" {
-		return flagVal
+	if t := strings.TrimSpace(flagVal); t != "" {
+		return t
 	}
-	if t := os.Getenv("MUNINN_TOKEN"); t != "" {
+	if t := strings.TrimSpace(os.Getenv("MUNINN_TOKEN")); t != "" {
 		return t
 	}
 	path := TokenFilePath()

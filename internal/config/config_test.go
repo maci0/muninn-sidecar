@@ -126,6 +126,22 @@ func TestValidateURL(t *testing.T) {
 	}
 }
 
+// Every source of the bearer token is trimmed, not just the file. A token
+// exported from a `cat` or pasted off a command line arrives with a trailing
+// newline, and only the file path was trimmed, so the same token produced two
+// different Authorization headers and the untrimmed one answered 401.
+func TestTokenTrimsEverySource(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("MUNINN_TOKEN_FILE", "")
+	t.Setenv("MUNINN_TOKEN", "envtok\n")
+	if got := Token(""); got != "envtok" {
+		t.Errorf("MUNINN_TOKEN with a trailing newline: %q, want %q", got, "envtok")
+	}
+	if got := Token(" flagtok\t"); got != "flagtok" {
+		t.Errorf("flag value with surrounding blanks: %q, want %q", got, "flagtok")
+	}
+}
+
 func TestTokenPrecedence(t *testing.T) {
 	t.Setenv("MUNINN_TOKEN", "envtok")
 	if got := Token("flagtok"); got != "flagtok" {

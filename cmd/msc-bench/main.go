@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/config"
@@ -122,6 +123,12 @@ func run() error {
 		if err := config.ValidateURL(opt, raw); err != nil {
 			return err
 		}
+	}
+	// A command of only whitespace names no executable. grounding.New splits it
+	// to an empty argv and returns no grounder, and the run then prints the
+	// cosine report under flags that ask for a grounded rerank beside it.
+	if strings.TrimSpace(*groundCmd) == "" && *groundCmd != "" {
+		return config.Usagef("invalid -ground-cmd %q: names no command", *groundCmd)
 	}
 	// Both flags bound one model call: the judge grades every candidate it is
 	// given in a single request, and the rewriter recalls each sub-query

@@ -115,6 +115,12 @@ func run() error {
 			return err
 		}
 	}
+	// A command of only whitespace names no executable. grounding.New splits it
+	// to an empty argv and returns no grounder, and the run then reports three
+	// arms under flags that ask for a fourth, which reads as a measurement.
+	if strings.TrimSpace(*groundCmd) == "" && *groundCmd != "" {
+		return config.Usagef("invalid -ground-cmd %q: names no command", *groundCmd)
+	}
 	// The gate is compared against an embedding cosine in [0,1]. A value
 	// outside that range, or NaN, injects everything or nothing and the scores
 	// below describe a run nobody asked for. Written as a positive range check

@@ -72,3 +72,23 @@ func TestEmptyMCPURLFlagFallsBackToEnv(t *testing.T) {
 		t.Errorf("the rejection must name the option, got: %s", out)
 	}
 }
+
+// A -ground-cmd of only whitespace names no executable. grounding.New splits it
+// to an empty argv and returns no grounder, so the run reported three arms
+// under flags that ask for a fourth, and the missing arm read as a measurement.
+func TestBlankGroundCmdIsUsageError(t *testing.T) {
+	if os.Getenv("MSC_RUN_MAIN") == "1" {
+		os.Args = []string{"msc-qa", "-ground-cmd", "   "}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestBlankGroundCmdIsUsageError$")
+	cmd.Env = append(os.Environ(), "MSC_RUN_MAIN=1", "MUNINN_MCP_URL=http://127.0.0.1:8750/mcp")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Errorf("main(-ground-cmd '   ') should exit 2, got %s", out)
+	}
+	if !strings.Contains(string(out), "-ground-cmd") {
+		t.Errorf("the rejection must name the option, got: %s", out)
+	}
+}

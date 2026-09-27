@@ -109,7 +109,6 @@ minor bump is safe.
   `ERA` (commented-out code) were never selected, so a suppression that silences
   a whole line or a whole file, and a block of code left commented out, passed
   silently. The tree passes all five today.
-
 - **A staticcheck on the wrong version now fails `make lint-go` instead of
   warning.** `make tools` is a separate command, so the copy on PATH can be
   older than the pin while still satisfying the presence gate, and a different
@@ -117,7 +116,6 @@ minor bump is safe.
   gets. The version is read out of the binary's own build info, nothing is
   fetched, and the check runs after the lint so a mismatch fails the target
   without hiding what the linter found on the way there.
-
 - **The CI linters are pinned like the other tools.** `staticcheck` and
   `govulncheck` were installed with `go install <module>@latest`, so each run
   resolved whatever the public proxy named that day: a release with new checks
@@ -253,6 +251,40 @@ minor bump is safe.
   twice, so the release gate failed on a clean tree and a tag would have shipped
   the same fix to a reader twice. The groups are back in scan order (Added,
   Changed, Fixed, Security) with one entry each.
+- **A failed codex turn no longer prepends its answer to the next one.** The
+  WebSocket accumulator was cleared only by `response.completed`, so a turn
+  that ended any other way (a rate limit, a cancellation) left its partial
+  deltas pending. The next turn stored them concatenated onto its own answer,
+  against a real user question: a memory pairing a question with an answer that
+  never existed. `response.failed`, `response.incomplete`, `response.error` and
+  both spellings of "cancelled" now end the turn and drop its pending request.
+- **An indented ndjson line is no longer accepted and then unparsed.**
+  `isNDJSONLine` skips leading spaces and tabs, so an indented `{...}` was
+  accepted as an event, but the untrimmed slice was handed to the parser, which
+  requires a leading `{`. The deltas were dropped, and the turn was stored as
+  the raw last event instead of the assembled answer. The payload now starts
+  where the check said it did.
+- **`msc help <agent>` and `msc <agent> --help` no longer disagree.** The flag
+  form looked only in the subcommand table, so every agent fell through to the
+  global usage, although the README presents the two as the same request. Both
+  now resolve through one function, and an unknown topic still reports itself
+  on the `help` form and still falls through to the global usage on the flag
+  one.
+- **Agent help no longer names a base-URL override msc does not perform.** The
+  agent branch printed `EnvKey` directly, so `msc help qwen` claimed msc
+  overrides `OPENAI_BASE_URL` while qwen is ArgsRouted and the key is
+  deliberately left alone, contradicting `msc list` and the README. It prints
+  the same base-URL source `msc list` does.
+- **A `--ground-cmd` of only whitespace is rejected.** `grounding.New` splits
+  the value to an empty argv and returns no grounder, so msc ran with grounding
+  silently off, and `msc-qa` reported three arms under flags asking for a
+  fourth, which reads as a measurement. All three binaries now fail with a usage
+  error, like every other unusable grounding value.
+- **The bearer token is trimmed from every source, not just the file.** Only
+  the token file was trimmed, so a `MUNINN_TOKEN` exported from a `cat` or a
+  flag value pasted off a command line carried its trailing newline into the
+  `Authorization` header, and the same token produced a 401 depending on where
+  it came from.
 - **An unreadable MuninnDB token file is no longer silent.** `config.Token`
   returned an empty token for any read failure, so a file that exists but cannot
   be read (a permission change, a directory in its place, a transient I/O error)
@@ -261,7 +293,6 @@ minor bump is safe.
   file as a generic delivery error. A missing file stays silent, since a server
   that needs no auth is a valid deployment; any other read failure now names the
   path and the reason.
-
 - **`msc-qa` no longer reports an undecodable recall reply as zero recall.** A
   2xx body that is not a JSON-RPC reply (an intermediary's HTML page, a
   truncated payload) parsed to an empty candidate set, which the harness then
@@ -270,7 +301,6 @@ minor bump is safe.
   like any other recall failure, alongside the existing "recall failed for N/M
   questions" warning and the all-questions-failed abort. A reply that decodes
   and carries no memories is still a genuine empty result.
-
 - **`msc-qa` and `msc-bench` no longer strand a socket per model call.** Both
   tools built a fresh `http.Client` for every question they asked, and each one
   owns a private `Transport` whose `IdleConnTimeout` is zero: the keep-alive

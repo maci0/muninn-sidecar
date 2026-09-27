@@ -273,6 +273,13 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			case "--token":
 				o.token = v
 			case "--ground-cmd":
+				// A whitespace-only command names no executable. grounding.New
+				// splits it to an empty argv, returns no grounder, and the run
+				// proceeds with grounding silently off, so reject it here with
+				// the same message as an empty value.
+				if strings.TrimSpace(v) == "" {
+					return nil, actionNone, fmt.Errorf("%s requires a non-empty value", key)
+				}
 				o.groundCmd = v
 			case "--ground-url":
 				// Reject an endpoint the grounder could never dial here, so the
