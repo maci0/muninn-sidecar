@@ -806,7 +806,7 @@ func TestFence(t *testing.T) {
 	if a != b {
 		t.Errorf("Fence not stable: %q vs %q", a, b)
 	}
-	if fenceRE([]string{"question"}).String() != fenceRE([]string{"question"}).String() {
-		t.Error("fenceRE compiled a different pattern for the same tags")
+	if first := fenceRE([]string{"question"}); first != fenceRE([]string{"question"}) {
+		t.Error("fenceRE recompiled the pattern for the same tags")
 	}
 }

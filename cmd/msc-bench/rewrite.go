@@ -58,10 +58,6 @@ func rewritePrompt(query string, max int) string {
 		"<question>" + question + "</question>"
 }
 
-// reQuestionTag matches the tag fencing the question, so a question cannot
-// close its own fence and have the remainder read as prompt text.
-var reQuestionTag = regexp.MustCompile(`(?i)<\s*/?\s*question\b`)
-
 // reListMarker matches a leading ordered/unordered list marker: a bullet, or an
 // index followed by its separator ("2." / "3)"). The separator after the digits
 // is required, so a sub-query that *is* a number keeps it: the answers to

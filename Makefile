@@ -37,12 +37,17 @@ CGO = CGO_ENABLED=0
 PKG ?= ./...
 RUN ?=
 
-# @latest, not a pin: staticcheck v0.5.1 no longer compiles against current Go
-# toolchains (stale x/tools), and a linter that does not build is worse than
-# one that tracks the toolchain. govulncheck follows Go releases, so the same
-# argument applies. Override to reproduce a specific release locally.
-STATICCHECK_VERSION ?= latest
-GOVULNCHECK_VERSION ?= latest
+# Pinned, not @latest. `go install <mod>@latest` resolves against the public
+# proxy on every run, so a new upstream release changes what CI lints with,
+# with no review and no record of the version that passed: a linter whose new
+# checks fail the tree is an unexplained red push, and one whose checks loosen
+# is an unexplained green one. Pinned here for the same reason as ruff and
+# yamllint below, and overridable for the same reason. Bump on a branch, run
+# `make check`, and note it in CHANGELOG.md. The pins do go stale against new
+# Go release lines (staticcheck v0.5.1 no longer compiled on Go 1.25, stale
+# x/tools), which is what a bump is for, not a reason to float.
+STATICCHECK_VERSION ?= v0.8.1
+GOVULNCHECK_VERSION ?= v1.7.0
 STATICCHECK_PKG = honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
 GOVULNCHECK_PKG = golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
@@ -57,6 +62,8 @@ YAMLLINT_VERSION ?= 1.38.0
 versions:
 	@echo 'RUFF_VERSION=$(RUFF_VERSION)'
 	@echo 'YAMLLINT_VERSION=$(YAMLLINT_VERSION)'
+	@echo 'STATICCHECK_VERSION=$(STATICCHECK_VERSION)'
+	@echo 'GOVULNCHECK_VERSION=$(GOVULNCHECK_VERSION)'
 
 help:
 	@echo 'dev targets:'
@@ -350,15 +357,27 @@ vet:
 # CI runs staticcheck and fails the build, so a missing local copy must fail
 # here too: skipping it silently reports green and turns into a red CI run.
 # The optional non-Go linters stay out of this target, which is the pair CI runs.
+# Presence is not the whole problem, though: `make tools` is a separate command,
+# so the copy on PATH can be older than the pin and still satisfy the gate. The
+# version check that follows reads it out of the binary's own build info, so
+# nothing is fetched to answer it. It warns rather than exits non-zero: the
+# stale copy usually still runs, and failing the target over it would bury
+# whatever the linter actually found.
 lint-go: vet
 	@command -v staticcheck >/dev/null 2>&1 || { \
 	  echo "staticcheck is required (CI runs it): go install $(STATICCHECK_PKG)" >&2; exit 1; }
+	@go version -m "$$(command -v staticcheck)" | \
+	  awk '$$1=="mod" && $$3=="$(STATICCHECK_VERSION)" {found=1} END{exit !found}' || \
+	  echo "warning: staticcheck on PATH is not the pinned $(STATICCHECK_VERSION) CI uses; run 'make tools-staticcheck'" >&2
 	staticcheck ./...
 
 # Scan reachable code against the Go vulnerability DB (CI runs this too).
 vuln:
 	@command -v govulncheck >/dev/null 2>&1 || { \
 	  echo "govulncheck is required (CI runs it): go install $(GOVULNCHECK_PKG)" >&2; exit 1; }
+	@go version -m "$$(command -v govulncheck)" | \
+	  awk '$$1=="mod" && $$3=="$(GOVULNCHECK_VERSION)" {found=1} END{exit !found}' || \
+	  echo "warning: govulncheck on PATH is not the pinned $(GOVULNCHECK_VERSION) CI uses; run 'make tools-govulncheck'" >&2
 	govulncheck ./...
 
 fmt:

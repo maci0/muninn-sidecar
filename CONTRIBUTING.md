@@ -18,10 +18,13 @@ quality bar so a change lands cleanly.
   make tools   # go install both into GOBIN (no sudo, no system packages)
   ```
 
-  Pin versions with `make tools STATICCHECK_VERSION=v0.6.0
-  GOVULNCHECK_VERSION=latest` if you need to match a specific linter release;
-  `make tools-staticcheck` and `make tools-govulncheck` install just one of
-  them, which is what each CI job does.
+  Both are pinned in the Makefile (`STATICCHECK_VERSION`, `GOVULNCHECK_VERSION`,
+  printed by `make versions`) so CI resolves the same release every run instead
+  of whatever `@latest` names that day. Override with `make tools
+  STATICCHECK_VERSION=v0.6.0` to try another; `make tools-staticcheck` and
+  `make tools-govulncheck` install just one of them, which is what each CI job
+  does. `make lint` and `make vuln` warn when the copy on PATH is not the
+  pinned one.
 - **shellcheck, ruff and yamllint**, for `make check`. `make lint` refuses to run
   without them, for the same reason staticcheck is required: a linter that
   skips silently reports green and turns into a red CI run. `uv tool install

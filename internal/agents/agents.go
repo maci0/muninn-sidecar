@@ -354,13 +354,6 @@ func CABundlePath(caCertPath string) string {
 	return filepath.Join(filepath.Dir(caCertPath), "ca-bundle.pem")
 }
 
-// HasSystemCABundle reports whether this host has a system root CA bundle for
-// writeCombinedCABundle to prepend msc's CA to. `msc --dry-run` needs the same
-// answer ExecMITM acts on without writing the bundle, so the preview and the
-// real run cannot disagree about whether the trust-store-replacing variables
-// are set. False on Windows, where the roots live in the OS store.
-func HasSystemCABundle() bool { return systemRootsPEM() != nil }
-
 // BuildMITMEnv constructs the child environment for TLS-MITM mode. Instead of
 // overriding the agent's API base-URL env var, it points the standard proxy
 // variables (HTTPS_PROXY/HTTP_PROXY/ALL_PROXY) at msc and makes the child trust
@@ -444,9 +437,10 @@ func systemRootsPEM() []byte {
 }
 
 // HasSystemCABundle reports whether a system root bundle exists to combine
-// with, which decides whether writeCombinedCABundle writes one and whether
-// MITMOverrides sets the trust-store-replacing variables. `msc --dry-run` uses
-// it to preview the same set the child will really get.
+// with msc's CA, which decides whether writeCombinedCABundle writes one and
+// whether MITMOverrides sets the trust-store-replacing variables. It is the
+// same probe writeCombinedCABundle makes, so `msc --dry-run` previews the same
+// set the child will really get and agrees with ExecMITM.
 func HasSystemCABundle() bool {
 	return systemRootsPEM() != nil
 }

@@ -282,7 +282,7 @@ func FuzzWSFrameStream(f *testing.F) {
 				// treats it: stop feeding frames.
 				break
 			}
-			if msg != nil && len(msg) > wsMaxMessage {
+			if len(msg) > wsMaxMessage {
 				t.Fatalf("emitted message of %d bytes exceeds cap %d", len(msg), wsMaxMessage)
 			}
 			if len(asm.buf) > wsMaxMessage {

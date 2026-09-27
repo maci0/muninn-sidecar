@@ -310,7 +310,7 @@ func TestCAValidityIsCalendarYears(t *testing.T) {
 	if back := notAfter.AddDate(-caValidityYears, 0, 0); back.Before(time.Now().Add(-time.Minute)) || back.After(time.Now().Add(time.Minute)) {
 		t.Errorf("CA expires %v, which is not ten calendar years from now (%v)", notAfter, back)
 	}
-	if elapsed := notAfter.Sub(time.Now()); elapsed < time.Duration(caValidityYears)*365*24*time.Hour {
+	if elapsed := time.Until(notAfter); elapsed < time.Duration(caValidityYears)*365*24*time.Hour {
 		t.Errorf("CA validity %v is shorter than %d nominal years", elapsed, caValidityYears)
 	}
 	if notAfter.Sub(ca.cert.NotBefore) <= 0 {

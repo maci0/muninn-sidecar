@@ -40,6 +40,12 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
 
 ### Fixed
 
+- **`msc --dry-run` builds again in MITM mode.** The preview was changed to
+  leave the trust-store-replacing variables unset on a host with no system CA
+  bundle, which is right, but it called `agents.HasSystemCABundle`, a helper
+  that had already been removed as dead, so `cmd/msc` no longer compiled. The
+  helper is back, exported over the same system-roots probe `ExecMITM` uses, so
+  the preview and the real launch cannot disagree about it.
 - **Reader output and judge scope are capped at startup.** `-max-tokens`
   (`msc-qa`) and `-ground-topk` (`msc-qa`, `msc-bench`) were the only things
   bounding a model call, and neither rejected a zero: providers that honor
@@ -125,6 +131,13 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
 
 ### Changed
 
+- **The CI linters are pinned like the other tools.** `staticcheck` and
+  `govulncheck` were installed with `go install <module>@latest`, so each run
+  resolved whatever the public proxy named that day: a release with new checks
+  turned a green push red with nothing in the diff to explain it, and one with
+  loosened checks turned it green just as silently. Both now carry a version in
+  the Makefile, overridable the same way, and `make lint` and `make vuln` warn
+  when the copy on `PATH` is not the pinned one.
 - **CI and `make lint` run the same linter invocations.** The `Lint` job kept
   its own copy of the four non-Go linter commands while the Makefile kept a
   second one, so the two could check different rules without either change

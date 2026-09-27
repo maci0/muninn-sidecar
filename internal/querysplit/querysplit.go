@@ -18,7 +18,7 @@ const minEntityBytes = 3
 // question written in Japanese or Chinese ends in "。", and keeping it made the
 // sub-query ("北京大学。") a different recall key from the same entity written
 // without it ("北京大学"), for a difference no one typed.
-const trailingPunct = "?.,。、！？；：…!?;:"
+const trailingPunct = "?.,。、！？；：…!;:"
 
 // Split returns the sub-queries for q: q first, then each maximal run of
 // capitalized words, deduped and trimmed of trailing punctuation. Runs shorter

@@ -22,20 +22,6 @@ type cand struct {
 	Score   float64 // effective cosine used as the relevance shown to the reader
 }
 
-// recallCandidates returns the gated recall passages' content in recall order
-// (bare content — used for grounding and the distractor arm).
-func recallCandidates(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) ([]string, error) {
-	cands, err := recallStructured(ctx, mcp, vault, query, minScore, multi)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, len(cands))
-	for i, c := range cands {
-		out[i] = c.Content
-	}
-	return out, nil
-}
-
 // recallStructured returns the gated recall candidates (cosine >= minScore) with
 // concept and relevance, in MuninnDB's return order (already score-ranked; the
 // multi-query path concatenates per-sub-query results, not a global ranking).

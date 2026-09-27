@@ -63,9 +63,9 @@ jobs:
 
       - name: Staticcheck
         # Installed through the Makefile target, which owns the module path and
-        # the version choice (STATICCHECK_VERSION, currently @latest: the
-        # pinned v0.5.1 no longer compiles against current Go toolchains, stale
-        # x/tools), so the local and CI linters are the same one.
+        # the version choice (STATICCHECK_VERSION), so the local and CI linters
+        # are the same one. The pin lives in the Makefile rather than in this
+        # env block because `go install` reads it there, not from CI.
         run: |
           make tools-staticcheck
           staticcheck ./...
