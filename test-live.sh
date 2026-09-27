@@ -49,7 +49,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "=== Building msc ==="
-if ! go build -o msc ./cmd/msc/; then
+if ! go build -trimpath -buildvcs=false -o msc ./cmd/msc/; then
     echo "FAIL: build failed"
     exit 1
 fi

@@ -15,6 +15,15 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **Builds are reproducible.** `make build` passed no `-trimpath`, so the
+  checkout path was embedded in every binary, and the stamped build date came
+  from the wall clock, so no two builds of one commit matched. Builds now use
+  `-trimpath -buildvcs=false` and derive the date from `SOURCE_DATE_EPOCH`
+  (defaulting to the commit timestamp). A new `Reproducible build` CI job
+  builds twice from two directories and compares hashes.
+- **The session window has a stable order.** The window is built from a map, so
+  memories with equal effective scores were emitted in a different order on
+  every run. Ties now break on ID, so the injected block is replayable.
 - **Direct identifiers no longer reach third parties on the read path.** The
   recall query is scrubbed before it is sent to MuninnDB, and
   `grounding.Prompt` scrubs the query and candidate passages before they reach

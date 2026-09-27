@@ -1,9 +1,20 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Build date pinned to the source's own commit time (reproducible-builds.org).
+# Overridable with SOURCE_DATE_EPOCH, the standard knob packagers set. Falling
+# back to wall-clock time would make every build differ from the last.
+SOURCE_DATE_EPOCH ?= $(shell git log -1 --pretty=%ct 2>/dev/null || echo 0)
+DATE    ?= $(shell date -u -d "@$(SOURCE_DATE_EPOCH)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  = -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: help tools check build install test cover lint vuln fmt fmt-check tidy \
+# -trimpath keeps the checkout directory out of the binary, so the same source
+# built from /home/u and from /build produces identical output. -buildvcs=false
+# drops the automatically embedded VCS stamp, which is redundant with the
+# COMMIT/DATE ldflags above and adds a dirty-tree flag on top.
+BUILDFLAGS = -trimpath -buildvcs=false
+
+.PHONY: help tools check build install test test-fast cover lint vuln fmt fmt-check tidy \
 	tidy-check clean eval eval-models fuzz bench
 
 # Packages/tests for the `test` target. PKG=./internal/redact narrows the
@@ -50,7 +61,7 @@ tools:
 # The full local mirror of the CI `test` job, in CI's order. Run this before
 # pushing: anything it misses is a red CI run.
 check: tidy-check fmt-check lint test
-	go build -o /dev/null ./...   # all binaries, matching CI's build step
+	go build -o /dev/null $(BUILDFLAGS) ./...   # all binaries, matching CI's build step
 
 # CI runs `go mod tidy` and fails if it changes anything, so a stale go.mod
 # only surfaces after a push. Same check, same message, locally.
@@ -66,10 +77,10 @@ tidy-check:
 # Build all binaries. Version ldflags only resolve in cmd/msc (the others have
 # no main.version symbol, so -X is a harmless no-op there).
 build:
-	go build -ldflags '$(LDFLAGS)' -o msc       ./cmd/msc/
-	go build -ldflags '$(LDFLAGS)' -o msc-bench ./cmd/msc-bench/
-	go build -ldflags '$(LDFLAGS)' -o msc-eval  ./cmd/msc-eval/
-	go build -ldflags '$(LDFLAGS)' -o msc-qa    ./cmd/msc-qa/
+	go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc       ./cmd/msc/
+	go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc-bench ./cmd/msc-bench/
+	go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc-eval  ./cmd/msc-eval/
+	go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o msc-qa    ./cmd/msc-qa/
 
 eval:
 	go run ./cmd/msc-eval -sweep
@@ -82,7 +93,7 @@ eval-models:
 	go run ./cmd/msc-qa -vault msc-squad -model-url $(MODEL_URL) -model "$(MODELS)" -n 20 -min-score 0.1 -max-tokens 256 -md docs/model-eval.md
 
 install:
-	go install -ldflags '$(LDFLAGS)' ./cmd/msc/
+	go install $(BUILDFLAGS) -ldflags '$(LDFLAGS)' ./cmd/msc/
 
 test:
 	go test -race -count=1 $(if $(RUN),-run '$(RUN)') $(PKG)

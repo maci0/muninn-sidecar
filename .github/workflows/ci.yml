@@ -130,6 +130,43 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
 
+  # Reproducibility is a property of the build flags (-trimpath, a
+  # SOURCE_DATE_EPOCH-derived stamp), so it can only be trusted if something
+  # checks it. Build twice from different directories and diff: any leaked path,
+  # timestamp, or VCS stamp shows up as a differing hash.
+  repro:
+    name: Reproducible build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Build twice from different paths
+        run: |
+          set -euo pipefail
+          make build
+          mkdir -p "$RUNNER_TEMP/elsewhere"
+          cp -r . "$RUNNER_TEMP/elsewhere/src"
+          rm -f "$RUNNER_TEMP/elsewhere/src"/msc*
+          (cd "$RUNNER_TEMP/elsewhere/src" && make build)
+          for bin in msc msc-bench msc-eval msc-qa; do
+            a=$(sha256sum "$bin" | cut -d' ' -f1)
+            b=$(sha256sum "$RUNNER_TEMP/elsewhere/src/$bin" | cut -d' ' -f1)
+            if [ "$a" != "$b" ]; then
+              echo "::error::$bin is not reproducible: $a != $b"
+              if command -v diffoscope >/dev/null 2>&1; then
+                diffoscope "$bin" "$RUNNER_TEMP/elsewhere/src/$bin" || true
+              fi
+              exit 1
+            fi
+            echo "ok  $bin  $a"
+          done
+
   fuzz:
     name: Fuzz smoke
     runs-on: ubuntu-24.04

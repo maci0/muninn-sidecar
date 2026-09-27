@@ -31,6 +31,19 @@ go run ./cmd/msc status # quick smoke against a local MuninnDB
 `http://127.0.0.1:8750/mcp`, override with `MUNINN_MCP_URL`). The tests use
 `httptest` fakes, so no MuninnDB is needed to run them.
 
+Builds are reproducible: the same source at the same commit produces
+bit-identical binaries regardless of checkout path, wall-clock time, or locale.
+`make build` passes `-trimpath` and `-buildvcs=false`, and stamps the build date
+from `SOURCE_DATE_EPOCH`, which defaults to the commit's own timestamp. Set it
+explicitly to build as of a different point in time:
+
+```sh
+SOURCE_DATE_EPOCH=1700000000 make build
+```
+
+The `Reproducible build` CI job builds twice from two different directories and
+compares the hashes, so a regression here fails the build.
+
 ## The edit-test loop
 
 `make test` runs the whole tree under `-race` (about 25s). Narrow it to what you
