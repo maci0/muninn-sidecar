@@ -425,9 +425,21 @@ vuln:
 	  echo "warning: govulncheck on PATH is not the pinned $(GOVULNCHECK_VERSION) CI uses; run 'make tools-govulncheck'" >&2
 	govulncheck ./...
 
+# gofmt runs either way, so a Go-only tree is still formatted without ruff.
+# The missing ruff is not a quiet skip, though: `make lint-non-go` runs
+# `ruff format --check .`, so an unformatted Python file then fails a target
+# the contributor was told `make fmt` covers, and the skip line was the only
+# hint. Failing at the end names it, and the exit status means a wrapper
+# cannot read the run as clean.
 fmt:
 	gofmt -l -w .
-	@if command -v ruff >/dev/null 2>&1; then ruff format .; else echo "ruff not installed, skipping"; fi
+	@if command -v ruff >/dev/null 2>&1; then \
+	  ruff format .; \
+	else \
+	  echo "ruff not on PATH: the tree's Python is left unformatted" >&2; \
+	  echo "uv tool install ruff   (then 'make fmt' again)" >&2; \
+	  exit 1; \
+	fi
 
 # A file gofmt cannot parse makes `gofmt -l` exit non-zero with no stdout, so a
 # bare `unformatted="$(gofmt -l .)"` would find nothing and report the tree

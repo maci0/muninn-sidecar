@@ -74,6 +74,7 @@ minor bump is safe.
   its own usage, arguments, examples, and exit codes, reachable as
   `msc <command> --help` or `msc help <command>`; `msc help <agent>` prints
   that agent's base-URL override, default upstream, and launch line.
+
 ### Changed
 
 - **ruff covers the whole tree, not just `scripts/`.** `make lint-non-go` and
@@ -81,6 +82,12 @@ minor bump is safe.
   else was formatted by nobody and linted by nobody while `ruff.toml` sat at the
   root applying to it. Both now run ruff over `.`, which resolves to the same
   single file today and picks up the next one wherever it lands.
+
+- **`make fmt` no longer skips ruff quietly.** Without ruff on PATH it printed
+  `ruff not installed, skipping` and exited 0, so the tree's Python stayed
+  unformatted and the first sign of it was `ruff format --check` failing inside
+  `make lint-non-go`. gofmt still runs first, and the skip now names the install
+  command and fails the target, so a wrapper cannot read the run as clean.
 
 - **Five more ruff rule groups are on.** `N` (naming), `PGH` (blanket `# noqa`
   and `# type: ignore`), `RSE` (unnecessary `raise`), `PLW` (pylint warnings) and
@@ -213,6 +220,7 @@ minor bump is safe.
   none of which any existing check noticed. `make check-release` (in `make
   check`) reports each of those, and a `Release notes` CI job runs it on a `v*`
   tag push with `TAG` set, so a release cannot ship undocumented.
+
 ### Fixed
 
 - **An unreadable MuninnDB token file is no longer silent.** `config.Token`
@@ -716,7 +724,6 @@ minor bump is safe.
 
 - **`msc-bench` and `msc-qa` build again.** Both used `filepath.Join` without
   importing `path/filepath`, so the two commands failed to compile.
-
 - **Breaking: the `dedup_key` every memory is written under has changed.**
   `DedupKey` framed vault, concept, and content with NUL separators, and a NUL
   is a legal character in captured conversation text: the concept `"a\0b"` with
@@ -797,6 +804,7 @@ minor bump is safe.
   build error, which is the message the target exists to replace. The `test` job
   runs it as its first step, before `setup-go` installs anything, so `make check`
   and the CI `test` job run the same list in the same order.
+
 
 ## [0.4.4] — 2026-06-02
 
