@@ -63,6 +63,7 @@ func TestResponseStreamOutlivesIdleWindow(t *testing.T) {
 type deadlineRecorder struct {
 	mu        sync.Mutex
 	deadlines []time.Time
+	flushes   int
 	body      strings.Builder
 }
 
@@ -77,6 +78,12 @@ func (d *deadlineRecorder) SetWriteDeadline(t time.Time) error {
 	defer d.mu.Unlock()
 	d.deadlines = append(d.deadlines, t)
 	return nil
+}
+
+func (d *deadlineRecorder) Flush() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.flushes++
 }
 
 // The deadline is re-armed at the start of the response and on every write and
@@ -106,5 +113,40 @@ func TestIdleDeadlineRearmedOnHeaderWriteAndFlush(t *testing.T) {
 		if ahead := d.Sub(start); ahead < idle/2 || ahead > idle+time.Second {
 			t.Errorf("deadline %d armed %v ahead, want ~%v", i, ahead, idle)
 		}
+	}
+}
+
+// TestIdleDeadlineReachesTheConnectionThroughUnwrap covers the case the
+// deadline count above hides on its own: the wrapper exposes neither
+// SetWriteDeadline nor Flush itself, so http.ResponseController can only reach
+// the connection by unwrapping. That is the production shape — the wrapper
+// holds a *http.response — and without Unwrap the deadline is armed nowhere and
+// the reverse proxy's per-write flush is dropped, so a response that stalls
+// holds the agent's read open forever with every other test still green.
+func TestIdleDeadlineReachesTheConnectionThroughUnwrap(t *testing.T) {
+	const idle = 2 * time.Second
+	conn := &deadlineRecorder{}
+	w := newIdleDeadlineWriter(conn, idle)
+
+	if w.Unwrap() != http.ResponseWriter(conn) {
+		t.Fatal("Unwrap did not return the wrapped writer")
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("chunk"))
+	if err := w.FlushError(); err != nil {
+		t.Fatalf("FlushError: %v", err)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.deadlines) != 3 {
+		t.Fatalf("connection saw %d armed deadlines, want 3: the deadline did not reach through Unwrap", len(conn.deadlines))
+	}
+	// A drop on Unwrap would also cost the flush: the reverse proxy flushes
+	// every write, and a stream that never reaches the agent is a broken
+	// response rather than a slow one.
+	if conn.flushes != 1 {
+		t.Errorf("connection saw %d flushes, want 1: the flush did not reach through Unwrap", conn.flushes)
 	}
 }

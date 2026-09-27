@@ -1191,8 +1191,20 @@ func TestIsNoiseContent(t *testing.T) {
 	}
 }
 
+// TestDoubleDrainNoPanic pins that Drain is idempotent in effect, not merely
+// non-crashing. The second call must not re-run the once-guarded body, so the
+// exchange is flushed exactly once: a second flush would store the same memory
+// again under a new request id, and a drained store that re-enqueued would
+// write to a closed channel.
 func TestDoubleDrainNoPanic(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
 		w.WriteHeader(200)
 		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
 	}))
@@ -1209,6 +1221,29 @@ func TestDoubleDrainNoPanic(t *testing.T) {
 	// Double drain should not panic.
 	s.Drain()
 	s.Drain()
+
+	mu.Lock()
+	n := calls
+	mu.Unlock()
+	if n != 1 {
+		t.Errorf("two drains flushed %d times, want exactly 1: the second drain re-ran the once-guarded body", n)
+	}
+	// A drained store stays drained: work offered after shutdown is dropped
+	// rather than queued onto a channel whose reader has exited.
+	s.Store(&CapturedExchange{
+		Agent:    "test",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"after drain"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
+	})
+	s.Drain()
+
+	mu.Lock()
+	n = calls
+	mu.Unlock()
+	if n != 1 {
+		t.Errorf("a store after drain flushed %d times, want still 1", n)
+	}
 }
 
 func TestStoreHealthCheck(t *testing.T) {
@@ -1305,7 +1340,24 @@ func TestRetryReusesRequestIDAndDedupKey(t *testing.T) {
 // Preparer, so a plain field would be an unsynchronized read/write pair; the
 // mutex makes swapping the preparer while captures flow safe. Run under -race.
 func TestSetPreparerConcurrentWithStore(t *testing.T) {
+	var (
+		mu sync.Mutex
+		// The tag the preparer stamps on every exchange, and the payloads seen
+		// without it. An unsynchronized read of the preparer field can lose the
+		// swap, so an exchange can reach the flush path unprepared; the race
+		// detector catches the read/write pair, and the missing tag catches the
+		// loss of the swap that survives it.
+		unprepared int
+		seen       int
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		seen++
+		if !strings.Contains(string(body), "model:test-model") {
+			unprepared++
+		}
+		mu.Unlock()
 		w.WriteHeader(200)
 		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
 	}))
@@ -1343,6 +1395,19 @@ func TestSetPreparerConcurrentWithStore(t *testing.T) {
 	close(stop)
 	wg.Wait()
 	s.Drain()
+
+	mu.Lock()
+	got, missed := seen, unprepared
+	mu.Unlock()
+	// The captures are the point of the test: if none reached the server the
+	// run proved nothing, and a pass would be indistinguishable from a Store
+	// that silently dropped everything.
+	if got == 0 {
+		t.Fatal("no exchange reached MuninnDB; the run proved nothing about the swap")
+	}
+	if missed != 0 {
+		t.Errorf("%d of %d flushes carried no preparer tag: an exchange bypassed the preparer", missed, got)
+	}
 }
 
 func TestStoreQueueFullWarningIsThrottled(t *testing.T) {
