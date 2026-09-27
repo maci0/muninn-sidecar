@@ -439,6 +439,7 @@ func (s *MuninnStore) Close() { s.mcp.Close() }
 // concepts from being stored when the same user message generates multiple
 // API calls in a tool-use chain. All of this runs in a single goroutine, so no
 // locking is needed for the ring buffer.
+
 func (s *MuninnStore) worker() {
 	defer close(s.done)
 
@@ -471,6 +472,11 @@ func (s *MuninnStore) worker() {
 				batch = append(batch, *fm)
 			}
 			if len(batch) >= maxBatchSize {
+				// Roll before the size-triggered flush too: a tool-use chain
+				// that fills a batch is exactly the case the ring exists to
+				// collapse, so the batch is recorded into a freshly opened slot
+				// and lives the full dedupRingSize cycles the window promises.
+				dedup.roll()
 				s.flushDelivered(batch, &dedup)
 				batch, pending = nil, make(map[uint64]struct{})
 			}

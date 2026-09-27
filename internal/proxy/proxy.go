@@ -561,9 +561,6 @@ func degradedReasons(snap stats.Snapshot, q storeQueue) []string {
 	if snap.Dropped > 0 {
 		reasons = append(reasons, "dropped captures: the store queue overflowed or hit its memory budget")
 	}
-	if snap.Requests > 0 && snap.UpstreamError > snap.Requests/2 {
-		reasons = append(reasons, "most upstream responses were errors")
-	}
 	if snap.Uncapturable > 0 {
 		reasons = append(reasons, "some responses could not be captured (gRPC, non-gzip encoding, or a protocol upgrade): those turns are not saved")
 	}

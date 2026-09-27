@@ -346,18 +346,26 @@ func CheckEnvelope(body []byte) error {
 }
 
 // bodySummary renders an untrusted response body for an error message, capped
-// so a large HTML page does not land whole in a log line. The cut backs off to
-// a rune boundary: a server that answers with a non-ASCII error page would
-// otherwise have the cap land mid-character and the log line carry a replacement
-// character for the rest of it.
+// so a large HTML page does not land whole in a log line, and scrubbed for the
+// same reason scrubServerText exists: the server authors this text about the
+// request it just refused, so it can quote the memory that was refused. The cut
+// backs off to a rune boundary: a server that answers with a non-ASCII error
+// page would otherwise have the cap land mid-character and the log line carry
+// a replacement character for the rest of it.
 func bodySummary(body []byte) string {
 	const maxSummary = 200
 	if len(body) <= maxSummary {
-		return string(body)
+		return scrubServerText(string(body))
 	}
 	cut := body[:maxSummary]
-	for len(cut) > 0 && !utf8.RuneStart(cut[len(cut)-1]) {
+	for len(cut) > 0 {
+		// A trailing RuneError of one byte is the start of a rune the cap cut in
+		// half; a width above 1 is a real U+FFFD the server sent. Dropping the
+		// partial rune is what keeps a replacement character out of the line.
+		if r, size := utf8.DecodeLastRune(cut); r != utf8.RuneError || size > 1 {
+			break
+		}
 		cut = cut[:len(cut)-1]
 	}
-	return string(cut) + "..."
+	return scrubServerText(string(cut)) + "..."
 }

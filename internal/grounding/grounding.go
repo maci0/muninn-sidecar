@@ -152,16 +152,20 @@ func ParseMask(s string, n int) []bool {
 	if n == 0 {
 		return mask
 	}
-	matched := false
+	numbered := false
 	for _, m := range verdictRE.FindAllStringSubmatch(s, -1) {
+		// Any "n: yes/no" shape makes the reply a verdict list. An id that names
+		// no passage is skipped, but the bare-yes/no reading below must not claim
+		// a reply that already carries numbering: it would read the stray
+		// number's yes/no as the lone passage's verdict and drop a real hit.
+		numbered = true
 		idx, err := strconv.Atoi(m[1])
 		if err != nil || idx < 1 || idx > n {
 			continue
 		}
 		mask[idx-1] = isYes(m[2])
-		matched = true
 	}
-	if !matched && n == 1 {
+	if !numbered && n == 1 {
 		// No numbered verdicts; treat the whole reply as a single yes/no.
 		mask[0] = parseYesNo(s)
 	}

@@ -436,8 +436,11 @@ func systemRootsPEM() []byte {
 // PEM bundle, or nil when none is.
 func firstPEMRoots(candidates []string) []byte {
 	for _, p := range candidates {
+		// An empty file is not a bundle: writing msc's CA after nothing would
+		// leave the trust-store-replacing variables pointing at msc's CA alone,
+		// which is what combining with system roots exists to prevent.
 		b, err := os.ReadFile(p)
-		if err != nil {
+		if err != nil || len(b) == 0 {
 			continue
 		}
 		// A readable file is not a bundle. macOS's /etc/ssl/cert.pem exists but
@@ -501,7 +504,7 @@ func writeCombinedCABundle(caCertPath string) (string, error) {
 // so the no-roots branch is reachable without depending on what the host has
 // installed.
 func writeCABundle(caCertPath string, roots []byte) (string, error) {
-	if roots == nil {
+	if len(roots) == 0 {
 		return "", nil
 	}
 	ca, err := os.ReadFile(caCertPath)

@@ -289,3 +289,21 @@ func TestUncapturableCounted(t *testing.T) {
 		t.Error("an undecodable response left the status endpoint reporting healthy")
 	}
 }
+
+// A provider that refuses most turns is still a working sidecar: the 4xx/5xx
+// reached the agent unchanged, so degraded must stay false however high the
+// upstream-error ratio climbs.
+func TestDegradedIgnoresUpstreamErrors(t *testing.T) {
+	st := &stats.Stats{}
+	st.Requests.Add(2)
+	st.UpstreamErrors.Add(2)
+	if reasons := degradedReasons(st.Snapshot(), storeQueue{}); len(reasons) != 0 {
+		t.Errorf("degraded_reasons = %v, want none: an upstream 4xx/5xx is the provider's answer", reasons)
+	}
+
+	// A failure msc caused itself is the other half of the contract.
+	st.ProxyErrors.Add(1)
+	if reasons := degradedReasons(st.Snapshot(), storeQueue{}); len(reasons) != 1 {
+		t.Errorf("degraded_reasons = %v, want the proxy transport error", reasons)
+	}
+}

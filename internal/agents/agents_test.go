@@ -761,3 +761,24 @@ func TestHasSystemCABundleAgreesWithTheWrittenBundle(t *testing.T) {
 		t.Errorf("bundle path = %q, want %q", bundlePath, CABundlePath(caPath))
 	}
 }
+
+// An empty system-roots file is no bundle. Combining with it would write a
+// ca-bundle.pem holding msc's CA alone and point SSL_CERT_FILE and friends at
+// it, breaking every host msc blind-tunnels.
+func TestEmptySystemBundleIsTreatedAsNone(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca-cert.pem")
+	if err := os.WriteFile(caPath, []byte("FAKE MSC CA\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bundlePath, err := writeCABundle(caPath, []byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundlePath != "" {
+		t.Errorf("bundle path = %q, want none: there are no system roots to combine", bundlePath)
+	}
+	if _, err := os.Stat(CABundlePath(caPath)); !os.IsNotExist(err) {
+		t.Error("a bundle was written from empty system roots")
+	}
+}

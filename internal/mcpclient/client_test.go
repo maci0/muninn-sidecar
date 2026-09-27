@@ -366,3 +366,21 @@ func TestServerErrorTextScrubsBeforeCapping(t *testing.T) {
 		t.Errorf("message not bounded: %d runes", n)
 	}
 }
+
+// The summary of a non-JSON body reaches a log line, so the cap must land on a
+// rune boundary (no replacement character) and the text must be scrubbed: the
+// server authors it, and a refusal can quote the memory it rejected.
+func TestCheckEnvelopeSummaryIsRuneSafeAndScrubbed(t *testing.T) {
+	body := append([]byte(strings.Repeat("a", 199)), []byte("€ secret=sk-live-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")...)
+	err := CheckEnvelope(body)
+	if err == nil {
+		t.Fatal("a non-JSON body must be reported as an error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "�") {
+		t.Errorf("summary cut mid-rune and carries a replacement character: %q", msg)
+	}
+	if strings.Contains(msg, "sk-live-") {
+		t.Errorf("server-supplied body reached the error unscrubbed: %q", msg)
+	}
+}

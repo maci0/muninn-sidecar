@@ -423,3 +423,18 @@ func TestPromptCapsSinglePassage(t *testing.T) {
 		t.Errorf("the question was lost to an oversized passage: %q", p)
 	}
 }
+
+// A numbered verdict for a passage that does not exist is not a bare yes/no.
+// Reusing its word for the lone passage is the one outcome fail-open exists to
+// prevent, so the mask stays true.
+func TestParseMaskOutOfRangeNumberIsNotABareVerdict(t *testing.T) {
+	for _, in := range []string{"2: no", "0: no", "7: no"} {
+		if got := ParseMask(in, 1); !got[0] {
+			t.Errorf("ParseMask(%q, 1) = %v, want the lone passage kept", in, got)
+		}
+	}
+	// A genuinely unnumbered reply is still read as the lone passage's verdict.
+	if got := ParseMask("no", 1); got[0] {
+		t.Errorf(`ParseMask("no", 1) = %v, want the passage dropped`, got)
+	}
+}

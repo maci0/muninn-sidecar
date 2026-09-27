@@ -1359,6 +1359,10 @@ func TestSetPreparerConcurrentWithStore(t *testing.T) {
 	defer srv.Close()
 
 	s := New(srv.URL, "", "test", &stats.Stats{})
+	// Installed before the worker goroutine below starts, so the very first
+	// exchange cannot be formatted ahead of the swap. The continuous reinstall
+	// that follows is what races with the worker.
+	s.SetPreparer(func(ex *CapturedExchange) { ex.Model = "test-model" })
 
 	// Install the preparer before any capture is queued, then keep swapping it
 	// concurrently below. An exchange the worker reaches before the first
