@@ -291,6 +291,42 @@ func ageSince(clk clock.Clock, t time.Time) (time.Duration, bool) {
 	return d, true
 }
 
+// intentVerdict is the last-query cache's answer for one query: whether the
+// session window already covers this intent, and whether a previous recall of
+// the same intent came back empty.
+type intentVerdict struct {
+	reuseWindow bool
+	negCached   bool
+}
+
+// intentCacheVerdict decides, under the lock, whether this query can be
+// answered from the session window instead of a fresh recall. curTokens is the
+// query's token set, needed only when querySimReuse disables exact-hash
+// matching; Enrich computes it so this reads nothing else.
+func (inj *Injector) intentCacheVerdict(qhash uint64, curTokens []string) intentVerdict {
+	inj.mu.Lock()
+	defer inj.mu.Unlock()
+
+	// The cached verdict only stands in for a fresh recall while it is young.
+	// Past intentCacheTTL the vault may hold memories this query would now
+	// match (the sidecar writes to it throughout the session), so ask again.
+	queryAge, queryAged := ageSince(inj.clock, inj.lastQueryAt)
+	cachedFresh := inj.hasLastQuery && queryAged && queryAge < intentCacheTTL
+	sameIntent := cachedFresh && (qhash == inj.lastQueryHash ||
+		(inj.querySimReuse < 1 && len(inj.lastQueryTokens) > 0 &&
+			jaccard(curTokens, inj.lastQueryTokens) >= inj.querySimReuse))
+	windowEmpty := len(inj.recentMemories) == 0
+	// A cached miss expires on its own, shorter clock (negativeCacheTTL): the
+	// vault it says is empty is the one this sidecar is writing the answer to.
+	emptyAge, emptyAged := ageSince(inj.clock, inj.lastEmptyAt)
+
+	return intentVerdict{
+		reuseWindow: sameIntent && !windowEmpty,
+		negCached: sameIntent && windowEmpty && inj.lastWasEmpty &&
+			emptyAged && emptyAge < negativeCacheTTL,
+	}
+}
+
 // Enrich parses a request body, recalls relevant memories, and injects them
 // as system-level context. Returns the enriched body and estimated injected
 // token count. Every failure is handled gracefully by returning the
@@ -371,28 +407,13 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	if inj.querySimReuse < 1 {
 		curTokens = wordSet(query)
 	}
-	inj.mu.Lock()
-	// The cached verdict only stands in for a fresh recall while it is young.
-	// Past intentCacheTTL the vault may hold memories this query would now
-	// match (the sidecar writes to it throughout the session), so ask again.
-	queryAge, queryAged := ageSince(inj.clock, inj.lastQueryAt)
-	cachedFresh := inj.hasLastQuery && queryAged && queryAge < intentCacheTTL
-	sameIntent := cachedFresh && (qhash == inj.lastQueryHash ||
-		(inj.querySimReuse < 1 && len(inj.lastQueryTokens) > 0 &&
-			jaccard(curTokens, inj.lastQueryTokens) >= inj.querySimReuse))
-	windowEmpty := len(inj.recentMemories) == 0
-	// A cached miss expires on its own, shorter clock (negativeCacheTTL): the
-	// vault it says is empty is the one this sidecar is writing the answer to.
-	emptyAge, emptyAged := ageSince(inj.clock, inj.lastEmptyAt)
-	negCached := sameIntent && windowEmpty && inj.lastWasEmpty &&
-		emptyAged && emptyAge < negativeCacheTTL
-	inj.mu.Unlock()
+	verdict := inj.intentCacheVerdict(qhash, curTokens)
 
 	minScore := inj.currentMinScore()
 
 	var merged []memory
 	switch {
-	case sameIntent && !windowEmpty:
+	case verdict.reuseWindow:
 		// Continuation of the same intent with memories on hand: reuse the
 		// window instead of re-querying (the recall-trigger / "when to ask").
 		slog.Debug("inject: same intent, reusing session window (recall skipped)", reqid.Field, reqid.From(ctx))
@@ -400,7 +421,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 			inj.stats.RecallsSkipped.Add(1)
 		}
 		merged = selectForInjection(inj.snapshotWindow(), minScore)
-	case negCached:
+	case verdict.negCached:
 		// Negative cache: this intent already recalled nothing useful and the
 		// window is empty — skip the redundant recall and inject nothing.
 		slog.Debug("inject: same intent previously empty (negative cache), recall skipped", reqid.Field, reqid.From(ctx))

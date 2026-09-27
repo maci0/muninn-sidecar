@@ -160,52 +160,60 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 			continue
 		}
 
-		dBytes := lineBytes
-		if bytes.HasPrefix(lineBytes, sseDataPrefix) {
-			dBytes = lineBytes[len(sseDataPrefix):]
-			// The space after "data:" is optional per the SSE spec; a single leading
-			// space is stripped. The big-3 APIs send "data: ", but OpenAI-compatible
-			// proxies and local servers (e.g. via custom upstreams) may omit it.
-			if len(dBytes) > 0 && dBytes[0] == ' ' {
-				dBytes = dBytes[1:]
+		sc.processEvent(lineBytes)
+	}
+}
+
+// processEvent consumes one complete event line: it strips the SSE "data: "
+// prefix, then records the last data line, accumulates assistant text deltas
+// and tool names, and remembers usage metadata. Lines that carry no event
+// payload (SSE control lines, [DONE]) are ignored.
+func (sc *streamCapture) processEvent(lineBytes []byte) {
+	dBytes := lineBytes
+	if bytes.HasPrefix(lineBytes, sseDataPrefix) {
+		dBytes = lineBytes[len(sseDataPrefix):]
+		// The space after "data:" is optional per the SSE spec; a single leading
+		// space is stripped. The big-3 APIs send "data: ", but OpenAI-compatible
+		// proxies and local servers (e.g. via custom upstreams) may omit it.
+		if len(dBytes) > 0 && dBytes[0] == ' ' {
+			dBytes = dBytes[1:]
+		}
+	} else if !isNDJSONLine(dBytes) {
+		// SSE control lines (event:, id:, retry:, ":") carry no event payload.
+		return
+	}
+	if bytes.Equal(dBytes, sseDone) {
+		return
+	}
+
+	// Convert to string once; reuse for all string operations below.
+	d := string(dBytes)
+	sc.lastData = d
+
+	// Parse once and reuse for both delta and tool name extraction.
+	// This avoids double json.Unmarshal on the SSE hot path.
+	if sseDoc := parseSSEDoc(dBytes); sseDoc != nil {
+		// Accumulate text deltas from content events.
+		if delta := apiformat.ExtractSSEDelta(sseDoc); delta != "" && sc.textAccum.Len() < maxTextAccum {
+			remaining := maxTextAccum - sc.textAccum.Len()
+			if len(delta) > remaining {
+				delta = clampBytes(delta, remaining)
 			}
-		} else if !isNDJSONLine(dBytes) {
-			// SSE control lines (event:, id:, retry:, ":") carry no event payload.
-			continue
-		}
-		if bytes.Equal(dBytes, sseDone) {
-			continue
+			sc.textAccum.WriteString(delta)
 		}
 
-		// Convert to string once; reuse for all string operations below.
-		d := string(dBytes)
-		sc.lastData = d
-
-		// Parse once and reuse for both delta and tool name extraction.
-		// This avoids double json.Unmarshal on the SSE hot path.
-		if sseDoc := parseSSEDoc(dBytes); sseDoc != nil {
-			// Accumulate text deltas from content events.
-			if delta := apiformat.ExtractSSEDelta(sseDoc); delta != "" && sc.textAccum.Len() < maxTextAccum {
-				remaining := maxTextAccum - sc.textAccum.Len()
-				if len(delta) > remaining {
-					delta = clampBytes(delta, remaining)
-				}
-				sc.textAccum.WriteString(delta)
-			}
-
-			// Track tool_use block starts for context about what
-			// the assistant is doing (file reads, edits, commands).
-			if len(sc.toolNames) < maxToolNames {
-				if name := apiformat.ExtractSSEToolName(sseDoc); name != "" {
-					sc.toolNames = append(sc.toolNames, name)
-				}
+		// Track tool_use block starts for context about what
+		// the assistant is doing (file reads, edits, commands).
+		if len(sc.toolNames) < maxToolNames {
+			if name := apiformat.ExtractSSEToolName(sseDoc); name != "" {
+				sc.toolNames = append(sc.toolNames, name)
 			}
 		}
+	}
 
-		// Track usage metadata separately.
-		if strings.Contains(d, `"usage"`) || strings.Contains(d, `"usageMetadata"`) {
-			sc.usageJSON = d
-		}
+	// Track usage metadata separately.
+	if strings.Contains(d, `"usage"`) || strings.Contains(d, `"usageMetadata"`) {
+		sc.usageJSON = d
 	}
 }
 

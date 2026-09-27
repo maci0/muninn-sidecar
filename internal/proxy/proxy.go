@@ -550,17 +550,6 @@ func (p *Proxy) storeQueue() storeQueue {
 // turn is not a degraded sidecar. Proxy errors (the agent got a 502) and save
 // errors (memories are being lost) are, as is a saturated queue, which drops
 // the next capture outright.
-// countUncapturable records a response the proxy forwarded to the agent but
-// could not read as a memory (gRPC, a non-gzip encoding, a protocol upgrade).
-// These paths log at debug, which is off by default, so without a counter a
-// session whose upstream answers in brotli reports the same healthy "0 saved,
-// 0 errors" as one that is storing every turn.
-func (p *Proxy) countUncapturable() {
-	if p.stats != nil {
-		p.stats.Uncapturable.Add(1)
-	}
-}
-
 func degradedReasons(snap stats.Snapshot, q storeQueue) []string {
 	var reasons []string
 	if snap.ProxyErrors > 0 {
@@ -572,7 +561,7 @@ func degradedReasons(snap stats.Snapshot, q storeQueue) []string {
 	if snap.Dropped > 0 {
 		reasons = append(reasons, "dropped captures: the store queue overflowed or hit its memory budget")
 	}
-	if snap.UpstreamError > snap.Requests/2 && snap.Requests > 0 {
+	if snap.Requests > 0 && snap.UpstreamError > snap.Requests/2 {
 		reasons = append(reasons, "most upstream responses were errors")
 	}
 	if snap.Uncapturable > 0 {
@@ -585,6 +574,17 @@ func degradedReasons(snap stats.Snapshot, q storeQueue) []string {
 		reasons = append(reasons, "store queue is at its memory budget: new captures are being dropped")
 	}
 	return reasons
+}
+
+// countUncapturable records a response the proxy forwarded to the agent but
+// could not read as a memory (gRPC, a non-gzip encoding, a protocol upgrade).
+// These paths log at debug, which is off by default, so without a counter a
+// session whose upstream answers in brotli reports the same healthy "0 saved,
+// 0 errors" as one that is storing every turn.
+func (p *Proxy) countUncapturable() {
+	if p.stats != nil {
+		p.stats.Uncapturable.Add(1)
+	}
 }
 
 // instrument applies the capture/inject pipeline shared by the plain reverse-proxy
@@ -774,22 +774,11 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// LimitReader caps decompression to maxDecompressSize to prevent gzip-bomb
 	// OOM: if the limit is hit the compressed body is served unchanged.
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
-		gr, err := gzip.NewReader(bytes.NewReader(body))
-		if err != nil {
-			slog.Warn("failed to decompress gzip response, storing raw", reqid.Field, ctx.id, "path", ctx.path, "err", err)
-		} else {
-			decompressed, err := io.ReadAll(io.LimitReader(gr, maxDecompressSize+1))
-			gr.Close()
-			if err != nil {
-				slog.Warn("gzip decompression incomplete, storing raw", reqid.Field, ctx.id, "path", ctx.path, "err", err)
-			} else if int64(len(decompressed)) > maxDecompressSize {
-				slog.Warn("gzip response exceeds decompression limit, serving compressed", reqid.Field, ctx.id, "path", ctx.path, "limit", maxDecompressSize)
-			} else {
-				body = decompressed
-				resp.Header.Del("Content-Encoding")
-				resp.Header.Del("Content-Length")
-				resp.ContentLength = int64(len(body))
-			}
+		if decompressed, ok := decompressGzip(ctx, body); ok {
+			body = decompressed
+			resp.Header.Del("Content-Encoding")
+			resp.Header.Del("Content-Length")
+			resp.ContentLength = int64(len(body))
 		}
 	}
 
@@ -809,6 +798,29 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	}
 
 	return nil
+}
+
+// decompressGzip gunzips a captured response body, capped at maxDecompressSize
+// so a compression bomb cannot OOM the proxy. Reports false when the body
+// cannot be served decompressed (corrupt stream, or past the cap), in which
+// case the caller keeps the compressed bytes for both the agent and the store.
+func decompressGzip(ctx *captureCtx, body []byte) ([]byte, bool) {
+	gr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		slog.Warn("failed to decompress gzip response, storing raw", reqid.Field, ctx.id, "path", ctx.path, "err", err)
+		return nil, false
+	}
+	decompressed, err := io.ReadAll(io.LimitReader(gr, maxDecompressSize+1))
+	gr.Close()
+	if err != nil {
+		slog.Warn("gzip decompression incomplete, storing raw", reqid.Field, ctx.id, "path", ctx.path, "err", err)
+		return nil, false
+	}
+	if int64(len(decompressed)) > maxDecompressSize {
+		slog.Warn("gzip response exceeds decompression limit, serving compressed", reqid.Field, ctx.id, "path", ctx.path, "limit", maxDecompressSize)
+		return nil, false
+	}
+	return decompressed, true
 }
 
 func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {

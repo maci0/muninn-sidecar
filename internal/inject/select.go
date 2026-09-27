@@ -252,8 +252,5 @@ func jaccardIndexed(aLen int, aSet map[string]struct{}, b []string) float64 {
 		}
 	}
 	union := aLen + len(b) - inter
-	if union == 0 {
-		return 0
-	}
 	return float64(inter) / float64(union)
 }

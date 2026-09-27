@@ -30,6 +30,44 @@ const dedupRingSize = 8
 // maxBatchSize is the maximum number of memories sent in a single MuninnDB call.
 const maxBatchSize = 10
 
+// dedupWindow is the sliding ledger of concept hashes already delivered to
+// the vault. It holds dedupRingSize slots and advances one slot per flush
+// cycle, so a hash stays known for dedupRingSize cycles. Owned by the worker
+// goroutine, which is the only writer, so no locking is needed.
+type dedupWindow struct {
+	slots [dedupRingSize]map[uint64]struct{}
+	next  int
+}
+
+// seen reports whether hash is in any live slot.
+func (w *dedupWindow) seen(hash uint64) bool {
+	for _, slot := range w.slots {
+		if _, ok := slot[hash]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// record marks every hash in batch as delivered, in the slot the next roll
+// will clear last.
+func (w *dedupWindow) record(batch []formattedMemory) {
+	slot := w.slots[w.next]
+	if slot == nil {
+		slot = make(map[uint64]struct{})
+		w.slots[w.next] = slot
+	}
+	for _, fm := range batch {
+		slot[fm.hash] = struct{}{}
+	}
+}
+
+// roll opens the next slot and clears the one leaving the window.
+func (w *dedupWindow) roll() {
+	w.next = (w.next + 1) % dedupRingSize
+	w.slots[w.next] = nil
+}
+
 // dropLogEvery throttles the queue-full warning. A full queue drops one
 // exchange per Store call, so warning on each drop turns a sustained MuninnDB
 // outage into one warn line per agent turn and buries everything else. The
@@ -410,8 +448,7 @@ func (s *MuninnStore) worker() {
 	// consulted alongside the ring while formatting and is merged into the ring
 	// only once the flush succeeds.
 	pending := make(map[uint64]struct{})
-	var dedupRing [dedupRingSize]map[uint64]struct{}
-	ringIdx := 0
+	var dedup dedupWindow
 	ticker := s.clock.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -420,11 +457,11 @@ func (s *MuninnStore) worker() {
 		case item, ok := <-s.queue:
 			if !ok {
 				if len(batch) > 0 {
-					s.flushDelivered(batch, &dedupRing, &ringIdx)
+					s.flushDelivered(batch, &dedup)
 				}
 				return
 			}
-			fm := s.prepareForStore(item.ex, &dedupRing, pending, &ringIdx)
+			fm := s.prepareForStore(item.ex, &dedup, pending)
 			// The exchange is prepared: the batch keeps only the truncated
 			// concept and content, so the reserved bodies are unreachable and
 			// their budget returns to the pool.
@@ -434,7 +471,7 @@ func (s *MuninnStore) worker() {
 				batch = append(batch, *fm)
 			}
 			if len(batch) >= maxBatchSize {
-				s.flushDelivered(batch, &dedupRing, &ringIdx)
+				s.flushDelivered(batch, &dedup)
 				batch, pending = nil, make(map[uint64]struct{})
 			}
 		case <-ticker.C():
@@ -443,10 +480,9 @@ func (s *MuninnStore) worker() {
 			// the full dedupRingSize cycles the window promises; rolling after
 			// the flush would clear the very slot that flush had just written,
 			// leaving a one-cycle (~2s) window instead of the ~16s one.
-			ringIdx = (ringIdx + 1) % dedupRingSize
-			dedupRing[ringIdx] = nil
+			dedup.roll()
 			if len(batch) > 0 {
-				s.flushDelivered(batch, &dedupRing, &ringIdx)
+				s.flushDelivered(batch, &dedup)
 				batch, pending = nil, make(map[uint64]struct{})
 			}
 		}
@@ -478,7 +514,7 @@ func isNoiseContent(msg string) bool {
 // prepareForStore runs the capture-side Preparer (when installed), records the
 // model and token usage it derived, then formats and deduplicates the
 // exchange. Returns nil if the exchange should be dropped.
-func (s *MuninnStore) prepareForStore(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, pending map[uint64]struct{}, ringIdx *int) *formattedMemory {
+func (s *MuninnStore) prepareForStore(ex *CapturedExchange, dedup *dedupWindow, pending map[uint64]struct{}) *formattedMemory {
 	if p := s.preparer(); p != nil {
 		p(ex)
 	}
@@ -489,7 +525,7 @@ func (s *MuninnStore) prepareForStore(ex *CapturedExchange, ring *[dedupRingSize
 		s.stats.CacheWrite.Add(int64(ex.CacheWrite))
 		s.stats.CacheRead.Add(int64(ex.CacheRead))
 	}
-	return s.formatAndDedup(ex, ring, pending, ringIdx)
+	return s.formatAndDedup(ex, dedup, pending)
 }
 
 // formatAndDedup formats an exchange, strips system-reminders, skips empty
@@ -499,7 +535,7 @@ func (s *MuninnStore) prepareForStore(ex *CapturedExchange, ring *[dedupRingSize
 // already stored), and the hash is returned with the memory rather than
 // recorded here: it enters the ring only once the flush that writes it
 // succeeds, so a failed write never leaves a mark that suppresses the retry.
-func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, pending map[uint64]struct{}, ringIdx *int) *formattedMemory {
+func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, dedup *dedupWindow, pending map[uint64]struct{}) *formattedMemory {
 	userMsg := apiformat.StripSystemReminders(exchangeText(ex.UserText, func() string {
 		return apiformat.ExtractUserMessage(ex.ReqBody)
 	}))
@@ -564,19 +600,15 @@ func (s *MuninnStore) formatAndDedup(ex *CapturedExchange, ring *[dedupRingSize]
 	// Dedup by concept hash (FNV-1a). Skip if seen in any ring slot.
 	hash := strhash.FNV1a(concept)
 
-	for i := range ring {
-		if ring[i] != nil {
-			if _, exists := ring[i][hash]; exists {
-				// Log the dedup hash, not the concept text: the concept is derived
-				// from captured conversation content and would leak into logs
-				// (bypassing the redaction applied above) if emitted verbatim.
-				slog.Debug("dedup: skipping duplicate concept", reqid.Field, ex.RequestID, "hash", hash)
-				if s.stats != nil {
-					s.stats.Deduped.Add(1)
-				}
-				return nil
-			}
+	if dedup.seen(hash) {
+		// Log the dedup hash, not the concept text: the concept is derived
+		// from captured conversation content and would leak into logs
+		// (bypassing the redaction applied above) if emitted verbatim.
+		slog.Debug("dedup: skipping duplicate concept", reqid.Field, ex.RequestID, "hash", hash)
+		if s.stats != nil {
+			s.stats.Deduped.Add(1)
 		}
+		return nil
 	}
 	if _, exists := pending[hash]; exists {
 		slog.Debug("dedup: skipping duplicate concept already in this batch", reqid.Field, ex.RequestID, "hash", hash)
@@ -612,14 +644,9 @@ func exchangeText(prepared *string, extract func() string) string {
 // that was never stored. A failed batch is dropped and its hashes are left
 // unrecorded, so the next occurrence of the concept is formatted and sent
 // again.
-func (s *MuninnStore) flushDelivered(batch []formattedMemory, ring *[dedupRingSize]map[uint64]struct{}, ringIdx *int) {
+func (s *MuninnStore) flushDelivered(batch []formattedMemory, dedup *dedupWindow) {
 	if s.flushFormatted(batch) {
-		if ring[*ringIdx] == nil {
-			ring[*ringIdx] = make(map[uint64]struct{})
-		}
-		for _, fm := range batch {
-			ring[*ringIdx][fm.hash] = struct{}{}
-		}
+		dedup.record(batch)
 	}
 }
 
