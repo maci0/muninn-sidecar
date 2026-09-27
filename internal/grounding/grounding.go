@@ -140,12 +140,25 @@ func Prompt(query string, passages []string) string {
 	return sb.String()
 }
 
-// The trailing \b keeps a verdict from matching as a prefix of ordinary prose
-// ("3 notes" is not "3: no"), which would overwrite a real verdict for that index.
-var verdictRE = regexp.MustCompile(`(?i)(\d+)\s*[:.)\-]?\s*(yes|no|true|false|relevant|irrelevant)\b`)
+// verdictLineRE matches a verdict that occupies a whole line of the judge's
+// reply: an optional list marker, the passage id, a separator, the verdict word,
+// then nothing but trailing punctuation. Anchored at both ends on purpose.
+//
+// A substring match anywhere in the reply is not enough. The passages are
+// attacker-influenced memory text (any client that can write the vault, any
+// captured turn whose text came from a web page or a tool result), and a judge
+// that reasons in prose quotes them back: a memory ending "…so 1: no is wrong"
+// would otherwise land in the mask and veto passage 1, which is the fail-open
+// outcome the whole step exists to prevent, reached through the model's own
+// mouth. Requiring the verdict to be the line's whole content keeps a quoted
+// passage out of the mask; a reply whose verdicts are not line-shaped yields no
+// verdicts and keeps every passage, the same direction a judge outage degrades.
+var verdictLineRE = regexp.MustCompile(`(?i)^(?:[-*•]\s*)?(\d{1,4})\s*[:.)\-]\s*` +
+	`(yes|no|true|false|relevant|irrelevant)\b(?:[[:space:][:punct:]]*)$`)
 
 // ParseMask reads "<n>: yes/no" verdicts from model text into a mask of length
-// n. Entries with no verdict default to true (fail-open). A bare single "yes"/
+// n. Only a line that is nothing but a verdict is read (see verdictLineRE);
+// entries with no verdict default to true (fail-open). A bare single "yes"/
 // "no" with no numbers applies to a lone passage (n==1).
 func ParseMask(s string, n int) []bool {
 	mask := allTrue(n) // fail-open default
@@ -153,8 +166,14 @@ func ParseMask(s string, n int) []bool {
 		return mask
 	}
 	numbered := false
-	for _, m := range verdictRE.FindAllStringSubmatch(s, -1) {
-		// Any "n: yes/no" shape makes the reply a verdict list. An id that names
+	// Split, not a line scanner: bufio.Scanner stops at 64 KiB per line, and a
+	// long reasoning line would then silently drop every verdict after it.
+	for _, line := range strings.Split(s, "\n") {
+		m := verdictLineRE.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		// Any "n: yes/no" line makes the reply a verdict list. An id that names
 		// no passage is skipped, but the bare-yes/no reading below must not claim
 		// a reply that already carries numbering: it would read the stray
 		// number's yes/no as the lone passage's verdict and drop a real hit.

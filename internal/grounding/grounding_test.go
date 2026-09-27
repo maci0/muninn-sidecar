@@ -438,3 +438,30 @@ func TestParseMaskOutOfRangeNumberIsNotABareVerdict(t *testing.T) {
 		t.Errorf(`ParseMask("no", 1) = %v, want the passage dropped`, got)
 	}
 }
+
+// A verdict only counts when it is the line's whole content. Passages are
+// attacker-influenced memory text and a judge that reasons in prose quotes them
+// back, so a memory carrying "1: no" inside a quoted sentence would otherwise
+// veto the real passage 1 and drop a genuine hit — the fail-open outcome the
+// step exists to prevent, reached through the model's own words.
+func TestParseMaskIgnoresVerdictShapedProse(t *testing.T) {
+	cases := []string{
+		"Passage 1 says 1: no, but it does answer the question.\n2: yes",
+		"The judge wrote \"1: no\" in its reasoning.\n1: yes",
+		"reasoning: the memory ends with 2: no\n2: yes\n3: no",
+	}
+	for _, in := range cases {
+		if m := ParseMask(in, 2); !m[0] {
+			t.Errorf("ParseMask(%q, 2) = %v, want passage 1 kept", in, m)
+		}
+	}
+	// A verdict with only punctuation after it is still a verdict line, and the
+	// real ones keep dropping their passage.
+	if m := ParseMask("1: yes.\n2: no!", 2); !m[0] || m[1] {
+		t.Errorf("ParseMask punctuation tail = %v, want [true false]", m)
+	}
+	// Windows line endings from a CLI judge are the same lines.
+	if m := ParseMask("1: yes\r\n2: no\r\n", 2); !m[0] || m[1] {
+		t.Errorf("ParseMask CRLF = %v, want [true false]", m)
+	}
+}
