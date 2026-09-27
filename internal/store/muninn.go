@@ -105,12 +105,20 @@ type MuninnStore struct {
 	// they are holding, which is the number that actually runs the process out.
 	queuedBytes atomic.Int64
 
+	// queueMu orders a producer's enqueue against Drain's close. A send racing a
+	// close is a data race the runtime reports, and it panics the sending
+	// goroutine when it loses. drained is guarded by it and set before the close,
+	// so an exchange that arrives after the close is dropped and accounted for
+	// rather than sent into a channel nobody will read.
+	queueMu sync.RWMutex
+	drained bool
+
 	// prepare is written by SetPreparer (the caller) and read on the worker
 	// goroutine, which is already running by the time it is installed, so it
 	// needs its own synchronization rather than the startup ordering.
 	prepareMu sync.RWMutex
 	prepare   Preparer     // capture-side normalization, run on the worker (nil = bodies stored as captured)
-	dropped   atomic.Int64 // exchanges dropped on a full queue (drives the throttled warning)
+	dropped   atomic.Int64 // exchanges dropped for any reason (drives the throttled warning)
 
 	// flushCtx governs MCP flush calls and their retries. It stays live for the
 	// whole session (so transient blips get full retries), and Drain arms a
@@ -251,43 +259,55 @@ func (s *MuninnStore) Store(ex *CapturedExchange) {
 
 	n := int64(len(ex.ReqBody)) + int64(len(ex.RespBody))
 	if !s.reserve(n) {
-		if s.stats != nil {
-			s.stats.Dropped.Add(1)
-		}
-		if c := s.dropped.Add(1); c == 1 || c%dropLogEvery == 0 {
-			slog.Warn("muninn store byte budget exhausted, dropping exchanges",
-				reqid.Field, ex.RequestID, "path", ex.Path,
-				"dropped_total", c, "bytes", n, "limit", maxQueuedBytes)
-		}
+		// Nothing was reserved, so there is nothing to give back: count the
+		// drop only. Calling drop here would return bytes this call never took
+		// and drive the budget negative.
+		s.warnDrop(ex, "muninn store byte budget exhausted, dropping exchanges",
+			"bytes", n, "limit", maxQueuedBytes)
 		return
 	}
 
-	// Recover from panic if queue has been closed by Drain(). This is
-	// cheaper than adding a mutex on every Store() call and only fires
-	// in the narrow window between Drain() and full shutdown.
-	defer func() {
-		if r := recover(); r != nil {
-			s.release(n)
-			slog.Warn("muninn store: dropped exchange after drain",
-				reqid.Field, ex.RequestID, "path", ex.Path)
-			if s.stats != nil {
-				s.stats.Dropped.Add(1)
-			}
-		}
-	}()
-
+	// The enqueue and Drain's close have to be ordered. A send that races a
+	// close is a data race, and losing the race panics this goroutine inside a
+	// deferred recover that also has to unwind the byte reservation — the
+	// accounting of a dropped memory hanging off a panic. The read lock spans
+	// only the non-blocking send; Drain takes the write lock to set drained and
+	// close, so every exchange either reached the queue (a closed channel still
+	// hands the worker its buffered items) or is dropped here.
+	s.queueMu.RLock()
+	if s.drained {
+		s.queueMu.RUnlock()
+		s.drop(ex, n, "muninn store: dropped exchange after drain")
+		return
+	}
 	select {
 	case s.queue <- queueItem{ex: ex, bytes: n}:
+		s.queueMu.RUnlock()
 	default:
-		s.release(n)
-		if s.stats != nil {
-			s.stats.Dropped.Add(1)
-		}
-		if c := s.dropped.Add(1); c == 1 || c%dropLogEvery == 0 {
-			slog.Warn("muninn store queue full, dropping exchanges",
-				reqid.Field, ex.RequestID, "path", ex.Path, "dropped_total", c)
-		}
+		s.queueMu.RUnlock()
+		s.drop(ex, n, "muninn store queue full, dropping exchanges")
 	}
+}
+
+// drop accounts for an exchange that will not be delivered and returns the
+// bytes it reserved to the budget.
+func (s *MuninnStore) drop(ex *CapturedExchange, n int64, reason string, extra ...any) {
+	s.release(n)
+	s.warnDrop(ex, reason, extra...)
+}
+
+// warnDrop counts one dropped exchange and logs it, throttled so a sustained
+// outage does not bury every other line. reason is the warning's message;
+// extra are additional key/value pairs for it.
+func (s *MuninnStore) warnDrop(ex *CapturedExchange, reason string, extra ...any) {
+	if s.stats != nil {
+		s.stats.Dropped.Add(1)
+	}
+	c := s.dropped.Add(1)
+	if c != 1 && c%dropLogEvery != 0 {
+		return
+	}
+	slog.Warn(reason, append([]any{reqid.Field, ex.RequestID, "path", ex.Path, "dropped_total", c}, extra...)...)
 }
 
 // reserve claims n bytes of the queue's memory budget, reporting false when
@@ -322,7 +342,13 @@ func (s *MuninnStore) Drain() {
 		// early stops the timer, so a fast shutdown does not leave a pending
 		// callback holding the store for the full drainTimeout.
 		timer := s.clock.AfterFunc(drainTimeout, s.flushCancel)
+		// Take the write lock so no producer is mid-send when the channel closes:
+		// the close either follows every accepted enqueue or precedes every later
+		// one, never interleaves with one.
+		s.queueMu.Lock()
+		s.drained = true
 		close(s.queue)
+		s.queueMu.Unlock()
 		<-s.done
 		timer.Stop()
 	})

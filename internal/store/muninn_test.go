@@ -1632,6 +1632,79 @@ func TestQueuedBytesReturnAfterDelivery(t *testing.T) {
 	}
 }
 
+func TestStoreRacingDrainDropsInsteadOfPanning(t *testing.T) {
+	// Shutdown runs p.Shutdown then muninn.Drain(), and Shutdown is allowed to
+	// time out with requests still in flight — a request goroutine can reach
+	// Store() after the queue is closed. Sending into that closed channel is a
+	// data race the runtime reports, and losing it panics the request goroutine,
+	// so the drop has to be decided under a lock rather than caught from a
+	// deferred recover. Assert both halves: no race, and every reservation
+	// accounted for.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	for round := range 20 {
+		s := New(srv.URL, "", "test", nil)
+
+		var stores sync.WaitGroup
+		stop := make(chan struct{})
+		for range 8 {
+			stores.Add(1)
+			go func() {
+				defer stores.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					s.Store(&CapturedExchange{
+						Path:     "/v1/messages",
+						ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"hi"}]}`),
+						RespBody: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
+					})
+				}
+			}()
+		}
+
+		s.Drain()
+		close(stop)
+		stores.Wait()
+
+		// Every Store that returned released what it reserved, so the budget is
+		// back to zero and a later session is not starved by a leak.
+		if inFlight, _ := s.QueueBytes(); inFlight != 0 {
+			t.Fatalf("round %d: %d bytes still reserved after drain", round, inFlight)
+		}
+		s.Close()
+	}
+}
+
+func TestStoreAfterDrainIsDroppedAndCounted(t *testing.T) {
+	// The documented post-Drain contract: a late arrival is dropped with a
+	// warning and counted, not delivered and not silently lost.
+	st := &stats.Stats{}
+	s := New("", "", "test", st)
+	s.Drain()
+
+	s.Store(&CapturedExchange{
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"a":1}`),
+		RespBody: json.RawMessage(`{"b":2}`),
+	})
+
+	if got := st.Dropped.Load(); got != 1 {
+		t.Errorf("Dropped = %d after a post-drain Store, want 1", got)
+	}
+	if inFlight, _ := s.QueueBytes(); inFlight != 0 {
+		t.Errorf("queued bytes = %d after a post-drain Store, want 0", inFlight)
+	}
+	s.Close()
+}
+
 func TestBatchRequestIDsNamesTheLostTurns(t *testing.T) {
 	// A failed flush line is the only record that a turn's memories were not
 	// written. Name the turns, cap the list so the error stays readable, and
