@@ -38,9 +38,6 @@ func TestSmallHelpers(t *testing.T) {
 	if config.MCPURL("") != config.DefaultMCPURL {
 		t.Errorf("mcp url default")
 	}
-	if resolveToken("flagtok") != "flagtok" {
-		t.Errorf("resolveToken")
-	}
 	if config.Token("flagtok") != "flagtok" {
 		t.Errorf("token flag precedence")
 	}

@@ -112,26 +112,6 @@ const decayFactor = 0.7
 // fifth, when its decayed score drops below 0.2.
 const decayFloor = 0.2
 
-// decayTableLen is the number of precomputed decay multipliers.
-const decayTableLen = 10
-
-// decayTable holds precomputed decay multipliers for ages 0–(decayTableLen-1)
-// turns, derived from decayFactor so the two cannot drift apart: a hand-typed
-// table of 0.7^n kept a second copy of the factor, and retuning decayFactor
-// would have silently left the table (and every age it covers) on the old
-// curve. Memories are evicted at age ~4–5, so the table covers all practical
-// cases without calling math.Pow.
-var decayTable = buildDecayTable()
-
-func buildDecayTable() [decayTableLen]float64 {
-	var t [decayTableLen]float64
-	t[0] = 1
-	for i := 1; i < len(t); i++ {
-		t[i] = t[i-1] * decayFactor
-	}
-	return t
-}
-
 // trackedMemory wraps a recalled memory with session-level tracking state.
 type trackedMemory struct {
 	memory
@@ -141,8 +121,5 @@ type trackedMemory struct {
 // decayedScore returns the effective score of a memory that was last seen
 // `age` turns ago, applying the per-turn decay factor.
 func decayedScore(score float64, age int) float64 {
-	if age < len(decayTable) {
-		return score * decayTable[age]
-	}
 	return score * math.Pow(decayFactor, float64(age))
 }

@@ -193,23 +193,23 @@ func TestSummaryReportsUntrackedModels(t *testing.T) {
 // it must not be retained or printed at unbounded length.
 func TestRecordModelTruncatesLongName(t *testing.T) {
 	s := &Stats{}
-	s.RecordModel(strings.Repeat("m", maxModelNameRunes*10))
+	s.RecordModel(strings.Repeat("m", maxModelNameLen*10))
 
 	models := s.Models()
 	if len(models) != 1 {
 		t.Fatalf("expected 1 model, got %d", len(models))
 	}
-	if got := utf8.RuneCountInString(models[0].Name); got != maxModelNameRunes {
-		t.Errorf("model name length = %d runes, want %d", got, maxModelNameRunes)
+	if got := utf8.RuneCountInString(models[0].Name); got != maxModelNameLen {
+		t.Errorf("model name length = %d runes, want %d", got, maxModelNameLen)
 	}
 }
 
-// The cap counts runes, not bytes: a byte cut splits a multi-byte character and
+// The cap counts bytes, not runes: a byte cut splits a multi-byte character and
 // leaves invalid UTF-8 in the tracked name and in the summary that prints it.
 func TestRecordModelCapKeepsNonASCIIWhole(t *testing.T) {
 	s := &Stats{}
 	s.Requests.Add(1) // the summary stays empty until something happened
-	s.RecordModel(strings.Repeat("模", maxModelNameRunes*2))
+	s.RecordModel(strings.Repeat("模", maxModelNameLen*2))
 
 	models := s.Models()
 	if len(models) != 1 {

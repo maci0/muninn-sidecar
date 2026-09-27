@@ -134,22 +134,18 @@ func newFakeServer(handler http.HandlerFunc) *httptest.Server {
 }
 
 func TestDecayedScore(t *testing.T) {
-	// The precomputed decayTable must equal decayFactor^age, so changing
-	// decayFactor without regenerating the table can't silently desync ages 0-9
-	// (table) from age>=10 (math.Pow) — which would create a decay discontinuity.
-	for age := 0; age < len(decayTable); age++ {
+	for age := 0; age < 12; age++ {
 		want := math.Pow(decayFactor, float64(age))
 		if got := decayedScore(1.0, age); math.Abs(got-want) > 1e-9 {
-			t.Errorf("decayedScore(1, %d) = %.10f, want %.10f (table out of sync with decayFactor=%v)", age, got, want, decayFactor)
+			t.Errorf("decayedScore(1, %d) = %.10f, want %.10f for decayFactor=%v", age, got, want, decayFactor)
+		}
+		if age > 0 && decayedScore(1.0, age) >= decayedScore(1.0, age-1) {
+			t.Errorf("decay must keep decreasing: age %d is not below age %d", age, age-1)
 		}
 	}
-	// Monotonic across the table->Pow boundary (age 9 -> 10).
-	if decayedScore(1.0, 10) >= decayedScore(1.0, 9) {
-		t.Error("decay must keep decreasing past the table boundary")
-	}
 	// Scales linearly with the input score.
-	if got := decayedScore(0.5, 2); math.Abs(got-0.5*decayTable[2]) > 1e-9 {
-		t.Errorf("decayedScore(0.5, 2) = %v, want %v", got, 0.5*decayTable[2])
+	if got := decayedScore(0.5, 2); math.Abs(got-0.5*math.Pow(decayFactor, 2)) > 1e-9 {
+		t.Errorf("decayedScore(0.5, 2) = %v, want %v", got, 0.5*math.Pow(decayFactor, 2))
 	}
 }
 

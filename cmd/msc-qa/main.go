@@ -365,5 +365,3 @@ func splitCSV(s string) []string {
 	}
 	return out
 }
-
-func resolveToken(flagVal string) string { return config.Token(flagVal) }

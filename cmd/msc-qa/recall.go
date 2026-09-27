@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -21,15 +20,6 @@ type cand struct {
 	Concept string
 	Content string
 	Score   float64 // effective cosine used as the relevance shown to the reader
-}
-
-func recallContext(ctx context.Context, mcp *mcpclient.Client, vault, query string, minScore float64, multi bool) string {
-	cands, err := recallCandidates(ctx, mcp, vault, query, minScore, multi)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "  warn: recall for context %q failed: %v\n", query, err)
-		return ""
-	}
-	return strings.Join(cands, "\n")
 }
 
 // recallCandidates returns the gated recall passages' content in recall order

@@ -239,5 +239,3 @@ func run() error {
 	}
 	return nil
 }
-
-func resolveToken(flagVal string) string { return config.Token(flagVal) }

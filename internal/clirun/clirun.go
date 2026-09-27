@@ -17,6 +17,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/maci0/muninn-sidecar/internal/tailbuf"
 )
 
 // maxOutput caps the captured output. Replies are a few lines (verdicts,
@@ -49,7 +51,7 @@ func Run(ctx context.Context, argv []string, stdin string, timeout time.Duration
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	out := &tailBuffer{limit: maxOutput}
+	out := tailbuf.New(maxOutput)
 	cmd.Stdout = out
 	err := cmd.Run()
 	if out.Len() == 0 {
@@ -123,23 +125,3 @@ func IsolateProcessGroup(cmd *exec.Cmd) {
 		return killGroup(cmd.Process.Pid)
 	}
 }
-
-// tailBuffer accumulates the tail of a stream that may outgrow any fixed
-// budget. Writes past the limit drop the oldest bytes. It is not safe for
-// concurrent use; exec.Cmd writes to it from a single goroutine.
-type tailBuffer struct {
-	buf   []byte
-	limit int
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.limit {
-		t.buf = append(t.buf[:0], t.buf[len(t.buf)-t.limit:]...)
-	}
-	return len(p), nil
-}
-
-func (t *tailBuffer) String() string { return string(t.buf) }
-
-func (t *tailBuffer) Len() int { return len(t.buf) }

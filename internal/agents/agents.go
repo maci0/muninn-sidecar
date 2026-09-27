@@ -436,13 +436,6 @@ func systemRootsPEM() []byte {
 	return nil
 }
 
-// HasSystemCABundle reports whether a system PEM root bundle was found to
-// combine msc's CA with. False on Windows, which keeps its trusted roots in the
-// OS certificate store rather than a PEM file, and on a system with no bundle
-// installed at all. Callers that only need to know whether a combined bundle
-// can exist (the dry-run preview) use this instead of writing one.
-func HasSystemCABundle() bool { return systemRootsPEM() != nil }
-
 // writeCombinedCABundle writes the system root CAs followed by msc's CA into
 // ca-bundle.pem beside caCertPath and returns the bundle's path. The bundle is
 // for env vars that REPLACE the default trust store (SSL_CERT_FILE,

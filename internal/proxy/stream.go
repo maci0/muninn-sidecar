@@ -87,7 +87,7 @@ func (sc *streamCapture) Close() error {
 func (sc *streamCapture) finalize() {
 	sc.once.Do(func() {
 		respBody := sc.buildRespBody()
-		ex := buildExchange(clockOrSystem(sc.clock), sc.ctx, sc.statusCode, respBody)
+		ex := buildExchange(sc.clock, sc.ctx, sc.statusCode, respBody)
 		// Latency is a property of the turn, not of whether it was stored, so
 		// it is recorded on every stream. The non-streaming path
 		// (captureResponse) samples unconditionally too; skipping here would

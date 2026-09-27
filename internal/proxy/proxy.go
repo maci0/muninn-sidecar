@@ -122,18 +122,17 @@ type Proxy struct {
 
 // Config holds the parameters for creating a Proxy.
 type Config struct {
-	ListenAddr     string           // e.g. "127.0.0.1:0" for random port
-	Upstream       string           // real API URL to forward to
-	AgentName      string           // agent name for tagging in MuninnDB
-	Store          Storer           // MuninnDB writer; nil = discard captures
-	CapturePaths   []string         // path substrings to capture; empty = capture all
-	ExcludePaths   []string         // path substrings to exclude from capture (checked first)
-	FilterPatterns []string         // tool name patterns to strip; nil = defaultFilterPatterns; []string{} = disable all filtering
-	Injector       *inject.Injector // optional memory injector; nil = disabled
-	CA             *mitm.CA         // non-nil enables TLS-MITM: CONNECT tunnels are terminated and intercepted
-	MITMHosts      []string         // extra hosts to TLS-terminate (besides the upstream host); "*" intercepts all. Others are blind-tunneled untouched.
-	Stats          *stats.Stats     // optional session counters (e.g. MITM upgraded-stream count)
-	Clock          Clock            // source of capture timestamps/durations; nil = SystemClock
+	ListenAddr   string           // e.g. "127.0.0.1:0" for random port
+	Upstream     string           // real API URL to forward to
+	AgentName    string           // agent name for tagging in MuninnDB
+	Store        Storer           // MuninnDB writer; nil = discard captures
+	CapturePaths []string         // path substrings to capture; empty = capture all
+	ExcludePaths []string         // path substrings to exclude from capture (checked first)
+	Injector     *inject.Injector // optional memory injector; nil = disabled
+	CA           *mitm.CA         // non-nil enables TLS-MITM: CONNECT tunnels are terminated and intercepted
+	MITMHosts    []string         // extra hosts to TLS-terminate (besides the upstream host); "*" intercepts all. Others are blind-tunneled untouched.
+	Stats        *stats.Stats     // optional session counters (e.g. MITM upgraded-stream count)
+	Clock        Clock            // source of capture timestamps/durations; nil = SystemClock
 }
 
 // New creates a Proxy. Use ListenAddr "127.0.0.1:0" in Config to bind to a
@@ -143,11 +142,6 @@ func New(cfg Config) (*Proxy, error) {
 	upstream, err := url.Parse(cfg.Upstream)
 	if err != nil {
 		return nil, fmt.Errorf("invalid upstream URL %q: %w", cfg.Upstream, err)
-	}
-
-	filterPatterns := cfg.FilterPatterns
-	if filterPatterns == nil {
-		filterPatterns = defaultFilterPatterns
 	}
 
 	clock := cfg.Clock
@@ -162,7 +156,7 @@ func New(cfg Config) (*Proxy, error) {
 		store:          cfg.Store,
 		capturePaths:   toLowerSlice(cfg.CapturePaths),
 		excludePaths:   toLowerSlice(cfg.ExcludePaths),
-		filterPatterns: toLowerSlice(filterPatterns),
+		filterPatterns: toLowerSlice(defaultFilterPatterns),
 		injector:       cfg.Injector,
 		ca:             cfg.CA,
 		stats:          cfg.Stats,
@@ -988,13 +982,5 @@ func redactURL(u *url.URL) string {
 
 // singleJoiningSlash joins two path segments ensuring exactly one slash between them.
 func singleJoiningSlash(a, b string) string {
-	aslash := strings.HasSuffix(a, "/")
-	bslash := strings.HasPrefix(b, "/")
-	switch {
-	case aslash && bslash:
-		return a + b[1:]
-	case !aslash && !bslash:
-		return a + "/" + b
-	}
-	return a + b
+	return strings.TrimSuffix(a, "/") + "/" + strings.TrimPrefix(b, "/")
 }

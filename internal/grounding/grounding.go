@@ -278,10 +278,11 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	return ParseMask(out, len(passages))
 }
 
-// tailBuffer and the process-group isolation live in internal/clirun, shared
-// with the other CLI-agent backends (the query rewriter in cmd/msc-bench, the
-// answer client in cmd/msc-qa) so all three get the same output cap and the same
-// group-kill on timeout.
+// The process-group isolation and the output cap (internal/tailbuf, applied by
+// internal/clirun) live in internal/clirun, shared with the other CLI-agent
+// backends (the query rewriter in cmd/msc-bench, the answer client in
+// cmd/msc-qa) so all three get the same output cap and the same group-kill on
+// timeout.
 
 // New builds the grounder selected by its arguments, or nil if none is set. A
 // CLI command takes precedence over an HTTP URL when both are given.

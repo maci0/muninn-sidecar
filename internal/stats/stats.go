@@ -137,12 +137,6 @@ func (s *Stats) Snapshot() Snapshot {
 // "other".
 const maxTrackedModels = 16
 
-// maxModelNameRunes is the number of characters a tracked model name holds when
-// every one of them is a single byte, the case the rune cap and the byte cap
-// agree on. clipBytes enforces the name against maxModelNameLen and backs off to
-// a rune boundary, so a multi-byte name comes in under its character cap.
-const maxModelNameRunes = 64
-
 // maxModelNameLen caps one model name's length, counted in bytes. A name is
 // client-supplied text copied verbatim from the request body, so without this a
 // single multi-megabyte "model" string is retained for the session and printed
