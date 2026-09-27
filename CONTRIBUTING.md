@@ -6,6 +6,11 @@ quality bar so a change lands cleanly.
 ## Prerequisites
 
 - **Go 1.25 or newer** (pinned in `go.mod`; CI tracks the latest 1.25.x patch).
+- **A C compiler**, for the race detector. No package in this module imports
+  `"C"`, so the binaries build without one (`CGO_ENABLED=0`, see Build & run),
+  but `go test -race` links the race runtime through cgo, so `make test`,
+  `make check` and `make cover` need a working `$(go env CC)`. `make test-fast`
+  has no `-race` and needs nothing.
 - **staticcheck and govulncheck**, which CI installs and runs, so `make check`
   and `make vuln` require them too:
 
@@ -17,9 +22,20 @@ quality bar so a change lands cleanly.
   GOVULNCHECK_VERSION=latest` if you need to match a specific linter release;
   `make tools-staticcheck` and `make tools-govulncheck` install just one of
   them, which is what each CI job does.
+- **shellcheck, ruff and yamllint**, for `make check`. `make lint` skips any it
+  cannot find, but CI installs all three and fails on a finding, so the
+  advertised local mirror of that job (`make check`) refuses to run without
+  them. `pipx install ruff yamllint`; shellcheck comes from your package
+  manager.
 
-`make help` lists every target. There are no other system dependencies: no
-database, no C toolchain, no services to start for a build or test run.
+```sh
+make doctor   # checks every one of the above against this machine
+```
+
+Run it first on a new machine: an old Go or a missing compiler otherwise
+surfaces as an unrelated-looking build error, or as `-race requires cgo`, which
+names the wrong knob. Beyond those tools there are no further dependencies: no
+database and no services to start for a build or test run.
 
 ## Build & run
 
@@ -68,15 +84,19 @@ make test-fast PKG=./internal/inject       # same, without -race
 One command runs everything the CI `test` job runs, in the same order:
 
 ```sh
-make check   # tidy-check, fmt-check, lint (go vet + staticcheck + shellcheck + ruff + yamllint), go test -race, build-all
+make check   # tidy-check, fmt-check, lint-available, lint (go vet + staticcheck + shellcheck + ruff + yamllint), go test -race, build-all
 ```
 
-The remaining CI jobs are separate: the `lint` job (ruff, shellcheck, yamllint —
-`make lint` runs the same tools when they are installed), the cross-platform
-`build` matrix (windows/amd64, both unix flavors, both arches — `make build-all`
-covers the host), and the two slow or networked ones:
+`lint-available` is the CI parity gate: the non-Go linters are optional for a
+bare `make lint`, but `make check` names any that are missing and stops, so a
+green local run cannot become a red CI run.
+
+The remaining CI jobs are separate: the cross-platform `build` matrix (windows
+and darwin, both arches) and the two slow or networked ones. The matrix is
+reproducible locally, without a push:
 
 ```sh
+make build-matrix       # every GOOS/GOARCH the CI build job covers, in its order
 FUZZTIME=8s make fuzz   # brief campaign over every fuzz target
 make vuln               # govulncheck against the Go vulnerability DB
 make cover              # coverage report
@@ -97,8 +117,9 @@ supply-chain property. `make vuln` (and CI) then mainly guards stdlib CVEs.
 - **gofmt + `go vet` + staticcheck clean.** No new warnings. The non-Go files
   are held to the same bar: `ruff` (`ruff.toml`) for `scripts/*.py`, `shellcheck`
   for `test-live.sh`, `yamllint` (`.yamllint.yml`) for the workflow YAML. CI runs
-  all of them; `make lint` runs whichever are installed locally and names the
-  ones it skipped.
+  all of them; a bare `make lint` runs whichever are installed locally and names
+  the ones it skipped, while `make check` requires all three (see
+  `lint-available`).
 - **Keep behavior verified, not assumed.** When a change depends on an external
   contract (a MuninnDB tool's response, an agent's env var), verify it against a
   live instance and add a regression guard.

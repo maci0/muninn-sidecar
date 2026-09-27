@@ -132,6 +132,11 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   its own marker and each rerun appended another copy. Markers now match with
   either line ending, and the block is written with the endings the file
   already uses.
+- **`msc-bench -seed` no longer doubles the corpus on a rerun.** The seeded
+  memories carried no `dedup_key`, so re-seeding the same corpus stored a second
+  copy of every item: the duplicates crowd recall's top-k and skew the retrieval
+  numbers the benchmark exists to measure. Every seeded memory now carries the
+  same content-addressed key `msc` and `msc-qa` send.
 - **Bad endpoint config fails at startup.** `--ground-url` (and the eval
   binaries' `-ground-url`, `-model-url`, `-rewrite-url`) accepted any string, so
   a typo failed per request as a transport error or silently left the grounder

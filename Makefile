@@ -27,8 +27,9 @@ BUILDFLAGS = -trimpath -buildvcs=false
 # build targets, not exported: `go test -race` needs cgo to link the runtime.
 CGO = CGO_ENABLED=0
 
-.PHONY: help tools tools-staticcheck tools-govulncheck check build build-all install test test-fast \
-	cover lint lint-go vet vuln fmt fmt-check tidy tidy-check clean eval eval-models fuzz bench
+.PHONY: help doctor tools tools-staticcheck tools-govulncheck check build build-all build-matrix install \
+	test test-fast cover lint lint-go lint-available check-race vet vuln fmt fmt-check tidy tidy-check \
+	clean eval eval-models fuzz bench
 
 # Packages/tests for the `test` target. PKG=./internal/redact narrows the
 # edit-test loop to the package being edited; RUN='^TestFoo$' narrows it to one
@@ -47,15 +48,17 @@ GOVULNCHECK_PKG = golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 help:
 	@echo 'dev targets:'
+	@echo '  make doctor       check the toolchain against what this Makefile needs, before anything else'
 	@echo '  make tools        go install the two CI linters (staticcheck, govulncheck) into GOBIN'
 	@echo '  make tools-staticcheck   just the staticcheck install (what the CI test job runs)'
 	@echo '  make tools-govulncheck   just the govulncheck install (what the CI vuln job runs)'
-	@echo '  make check        everything CI runs locally: tidy-check fmt-check lint test build-all'
+	@echo '  make check        everything CI runs locally: tidy-check fmt-check lint-available lint test build-all'
 	@echo '  make test         go test -race -count=1 $(PKG)   (override PKG=... or RUN='"'"'^TestFoo$$'"'"')'
 	@echo '  make test-fast    same without -race, for a quicker loop'
 	@echo '  make fmt          gofmt -w over the tree'
 	@echo '  make fmt-check    fail on unformatted files (what CI does)'
 	@echo '  make lint         go vet + staticcheck (both required, like CI) + shellcheck, ruff, yamllint where installed'
+	@echo '  make build-matrix compile for every GOOS/GOARCH the CI build job covers'
 	@echo '  make lint-go      go vet + staticcheck only, the pair CI runs'
 	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
 	@echo '  make cover        race + coverage report'
@@ -72,6 +75,55 @@ help:
 	@echo '  go install $(STATICCHECK_PKG)'
 	@echo '  go install $(GOVULNCHECK_PKG)'
 
+# First-run preflight. Everything below assumes a Go new enough for the go.mod
+# directive and, for the race targets, a working C compiler. Both are silent
+# failures otherwise: a Go too old reports "note: module requires Go 1.25" as the
+# last line of an unrelated build error, and a missing compiler reports only
+# "-race requires cgo", which names the wrong knob (the fix is a compiler, not
+# an env var). Run this before `make check` when a command fails oddly.
+doctor:
+	@required=$$(awk '/^go /{print $$2}' go.mod); \
+	 have=$$(go env GOVERSION); have=$${have#go}; \
+	 if awk -v req="$$required" -v have="$$have" 'BEGIN{ \
+	       n=split(req,r,"."); m=split(have,h,"."); \
+	       for (i=1; i<=n; i++) { hv=(i<=m?h[i]:0)+0; if (hv != r[i]+0) exit (hv>r[i]+0 ? 0 : 1) } \
+	       exit 0 }'; then \
+	   echo "go:      ok ($$have, go.mod requires $$required)"; \
+	 else \
+	   echo "go:      go$$have installed, go.mod requires $$required or newer" >&2; \
+	 fi; \
+	 cgo=$$(go env CGO_ENABLED); cc=$$(go env CC); \
+	 if [ "$$cgo" != "1" ]; then \
+	   echo "cc:      CGO_ENABLED=$$cgo; 'make test' needs -race, which needs cgo ('make test-fast' does not)" >&2; \
+	 elif command -v "$$cc" >/dev/null 2>&1; then \
+	   echo "cc:      ok ($$cc, for -race)"; \
+	 else \
+	   echo "cc:      '$$cc' not on PATH; 'make test' needs it for -race ('make test-fast' does not)" >&2; \
+	 fi; \
+	 for t in staticcheck govulncheck; do \
+	   command -v $$t >/dev/null 2>&1 || echo "$$t: missing; CI installs it, run 'make tools'" >&2; \
+	 done; \
+	 for t in shellcheck ruff yamllint; do \
+	   command -v $$t >/dev/null 2>&1 || echo "$$t: not installed; 'make lint' skips it, CI runs it" >&2; \
+	 done; \
+	 echo "doctor: done"
+
+# The `-race` half of the preflight, run on its own by the targets that need
+# it so the failure arrives before the compile rather than inside it.
+check-race:
+	@if [ "$$(go env CGO_ENABLED)" != "1" ]; then \
+	  echo "CGO_ENABLED=$$(go env CGO_ENABLED): go test -race needs cgo" >&2; \
+	  echo "run 'make test-fast' (no -race), or set CGO_ENABLED=1 for this run" >&2; \
+	  exit 1; \
+	fi; \
+	cc=$$(go env CC); \
+	command -v "$$cc" >/dev/null 2>&1 || { \
+	  echo "no C compiler '$$cc' on PATH: go test -race links the race runtime through cgo" >&2; \
+	  echo "Debian/Ubuntu: apt install build-essential   macOS: xcode-select --install" >&2; \
+	  echo "or run 'make test-fast', which has no -race" >&2; \
+	  exit 1; \
+	}
+
 # `go install` puts the linters in $(go env GOBIN): no sudo, no system packages,
 # and the same install CI does. Split per tool so a job that needs one linter
 # does not pay to build the other.
@@ -85,8 +137,10 @@ tools-govulncheck:
 	go install $(GOVULNCHECK_PKG)
 
 # The full local mirror of the CI `test` job, in CI's order. Run this before
-# pushing: anything it misses is a red CI run.
-check: tidy-check fmt-check lint test build-all
+# pushing: anything it misses is a red CI run. lint-available is in the list
+# because CI installs the non-Go linters and fails without them, so a local
+# `make check` that skipped one would report green and turn red after the push.
+check: tidy-check fmt-check lint-available lint test build-all
 
 # CI runs `go mod tidy` and fails if it changes anything, so a stale go.mod
 # only surfaces after a push. Same check, same message, locally: the workflow
@@ -119,6 +173,16 @@ build:
 build-all:
 	$(CGO) go build $(BUILDFLAGS) -ldflags '$(LDFLAGS)' -o /dev/null ./...
 
+# Every GOOS/GOARCH the CI build job covers, in the same order. A syscall that
+# only exists on one platform is the usual cross-compile breakage, and the
+# matrix is the only job that catches it before release; this is the same check
+# without a push. Cross-compiling needs no C toolchain: CGO_ENABLED=0 below.
+build-matrix:
+	@set -e; for target in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64; do \
+	  echo "== $$target =="; \
+	  CGO_ENABLED=0 GOOS=$${target%/*} GOARCH=$${target#*/} make build-all vet; \
+	done
+
 eval:
 	go run ./cmd/msc-eval -sweep
 
@@ -132,7 +196,7 @@ eval-models:
 install:
 	$(CGO) go install $(BUILDFLAGS) -ldflags '$(LDFLAGS)' ./cmd/msc/
 
-test:
+test: check-race
 	go test -race -count=1 $(if $(RUN),-run '$(RUN)') $(PKG)
 
 # Same packages without -race: much quicker while iterating, still worth a
@@ -140,7 +204,7 @@ test:
 test-fast:
 	go test -count=1 $(if $(RUN),-run '$(RUN)') $(PKG)
 
-cover:
+cover: check-race
 	go test -race -count=1 -coverprofile=cover.out ./...
 	go tool cover -func=cover.out
 
@@ -169,6 +233,23 @@ lint: lint-go
 	@if command -v shellcheck >/dev/null 2>&1; then shellcheck test-live.sh; else echo "shellcheck not installed, skipping"; fi
 	@if command -v ruff >/dev/null 2>&1; then ruff check scripts/ && ruff format --check scripts/; else echo "ruff not installed, skipping"; fi
 	@if command -v yamllint >/dev/null 2>&1; then yamllint .; else echo "yamllint not installed, skipping"; fi
+
+# `make lint` treats the non-Go linters as optional, so a contributor without
+# them still gets the Go checks. That leniency is wrong for `make check`, which
+# advertises itself as the CI mirror: CI installs all three and fails the run on
+# a finding, so a skip here is a green local run and a red push. This gate
+# reports the missing tools by name instead of letting the skip pass silently.
+lint-available:
+	@missing=; \
+	for t in shellcheck ruff yamllint; do \
+	  command -v $$t >/dev/null 2>&1 || missing="$$missing $$t"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	  echo "CI runs these linters and fails the run without them; not on PATH:$$missing" >&2; \
+	  echo "pipx install ruff yamllint   (or pipx run ruff@0.16.4 ... as CI does)" >&2; \
+	  echo "shellcheck comes from your package manager (Debian/Ubuntu, brew, dnf)" >&2; \
+	  exit 1; \
+	fi
 
 vet:
 	go vet ./...

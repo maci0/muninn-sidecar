@@ -358,7 +358,8 @@ To inspect the resolved configuration without launching anything, run `msc --dry
 
 ## Contributing
 
-Clone needs Go 1.25+ and nothing else; `make tools` adds the two linters CI
+Clone needs Go 1.25+ and a C compiler (for `go test -race`); `make doctor`
+checks that and what else the tree needs. `make tools` adds the two linters CI
 runs, `make help` lists every target, and `make check` reproduces the CI test
 job locally.
 
