@@ -1,7 +1,8 @@
 // This file contains the selection policy: which of the candidate memories
-// recalled this turn are actually worth injecting. That is the absolute cosine
-// threshold (which doubles as the *when* to inject decision), near-duplicate
-// removal, and resolution of contradictions between kept memories.
+// recalled this turn are actually worth injecting. That is the fitness filter
+// (memory.go), the absolute cosine threshold (which doubles as the *when* to
+// inject decision), near-duplicate removal, and resolution of contradictions
+// between kept memories.
 package inject
 
 import (
@@ -12,15 +13,19 @@ import (
 )
 
 // dupTokenOverlap is the Jaccard similarity (over lowercased word sets) above
-// which two memories are considered near-duplicates. Only the higher-scored of
-// a duplicate pair is injected, so redundant memories don't waste the budget or
-// dilute the injected context. 0.8 catches re-phrasings and supersets without
-// collapsing genuinely distinct memories that merely share vocabulary.
+// which two memories are considered near-duplicates. A content-overlap pair
+// keeps the higher-scored memory (a same-concept pair is decided by supersedes
+// instead), so redundant memories don't waste the budget or dilute the injected
+// context. 0.8 catches re-phrasings and supersets without collapsing genuinely
+// distinct memories that merely share vocabulary.
 const dupTokenOverlap = 0.8
 
 // selectForInjection is the full inject decision for a turn. It expects input
 // pre-sorted by effective score (descending), as mergeMemories returns, and
-// applies two filters:
+// applies two filters plus a fitness check:
+//
+//  0. Fitness: a memory MuninnDB marks dead or untrusted is dropped whatever it
+//     scored (injectable, in memory.go).
 //
 //  1. Absolute threshold (minScore): keep only memories whose effective score is
 //     at least minScore. Because this drops every candidate when none is
@@ -42,7 +47,9 @@ const dupTokenOverlap = 0.8
 //     which statement is currently true. Cross-concept content-overlap dups keep
 //     the higher-cosine one (they may be genuinely distinct facts).
 //
-// minScore <= 0 disables the threshold (every recalled memory is eligible).
+// Survivors are then passed through resolveConflicts. minScore <= 0 disables
+// the threshold (every recalled memory that passes the fitness check is
+// eligible).
 func selectForInjection(merged []memory, minScore float64) []memory {
 	if len(merged) == 0 {
 		return merged

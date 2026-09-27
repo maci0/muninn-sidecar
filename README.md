@@ -311,6 +311,7 @@ To inspect the resolved configuration without launching anything, run `msc --dry
                       trust msc's CA via NODE_EXTRA_CA_CERTS / SSL_CERT_FILE
     --mitm-host HOST  Scope MITM to HOST (repeatable/comma-separated; implies --mitm). Only
                       upstream + listed hosts are terminated; others blind-tunnel. Default: all
+                      ("*" forces intercept-all, the default behavior)
     --no-redact       Disable secret and personal-data redaction of captured content
                       (full-fidelity capture; trusted environments only — credentials and
                       personal data will be stored verbatim)

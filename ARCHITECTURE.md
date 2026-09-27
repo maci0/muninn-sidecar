@@ -100,6 +100,7 @@ internal/
   agents/agents.go        Agent registry (claude, codex, grok, qwen, agy, ...)
   config/config.go        MuninnDB connection resolution (flag > env > default) + URL validation
   clirun/clirun.go       Bounded child-CLI runner for judges/rewriters (capped stdout, process-group timeout)
+  clock/                  The project's only clock (Clock/SystemClock/Fake), injected into every timed path
   apiformat/apiformat.go  Format detection & message extraction (Anthropic/OpenAI/Gemini)
   inject/
     inject.go             Config, Injector, and the Enrich request path
@@ -130,6 +131,7 @@ internal/
     stream.go             SSE/ndjson stream capture and synthetic response building
     context.go            Request-scoped capture metadata via context.Value
     clock.go              The proxy's only source of wall-clock time (SystemClock by default)
+    deadline.go           Per-response write-idle bound, replacing http.Server.WriteTimeout
   reqid/reqid.go          Per-request correlation ID, minted at ingress and carried to the store worker
   stats/stats.go          Session statistics (atomic counters)
   tailbuf/tailbuf.go      Fixed-size tail writer for unbounded model/agent CLI output
@@ -182,7 +184,7 @@ The winner is a **single absolute confidence threshold**. `selectForInjection` k
 
 1. **Absolute threshold**: keep memories with effective score ≥ `MinScore`. Because this drops *every* candidate when none is confident enough, one threshold answers both questions: an empty result suppresses the turn (*when*), and the survivors are the injection (*what*). A turn whose strongest match is only weakly relevant — a generic opener, an off-topic question — injects nothing, which is better than injecting noise that spends budget and dilutes the real prompt.
 
-   Before the threshold, memories MuninnDB marks as **explicitly dead or untrusted are excluded** regardless of cosine: lifecycle state `archived` (retired) or `cancelled` (abandoned), or trust level `untrusted` (flagged unreliable). Surfacing those as current context misleads the agent. `completed` is kept (a finished task's decisions stay relevant); empty/unrecognized values are kept, so vaults that don't populate these fields are unaffected.
+   Independently of the threshold, memories MuninnDB marks as **explicitly dead or untrusted are excluded** regardless of cosine: lifecycle state `archived` (retired) or `cancelled` (abandoned), or trust level `untrusted` (flagged unreliable). Surfacing those as current context misleads the agent. `completed` is kept (a finished task's decisions stay relevant); empty/unrecognized values are kept, so vaults that don't populate these fields are unaffected.
 
 2. **Near-duplicate removal**: a memory is dropped if it duplicates an already-kept memory — by identical normalized concept, or by word-set Jaccard overlap ≥ 0.8. This stops re-phrasings and supersets of the same fact from spending budget twice. (Dedup is orthogonal to the threshold and applied on top of whatever method wins.)
 

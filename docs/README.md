@@ -19,7 +19,7 @@
   unifying law: *injection value ≈ retrieval accuracy × the model's in-context
   ability; a wrong injection never helps*.
 - **[testing.md](testing.md)** — test + fuzz posture: measured per-package
-  coverage, 61 fuzz targets over all parsing/transform surfaces, `make cover` /
+  coverage, 65 fuzz targets over all parsing/transform surfaces, `make cover` /
   `make fuzz`.
 - **[THREAT_MODEL.md](THREAT_MODEL.md)** — the security view: risk-ranked
   summary, attack-surface inventory (every entry point with a file reference),

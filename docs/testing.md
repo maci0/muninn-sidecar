@@ -6,11 +6,12 @@ process-level paths are covered by a re-exec test rather than in-package ones).
 
 ## Coverage
 
-- High statement coverage across every package: internal **~84–100%**
-  (`redact` 100%, `grounding` 99%, `store` 97%, `stats` 96%, `inject` 96%,
-  `config` 93%, `agents` 91%, `proxy` 92%, `apiformat` 90%, `mcpclient` 89%,
-  `mitm` 84%), cmd **66–91%** (`msc` 66% — its `main()` paths are covered by a
-  re-exec test, not by in-package tests — and `msc-qa`/`msc-bench` 91%/90%).
+- High statement coverage across every package: internal **~85–100%**
+  (`querysplit`/`reqid` 100%, `redact` 99%, `inject`/`clirun` 96%, `stats` 96%,
+  `config` 95%, `grounding` 95%, `proxy` 92%, `agents` 91%, `apiformat` 90%,
+  `mcpclient` 90%, `tailbuf` 90%, `mitm` 87%, `clock` 85%), cmd **76–90%**
+  (`msc` 76% — its `main()` paths are covered by a re-exec test, not by
+  in-package tests — and `msc-qa`/`msc-bench` 90%/90%).
 - `make cover` — race-enabled coverage with a per-function breakdown.
 - The `main()` wrappers are exercised via a re-exec test (`TestMainHelp`)
   that runs `main()` inside the instrumented test binary, so even those count.
@@ -20,7 +21,7 @@ process-level paths are covered by a re-exec test rather than in-package ones).
 
 ## Fuzzing
 
-62 fuzz targets cover the untrusted-input surfaces:
+65 fuzz targets cover the untrusted-input surfaces:
 
 - **apiformat** — request/response extraction, recent-context, system-reminder
   strip, truncation (UTF-8 + length invariants), SSE delta/tool-name.
@@ -38,21 +39,21 @@ process-level paths are covered by a re-exec test rather than in-package ones).
   `shouldInterceptHost`), and the WebSocket-capture path: frame decoding
   (`readWSFrame`), permessage-deflate inflation (`inflate`), the 101 header
   reader, and the codex message-pairing parsers.
-- **mitm** — CONNECT host normalization (`normalizeHost`) and per-host leaf
-  minting (`LeafFor`).
+- **mitm** — CONNECT host normalization (`normalizeHost`), per-host leaf
+  minting (`LeafFor`), and CA re-parse (`ParseCA`).
 - **mcpclient** — health URL derivation, and the response-classification
   boundary (`classifyResponse`: 5xx/4xx/JSON-RPC error, body passed through
   unaltered on success).
 - **store** — captured-exchange format + dedup pipeline, and the MCP retry
   decision (`retryable`: 4xx and JSON-RPC errors permanent, 5xx and transport
   failures transient, verdict stable under wrapping).
-- **querysplit** — entity-span decomposition of a question (`Split`: the full
-  query first, then each capitalized run).
+- **querysplit** — entity-span decomposition of a question into sub-queries
+  (`Split`: the full query first, then each capitalized run).
 - **cmd/msc** — flag parsing, Levenshtein, closest-match.
 - **cmd/msc-bench** — recall parse, query transforms, string/number helpers
   (`itoa`), corpus generators, query-rewrite sub-query parsing + prompt build.
-- **cmd/msc-qa** — generic QA loading, SQuAD-style answer scoring, CLI-reader
-  prompt build / last-line extraction, entity-span split.
+- **cmd/msc-qa** — generic QA loading, SQuAD-style answer scoring, recall-payload
+  parsing, CLI-reader prompt build / last-line extraction.
 
 Run all of them briefly (regression smoke):
 
