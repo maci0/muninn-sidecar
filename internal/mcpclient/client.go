@@ -5,7 +5,9 @@ package mcpclient
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +24,19 @@ const maxResponseSize = 10 << 20 // 10 MiB
 
 // requestID is a process-wide atomic counter for unique JSON-RPC request IDs.
 var requestID atomic.Int64
+
+// DedupKey derives the stable, content-addressed dedup_key for one memory
+// write to MuninnDB. Re-deriving it for the same (vault, concept, content)
+// yields the same key on every attempt, every call site and every process, so
+// a retried or replayed write — a batch re-seeded by a rerun, an exchange
+// delivered twice after a restart — collapses onto the stored memory instead
+// of adding a second one. The concept alone is not enough: a re-asked question
+// with a different answer is a new memory. SHA-256 keeps collisions out of
+// reach for content-length memory.
+func DedupKey(vault, concept, content string) string {
+	sum := sha256.Sum256([]byte(vault + "\x00" + concept + "\x00" + content))
+	return hex.EncodeToString(sum[:])
+}
 
 // NextRequestID reserves a fresh JSON-RPC request ID. A caller that will retry
 // an operation must reserve the ID once and pass it to every attempt via

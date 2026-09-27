@@ -232,6 +232,11 @@ func reportGroundedGate(label string, present, absent []probeResult) {
 
 // --- seeding ---
 
+// seedCorpus stores the corpus in vault. Every memory carries a content-addressed
+// dedup_key (mcpclient.DedupKey), so re-running -seed is safe: the same corpus
+// collapses onto the memories already there instead of doubling them. Duplicates
+// would not be harmless here — they crowd recall's top-k and skew exactly the
+// retrieval numbers the benchmark exists to measure.
 func seedCorpus(ctx context.Context, c *mcpclient.Client, vault string, items []item) error {
 	const batchSize = 25
 	for start := 0; start < len(items); start += batchSize {
@@ -242,10 +247,11 @@ func seedCorpus(ctx context.Context, c *mcpclient.Client, vault string, items []
 		mems := make([]map[string]any, 0, end-start)
 		for _, it := range items[start:end] {
 			mems = append(mems, map[string]any{
-				"concept": it.Concept,
-				"content": it.Content,
-				"summary": it.Content,
-				"type":    "reference",
+				"concept":   it.Concept,
+				"content":   it.Content,
+				"summary":   it.Content,
+				"type":      "reference",
+				"dedup_key": mcpclient.DedupKey(vault, it.Concept, it.Content),
 			})
 		}
 		if _, err := c.Call(ctx, "muninn_remember_batch", map[string]any{

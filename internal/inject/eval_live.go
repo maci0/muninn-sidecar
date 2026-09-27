@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 )
 
 // SeedMemory is a memory to store in the vault before probing.
@@ -90,13 +92,18 @@ func RunLive(ctx context.Context, cfg Config, scenarios []LiveScenario, settle t
 	return results, nil
 }
 
-// seed stores the scenario's memories in the vault via muninn_remember.
+// seed stores the scenario's memories in the vault via muninn_remember. Each
+// carries a content-addressed dedup_key (mcpclient.DedupKey), so re-running the
+// live eval seeds the same vault idempotently: the memories already there
+// collapse onto the new writes instead of accumulating a second copy per run,
+// which would let the run measure its own history.
 func (inj *Injector) seed(ctx context.Context, seed []SeedMemory) error {
 	for _, m := range seed {
 		_, err := inj.mcp.Call(ctx, "muninn_remember", map[string]any{
-			"vault":   inj.vault,
-			"concept": m.Concept,
-			"content": m.Content,
+			"vault":     inj.vault,
+			"concept":   m.Concept,
+			"content":   m.Content,
+			"dedup_key": mcpclient.DedupKey(inj.vault, m.Concept, m.Content),
 		})
 		if err != nil {
 			return err

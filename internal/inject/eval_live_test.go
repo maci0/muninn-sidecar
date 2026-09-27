@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -102,4 +103,59 @@ func FuzzParseLiveScenarios(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_, _ = ParseLiveScenarios(data)
 	})
+}
+
+// Re-running the live eval must not double the vault: every seeded memory
+// carries a content-addressed dedup_key, so a second run presents the server
+// with the same identities and stores nothing new. Without it each run would
+// measure the copies it seeded itself, and the vault would grow without bound.
+func TestRunLiveSeedIsIdempotent(t *testing.T) {
+	var mu sync.Mutex
+	stored := map[string]int{} // dedup_key -> times a memory was actually stored
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var rpc struct {
+			Params struct {
+				Name      string `json:"name"`
+				Arguments struct {
+					DedupKey string `json:"dedup_key"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		json.Unmarshal(body, &rpc)
+		mu.Lock()
+		if rpc.Params.Name == "muninn_remember" && rpc.Params.Arguments.DedupKey != "" {
+			// Stand-in for the server's dedup_key handling: a repeat of a known
+			// key is the same memory, so it is not stored a second time.
+			if _, seen := stored[rpc.Params.Arguments.DedupKey]; !seen {
+				stored[rpc.Params.Arguments.DedupKey] = 1
+			}
+		} else if rpc.Params.Name == "muninn_remember" {
+			mu.Unlock()
+			t.Errorf("seeded memory carried no dedup_key")
+		}
+		mu.Unlock()
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	cfg := Config{MCPURL: srv.URL, Vault: "live-rerun", Timeout: 2 * time.Second}
+	scenarios := []LiveScenario{{
+		Name:             "auth",
+		Query:            "how does auth work",
+		Seed:             []SeedMemory{{Concept: "auth pattern", Content: "use jwt"}},
+		ExpectedConcepts: []string{"auth pattern"},
+	}}
+	for i := range 2 {
+		if _, err := RunLive(t.Context(), cfg, scenarios, 0); err != nil {
+			t.Fatalf("run %d: %v", i+1, err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(stored) != 1 {
+		t.Errorf("two runs of the same seed stored %d memories, want 1", len(stored))
+	}
 }

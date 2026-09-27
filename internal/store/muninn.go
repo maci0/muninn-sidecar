@@ -4,8 +4,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"hash/fnv"
@@ -420,9 +418,10 @@ func exchangeText(prepared *string, extract func() string) string {
 
 // flushFormatted sends a batch of pre-formatted memories to MuninnDB:
 // single items use muninn_remember, multiple use muninn_remember_batch.
-// Every memory carries a content-addressed dedup_key, and the whole call
-// reuses one JSON-RPC request id across attempts (see callTool), so a retry of
-// an ambiguous write is recognisable as the same operation on both sides.
+// Every memory carries a content-addressed dedup_key (mcpclient.DedupKey), and
+// the whole call reuses one JSON-RPC request id across attempts (see callTool),
+// so a retry of an ambiguous write is recognisable as the same operation on
+// both sides.
 func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 	var err error
 	n := int64(len(batch))
@@ -435,7 +434,7 @@ func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 			"content":   fm.content,
 			"tags":      fm.tags,
 			"type":      "observation",
-			"dedup_key": dedupKey(s.vault, fm.concept, fm.content),
+			"dedup_key": mcpclient.DedupKey(s.vault, fm.concept, fm.content),
 		})
 	} else {
 		memories := make([]map[string]any, 0, len(batch))
@@ -445,7 +444,7 @@ func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 				"content":   fm.content,
 				"tags":      fm.tags,
 				"type":      "observation",
-				"dedup_key": dedupKey(s.vault, fm.concept, fm.content),
+				"dedup_key": mcpclient.DedupKey(s.vault, fm.concept, fm.content),
 			})
 		}
 		err = s.callTool("muninn_remember_batch", map[string]any{
@@ -473,17 +472,6 @@ func (s *MuninnStore) flushFormatted(batch []formattedMemory) {
 
 // maxAttempts is the number of attempts for transient MuninnDB failures.
 const maxAttempts = 3
-
-// dedupKey derives a stable, content-addressed token for one memory write:
-// re-deriving it for the same (vault, concept, content) yields the same key on
-// every attempt and every process, so a retried or replayed write is
-// recognisable as the same memory rather than a new one. The concept alone is
-// not enough: a re-asked question with a different answer is a new memory.
-// SHA-256 keeps collisions out of reach for content-length memory.
-func dedupKey(vault, concept, content string) string {
-	sum := sha256.Sum256([]byte(vault + "\x00" + concept + "\x00" + content))
-	return hex.EncodeToString(sum[:])
-}
 
 // callTool sends a JSON-RPC 2.0 tools/call request to MuninnDB via the
 // shared MCP client. Retries up to maxAttempts with exponential backoff

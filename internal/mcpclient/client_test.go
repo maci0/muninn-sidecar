@@ -199,3 +199,24 @@ func TestCallResultIsNotAnError(t *testing.T) {
 		t.Errorf("unexpected body: %s", body)
 	}
 }
+
+// Two writes of the same memory derive the same dedup key, so a redelivered or
+// re-seeded write collapses onto the stored one instead of adding a second.
+func TestDedupKeyIsContentAddressed(t *testing.T) {
+	a := DedupKey("v", "concept", "content")
+	if a != DedupKey("v", "concept", "content") {
+		t.Fatal("DedupKey is not stable across calls for identical input")
+	}
+	if a == DedupKey("v", "concept", "other content") {
+		t.Fatal("different content produced the same dedup key")
+	}
+	if a == DedupKey("other", "concept", "content") {
+		t.Fatal("different vault produced the same dedup key")
+	}
+	if a == DedupKey("v", "other concept", "content") {
+		t.Fatal("different concept produced the same dedup key")
+	}
+	if a == DedupKey("v", "concept", "content\x00other") {
+		t.Fatal("a field separator inside content produced the same dedup key")
+	}
+}

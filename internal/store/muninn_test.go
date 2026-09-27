@@ -1214,24 +1214,6 @@ func TestRetryReusesRequestIDAndDedupKey(t *testing.T) {
 	}
 }
 
-// Two flushes of the same memory derive the same dedup key, so a redelivered
-// exchange collapses onto the stored one instead of adding a second.
-func TestDedupKeyIsContentAddressed(t *testing.T) {
-	a := dedupKey("v", "concept", "content")
-	if a != dedupKey("v", "concept", "content") {
-		t.Fatal("dedupKey is not stable across calls for identical input")
-	}
-	if a == dedupKey("v", "concept", "other content") {
-		t.Fatal("different content produced the same dedup key")
-	}
-	if a == dedupKey("other", "concept", "content") {
-		t.Fatal("different vault produced the same dedup key")
-	}
-	if a == dedupKey("v", "other concept", "content") {
-		t.Fatal("different concept produced the same dedup key")
-	}
-}
-
 // TestSetPreparerConcurrentWithStore pins the synchronization on the preparer
 // field. The worker goroutine is already running when SetPreparer installs the
 // Preparer, so a plain field would be an unsynchronized read/write pair; the
