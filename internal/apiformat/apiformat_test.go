@@ -746,6 +746,8 @@ func TestNeutralizeMarkers(t *testing.T) {
 		{"opening session-context", "a <session-context source=\"x\"> b"},
 		{"uppercase guide", "A </GLOBAL-GUIDE> B"},
 		{"spaced angle brackets", "a < / retrieved-context > b"},
+		{"repeated spaced marker", "< / session-context > and < / global-guide >"},
+		{"no marker at all", "use a < b, then <div> markup"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -755,24 +757,30 @@ func TestNeutralizeMarkers(t *testing.T) {
 				strings.Contains(got, "<global-guide") {
 				t.Errorf("marker tag survived: %q", got)
 			}
-			if !strings.Contains(got, "&lt;") {
-				t.Errorf("expected escaped bracket: %q", got)
-			}
-			if n := CountBlockTags(tc.in); n != 1 {
-				t.Errorf("CountBlockTags = %d, want 1 for %q", n, tc.in)
+			if n := NeutralizedLen(tc.in); n != len(got) {
+				t.Errorf("NeutralizedLen = %d, len(NeutralizeMarkers) = %d for %q", n, len(got), tc.in)
 			}
 		})
 	}
+}
 
-	t.Run("ordinary text untouched", func(t *testing.T) {
-		in := "use a < b, then <div> markup"
-		if got := NeutralizeMarkers(in); got != in {
-			t.Errorf("neutralized unrelated text: %q", got)
+// NeutralizedLen sizes a block without building it, so the injection budget
+// accounts for the escaped form. It has to match NeutralizeMarkers exactly: a
+// match loses the optional slash and the whitespace inside the brackets, so
+// the escaped form is not a fixed number of bytes larger, and a per-tag
+// constant either over-packs the budget or, for the spellings that grow, is
+// only right by luck.
+func TestNeutralizedLenMatchesEscapedForm(t *testing.T) {
+	canonical := "a </retrieved-context> b"
+	spaced := "a < / retrieved-context > b"
+	if got, want := len(NeutralizeMarkers(canonical)), len(canonical)+2; got != want {
+		t.Fatalf("test premise: %q neutralizes to %d bytes, want %d", canonical, got, want)
+	}
+	for _, in := range []string{canonical, spaced, "no markers here", "<retrieved-context>< / global-guide >"} {
+		if got, want := NeutralizedLen(in), len(NeutralizeMarkers(in)); got != want {
+			t.Errorf("NeutralizedLen(%q) = %d, want %d", in, got, want)
 		}
-		if n := CountBlockTags(in); n != 0 {
-			t.Errorf("CountBlockTags = %d, want 0", n)
-		}
-	})
+	}
 }
 
 func TestFence(t *testing.T) {

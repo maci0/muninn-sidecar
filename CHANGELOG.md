@@ -223,6 +223,21 @@ minor bump is safe.
 
 ### Fixed
 
+- **The injection budget is measured on the block that is written.** The token
+  estimator priced every escaped marker at a fixed three bytes, on the reasoning
+  that neutralization only ever adds them. It also removes them: a match loses
+  the optional slash and the whitespace inside the brackets, so `</retrieved-
+  context>` grows by two and `< / retrieved-context` does not grow at all. The
+  estimate was therefore a loose bound, packing blocks short of the configured
+  budget and over-reporting the tokens it wrote. `apiformat.NeutralizedLen` now
+  measures each match against the rewrite that replaces it, sharing the
+  neutralizer's own regex, and the packer and the reported token count agree
+  with the emitted block.
+- **The release notes are one section again.** `[Unreleased]` carried eight
+  impact-group headings in two interleaved runs, and eleven entries were stated
+  twice, so the release gate failed on a clean tree and a tag would have shipped
+  the same fix to a reader twice. The groups are back in scan order (Added,
+  Changed, Fixed, Security) with one entry each.
 - **An unreadable MuninnDB token file is no longer silent.** `config.Token`
   returned an empty token for any read failure, so a file that exists but cannot
   be read (a permission change, a directory in its place, a transient I/O error)
@@ -724,6 +739,7 @@ minor bump is safe.
 
 - **`msc-bench` and `msc-qa` build again.** Both used `filepath.Join` without
   importing `path/filepath`, so the two commands failed to compile.
+
 - **Breaking: the `dedup_key` every memory is written under has changed.**
   `DedupKey` framed vault, concept, and content with NUL separators, and a NUL
   is a legal character in captured conversation text: the concept `"a\0b"` with

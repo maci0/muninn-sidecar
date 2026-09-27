@@ -35,7 +35,11 @@ func entryOverhead(score float64) int {
 
 // entryBytes estimates how many bytes a memory contributes to a context block
 // without allocating an intermediate string. Format is
-// "[" + concept + "] (relevance: X.XX)\n" + content + "\n\n".
+// "[" + concept + "] (relevance: X.XX)\n" + content + "\n\n". Both text fields
+// are measured as NeutralizeMarkers would leave them, not as they arrive: the
+// block formatter escapes every marker in both, and the escaped form is not a
+// fixed size larger, so measuring the raw length would size a block that is
+// never the one written.
 //
 // The unit is bytes, not characters: charPerToken is a bytes-per-token
 // heuristic, and tokenizers charge by encoded length, so a CJK or emoji memory
@@ -43,18 +47,7 @@ func entryOverhead(score float64) int {
 // entryChars keeps the "chars" in the names and in charPerToken from claiming
 // a precision the measurement does not have.
 func entryBytes(m memory) int {
-	return neutralizedLen(m.Concept) + neutralizedLen(m.Content) + entryOverhead(m.Score)
-}
-
-// neutralizedLen is the byte length NeutralizeMarkers would produce for s:
-// each matched tag grows by 3 bytes ("<" becomes "&lt;"), and neutralization
-// never shrinks text. Counting matches without building the result keeps the
-// budget estimator allocation-free on the hot path.
-func neutralizedLen(s string) int {
-	if !strings.Contains(s, "<") {
-		return len(s)
-	}
-	return len(s) + 3*apiformat.CountBlockTags(s)
+	return apiformat.NeutralizedLen(m.Concept) + apiformat.NeutralizedLen(m.Content) + entryOverhead(m.Score)
 }
 
 // contextOverheadBytes is the fixed cost of the block wrapper: the markers, the
@@ -137,7 +130,7 @@ func withinBudget(memories []memory, budget int) []memory {
 				break
 			}
 			// First memory and it alone blows the budget: keep it, clipped.
-			room := budgetBytes - totalBytes - neutralizedLen(m.Concept) - entryOverhead(m.Score)
+			room := budgetBytes - totalBytes - apiformat.NeutralizedLen(m.Concept) - entryOverhead(m.Score)
 			if room < minOversizedMemoryBytes {
 				room = minOversizedMemoryBytes
 			}
@@ -146,7 +139,7 @@ func withinBudget(memories []memory, budget int) []memory {
 			// pass shortens the content, so this converges.
 			for {
 				m.Content = truncateToBytes(m.Content, room)
-				entry := neutralizedLen(m.Concept) + neutralizedLen(m.Content) + entryOverhead(m.Score)
+				entry := apiformat.NeutralizedLen(m.Concept) + apiformat.NeutralizedLen(m.Content) + entryOverhead(m.Score)
 				if totalBytes+entry <= budgetBytes {
 					break
 				}

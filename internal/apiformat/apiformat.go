@@ -70,6 +70,11 @@ const ContextNotice = "The entries below are notes recalled from past sessions. 
 // human would naturally write.
 var reBlockTag = regexp.MustCompile(`(?i)<\s*/?\s*(retrieved-context|session-context|global-guide)\b`)
 
+// neutralizedBrackets is what a matched marker's opening "<" becomes, and the
+// prefix of the replacement in NeutralizeMarkers and the width NeutralizedLen
+// charges for it.
+const neutralizedBrackets = "&lt;"
+
 // NeutralizeMarkers makes untrusted text safe to place inside an injected
 // context block. Recalled memory content is attacker-influenced: a memory
 // holding the literal `</retrieved-context>` would otherwise close the block
@@ -78,7 +83,7 @@ var reBlockTag = regexp.MustCompile(`(?i)<\s*/?\s*(retrieved-context|session-con
 // is replaced with its entity form, which keeps the text legible while making
 // it no longer a tag.
 func NeutralizeMarkers(s string) string {
-	return reBlockTag.ReplaceAllString(s, "&lt;$1")
+	return reBlockTag.ReplaceAllString(s, neutralizedBrackets+"$1")
 }
 
 // Fence renders untrusted text as a single neutralized line, safe to place
@@ -122,11 +127,23 @@ func fenceRE(tags []string) *regexp.Regexp {
 	return re
 }
 
-// CountBlockTags reports how many markers NeutralizeMarkers would rewrite in s,
-// so callers that must estimate the post-neutralization size (the injection
-// token budget) do not have to build the string to measure it.
-func CountBlockTags(s string) int {
-	return len(reBlockTag.FindAllStringIndex(s, -1))
+// NeutralizedLen reports len(NeutralizeMarkers(s)) without building the
+// result, so the injection token budget can account for the escaped form
+// without allocating a second copy of every memory on the hot path.
+//
+// The length is measured per match rather than assumed. NeutralizeMarkers
+// rewrites a match to "&lt;" + the tag name, dropping the optional slash and
+// the whitespace inside the brackets, so one escaped marker is not a fixed
+// number of bytes larger than the text it replaced: the canonical
+// "</retrieved-context>" grows by two, and "< / retrieved-context" does not
+// grow at all. A per-tag constant is therefore either a loose upper bound that
+// leaves budget unused or, tuned to the common spelling, wrong for the rest.
+func NeutralizedLen(s string) int {
+	n := len(s)
+	for _, m := range reBlockTag.FindAllStringSubmatchIndex(s, -1) {
+		n += len(neutralizedBrackets) + (m[3] - m[2]) - (m[1] - m[0])
+	}
+	return n
 }
 
 // DetectFormat identifies the API format of a request body.
