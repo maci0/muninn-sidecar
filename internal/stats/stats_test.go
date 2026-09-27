@@ -543,3 +543,53 @@ func TestSummaryReportsIdleSession(t *testing.T) {
 		t.Errorf("idle session produced no summary line: %q", got)
 	}
 }
+
+func TestObserveRecallLatencyIgnoresNegative(t *testing.T) {
+	// A clock that ran backwards must not pull the recall mean below zero.
+	s := &Stats{}
+	s.ObserveRecallLatency(40)
+	s.ObserveRecallLatency(-1)
+
+	n, mean, max := s.RecallLatency()
+	if n != 1 || mean != 40 || max != 40 {
+		t.Fatalf("RecallLatency() = (%d, %d, %d), want (1, 40, 40)", n, mean, max)
+	}
+}
+
+func TestSummaryWithRecallLatency(t *testing.T) {
+	s := &Stats{}
+	s.Injections.Store(2)
+	s.Recalls.Store(2)
+	s.ObserveRecallLatency(120)
+	s.ObserveRecallLatency(60)
+
+	got := s.Summary()
+	if !strings.Contains(got, "recall: 2 queried") {
+		t.Fatalf("expected recall line in summary: %q", got)
+	}
+	if !strings.Contains(got, "90ms avg, 120ms slowest") {
+		t.Fatalf("recall line does not carry the store round trip: %q", got)
+	}
+}
+
+func TestSummaryNoRecallLatencyWhenUnobserved(t *testing.T) {
+	s := &Stats{}
+	s.Injections.Store(2)
+	s.Recalls.Store(2)
+
+	if got := s.Summary(); strings.Contains(got, "slowest") {
+		t.Fatalf("recall latency reported without a sample: %q", got)
+	}
+}
+
+func TestSnapshotCarriesRecallLatency(t *testing.T) {
+	s := &Stats{}
+	s.ObserveRecallLatency(300)
+	s.ObserveRecallLatency(100)
+
+	snap := s.Snapshot()
+	if snap.RecallLatencyN != 2 || snap.RecallLatencyMeanMs != 200 || snap.RecallLatencyMaxMs != 300 {
+		t.Fatalf("snapshot recall latency = (%d, %d, %d), want (2, 200, 300)",
+			snap.RecallLatencyN, snap.RecallLatencyMeanMs, snap.RecallLatencyMaxMs)
+	}
+}

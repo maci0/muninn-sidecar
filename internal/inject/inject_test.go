@@ -2142,3 +2142,32 @@ func TestParseRecallResponseAllBlocksUnparsable(t *testing.T) {
 		t.Error("expected an error when no text block parses")
 	}
 }
+
+// TestRecallLatencyIsRecorded pins the store round trip as its own measurement.
+// The recall runs on the request hot path ahead of every turn, so its cost sits
+// inside the exchange latency the session already reports; without a separate
+// number a session that slowed down has no way to say whether MuninnDB or the
+// upstream did.
+func TestRecallLatencyIsRecorded(t *testing.T) {
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(40 * time.Millisecond)
+		w.Write(fakeRecallResponse(nil))
+	})
+	defer srv.Close()
+
+	st := &stats.Stats{}
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Stats: st})
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"how do we deploy"}]}`)
+	inj.Enrich(t.Context(), body)
+
+	n, mean, max := st.RecallLatency()
+	if n != 1 {
+		t.Fatalf("recall latency has %d samples, want 1: the recall leg is not timed", n)
+	}
+	if max < 20 {
+		t.Errorf("slowest recall recorded as %dms, want at least 20 for a 40ms round trip", max)
+	}
+	if mean < 20 {
+		t.Errorf("mean recall recorded as %dms, want at least 20 for a 40ms round trip", mean)
+	}
+}

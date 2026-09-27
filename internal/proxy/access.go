@@ -86,3 +86,29 @@ func (p *Proxy) logTurn(ctx context.Context, method, path string, status int, el
 		"path", path, "status", status, "duration_ms", elapsed.Milliseconds(),
 		"agent", p.agentName)
 }
+
+// logTunnel is the outcome line for a connection msc hijacks and forwards
+// itself: a CONNECT tunnel (plain or intercepted) or a spliced protocol
+// upgrade. Neither is a request, so neither gets a "turn" line, and the
+// requests decrypted inside a tunnel log their own turns. This is therefore the
+// only line saying that the connection itself opened, that the agent could use
+// it, how long it lived, and which stage refused it.
+//
+// Every stage inside those paths logged at Debug, which is off by default, so a
+// tunnel the agent could not use (a CA it does not trust, a host it cannot
+// reach) left nothing at the level an operator runs at: the session summary
+// showed a rising request count and no turn line to account for it.
+//
+// Info once the connection was established and lived out its life, Error when
+// it never got that far. reason carries the stage that gave up, so the Error
+// needs no second lookup through the Debug lines.
+func (p *Proxy) logTunnel(ctx context.Context, kind, target string, elapsed time.Duration, reason string) {
+	level := slog.LevelInfo
+	attrs := []any{reqid.Field, requestID(ctx), "kind", kind, "target", target,
+		"duration_ms", elapsed.Milliseconds(), "agent", p.agentName}
+	if reason != "" {
+		level = slog.LevelError
+		attrs = append(attrs, "reason", reason)
+	}
+	slog.Log(ctx, level, "tunnel", attrs...)
+}

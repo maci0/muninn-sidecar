@@ -67,13 +67,24 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// tie back to the agent turn that opened it.
 	id := requestID(r.Context())
 
+	// One outcome line for the tunnel, on every path out of this function. The
+	// requests a tunnel carries log their own turns, so nothing else records
+	// that the connection was opened, that the agent could use it, or which
+	// stage refused it. reason is the stage that gave up; empty means the
+	// tunnel was established and lived out its life.
+	start := p.now()
+	var reason string
+	defer func() { p.logTunnel(r.Context(), "connect", target, p.since(start), reason) }()
+
 	hj, ok := w.(http.Hijacker)
 	if !ok {
+		reason = "response writer cannot hijack"
 		writeJSONError(w, http.StatusInternalServerError, "proxy: CONNECT not supported")
 		return
 	}
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
+		reason = "hijack failed"
 		slog.Debug("mitm: hijack failed", reqid.Field, id, "target", target, "err", err)
 		return
 	}
@@ -95,11 +106,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// API). Everything else is blind-tunneled untouched, so package registries,
 	// OAuth, and cert-pinned services keep working and aren't needlessly decrypted.
 	if !p.shouldInterceptHost(stripPort(target)) {
-		p.blindTunnel(clientConn, target, id)
+		reason = p.blindTunnel(clientConn, target, id)
 		return
 	}
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+		reason = "could not confirm tunnel to client"
 		slog.Debug("mitm: could not confirm tunnel to client", reqid.Field, id, "target", target, "err", err)
 		return
 	}
@@ -119,16 +131,19 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err := clientConn.SetReadDeadline(socketDeadlineBase().Add(p.handshakeTimeout)); err != nil {
+		reason = "could not set handshake deadline"
 		slog.Debug("mitm: could not set handshake deadline", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	if err := tlsConn.Handshake(); err != nil {
+		reason = "tls handshake failed"
 		slog.Debug("mitm: TLS handshake failed", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	// Drop the deadline: the tunnel is now a long-lived connection whose reads
 	// are bounded by the http.Server serving it (ReadHeaderTimeout/ReadTimeout).
 	if err := clientConn.SetReadDeadline(time.Time{}); err != nil {
+		reason = "could not clear handshake deadline"
 		slog.Debug("mitm: could not clear handshake deadline", reqid.Field, id, "target", target, "err", err)
 		return
 	}
@@ -223,6 +238,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// accept or parse failure) at debug: the tunnel is torn down either way,
 	// but a dropped reason here is the only trace of a failed MITM exchange.
 	if err := srv.Serve(newSingleConnListener(tlsConn)); err != nil && !errors.Is(err, net.ErrClosed) {
+		reason = "tunnel server stopped: " + err.Error()
 		slog.Debug("mitm: tunnel server stopped", reqid.Field, id, "target", target, "err", err)
 	}
 }
@@ -248,15 +264,29 @@ func isUpgradeRequest(req *http.Request) bool {
 // capturing reverse-proxy can't drive a 101 upgrade under MITM, so this keeps the
 // agent working; the tap in startWSTap captures the codex Responses envelope
 // (see wsExchange) and passes every other protocol through undecoded.
+//
+// Like a CONNECT tunnel, an upgrade is a hijacked connection rather than a
+// request, so it gets its own outcome line: the codex ChatGPT-mode WebSocket is
+// the agent's whole turn, and without one the session summary shows spliced
+// upgrades counted and no log line saying whether the splice worked.
 func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target string) {
+	id := requestID(req.Context())
+	start := p.now()
+	var reason string
+	defer func() {
+		p.logTunnel(req.Context(), "upgrade", target, p.since(start), reason)
+	}()
+
 	hj, ok := w.(http.Hijacker)
 	if !ok {
+		reason = "response writer cannot hijack"
 		writeJSONError(w, http.StatusInternalServerError, "proxy: upgrade not supported")
 		return
 	}
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
-		slog.Debug("mitm: upgrade hijack failed", reqid.Field, requestID(req.Context()), "target", target, "err", err)
+		reason = "hijack failed"
+		slog.Debug("mitm: upgrade hijack failed", reqid.Field, id, "target", target, "err", err)
 		return
 	}
 	defer clientConn.Close()
@@ -266,8 +296,9 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	// its hijacked connection indefinitely (mirrors blindTunnel's DialTimeout).
 	backend, err := tls.DialWithDialer(&net.Dialer{Timeout: tunnelDialTimeout}, "tcp", target, cfg)
 	if err != nil {
-		slog.Debug("mitm: upgrade backend dial failed", reqid.Field, requestID(req.Context()), "target", target, "err", err)
-		writeStatus(clientConn, requestID(req.Context()), target, "502 Bad Gateway")
+		reason = "upstream dial failed"
+		slog.Debug("mitm: upgrade backend dial failed", reqid.Field, id, "target", target, "err", err)
+		writeStatus(clientConn, id, target, "502 Bad Gateway")
 		return
 	}
 	defer backend.Close()
@@ -275,10 +306,11 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	// Forward the original upgrade request verbatim (origin-form URI + all
 	// headers, incl. Upgrade/Connection/Sec-WebSocket-*).
 	if err := req.Write(backend); err != nil {
-		slog.Debug("mitm: upgrade request write failed", reqid.Field, requestID(req.Context()), "target", target, "err", err)
+		reason = "could not forward the upgrade request"
+		slog.Debug("mitm: upgrade request write failed", reqid.Field, id, "target", target, "err", err)
 		return
 	}
-	slog.Debug("mitm: splicing upgrade", reqid.Field, requestID(req.Context()), "target", target, "proto", req.Header.Get("Upgrade"))
+	slog.Debug("mitm: splicing upgrade", reqid.Field, id, "target", target, "proto", req.Header.Get("Upgrade"))
 	if p.stats != nil {
 		p.stats.Upgraded.Add(1)
 	}
@@ -286,7 +318,7 @@ func (p *Proxy) spliceUpgrade(w http.ResponseWriter, req *http.Request, target s
 	// Forward both directions verbatim; tap a best-effort copy to decode the
 	// WebSocket-framed exchange (forwarding is never blocked by capture).
 	// clientBuf may hold bytes already read past the upgrade request.
-	p.spliceWithCapture(clientConn, clientBuf.Reader, backend, target, requestID(req.Context()))
+	p.spliceWithCapture(clientConn, clientBuf.Reader, backend, target, id)
 }
 
 // shouldInterceptHost reports whether a CONNECT target host should be
@@ -305,18 +337,22 @@ func (p *Proxy) shouldInterceptHost(host string) bool {
 // sees a real failure if the host is unreachable. id is the CONNECT's
 // correlation ID, carried on every line so a tunnel that dies is tied to the
 // turn that opened it.
-func (p *Proxy) blindTunnel(clientConn net.Conn, target, id string) {
+//
+// It returns the reason the tunnel never carried traffic, or "" when it was
+// established and both directions ran to completion; the caller's outcome line
+// needs that, because nothing here is a request and no turn line covers it.
+func (p *Proxy) blindTunnel(clientConn net.Conn, target, id string) string {
 	upstream, err := net.DialTimeout("tcp", target, tunnelDialTimeout)
 	if err != nil {
 		slog.Debug("mitm: blind-tunnel dial failed", reqid.Field, id, "target", target, "err", err)
 		writeStatus(clientConn, id, target, "502 Bad Gateway")
-		return
+		return "upstream dial failed"
 	}
 	defer upstream.Close()
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 		slog.Debug("mitm: could not confirm tunnel to client", reqid.Field, id, "target", target, "err", err)
-		return
+		return "could not confirm tunnel to client"
 	}
 	slog.Debug("mitm: blind-tunnel", reqid.Field, id, "target", target)
 
@@ -341,6 +377,7 @@ func (p *Proxy) blindTunnel(clientConn net.Conn, target, id string) {
 	go cp(clientConn, upstream)
 	<-done
 	<-done
+	return ""
 }
 
 // writeStatus sends a bare status line to a hijacked client, for the paths

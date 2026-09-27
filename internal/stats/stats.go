@@ -62,42 +62,71 @@ type Stats struct {
 	// the summary reports an honest total instead of a silently truncated one.
 	modelsDropped atomic.Int64
 
-	// Response-time accounting for captured exchanges, in milliseconds.
-	// Kept as three separate counters rather than a histogram: a session is a
-	// few dozen turns, so a mean and a max answer "was the agent slow, and how
-	// slow was the worst turn" without the storage a distribution would cost.
-	latencyN   atomic.Int64 // completed exchanges observed
-	latencySum atomic.Int64 // summed response time
-	latencyMax atomic.Int64 // slowest response observed
+	// Response-time accounting, in milliseconds, for the two legs an operator
+	// has to tell apart when a turn slows down: the whole exchange, and the
+	// MuninnDB recall that runs in front of it. Kept as three separate counters
+	// rather than a histogram: a session is a few dozen turns, so a mean and a
+	// max answer "was the agent slow, and was it the recall" without the
+	// storage a distribution would cost.
+	latency     latencyCounters // completed exchanges
+	recallTimes latencyCounters // recall calls to MuninnDB
 }
 
-// ObserveLatency records one completed exchange's response time in
-// milliseconds. Negative values are ignored: a clock that ran backwards
-// would otherwise pull the session mean below zero.
-func (s *Stats) ObserveLatency(ms int64) {
+// latencyCounters holds one leg's count, total, and maximum. Safe for
+// concurrent use from multiple goroutines.
+type latencyCounters struct {
+	n   atomic.Int64
+	sum atomic.Int64
+	max atomic.Int64
+}
+
+// observe records one sample in milliseconds. Negative values are ignored: a
+// clock that ran backwards would otherwise pull the mean below zero.
+func (l *latencyCounters) observe(ms int64) {
 	if ms < 0 {
 		return
 	}
-	s.latencyN.Add(1)
-	s.latencySum.Add(ms)
+	l.n.Add(1)
+	l.sum.Add(ms)
 	for {
-		cur := s.latencyMax.Load()
-		if ms <= cur || s.latencyMax.CompareAndSwap(cur, ms) {
+		cur := l.max.Load()
+		if ms <= cur || l.max.CompareAndSwap(cur, ms) {
 			return
 		}
 	}
 }
 
-// Latency returns the number of observed exchanges, the mean response time in
-// milliseconds, and the slowest response in milliseconds. All three are 0 when
-// nothing has been observed.
-func (s *Stats) Latency() (n, meanMs, maxMs int64) {
-	n = s.latencyN.Load()
+// read returns the number of observed samples, the mean in milliseconds, and
+// the slowest in milliseconds. All three are 0 when nothing has been observed.
+func (l *latencyCounters) read() (n, meanMs, maxMs int64) {
+	n = l.n.Load()
 	if n == 0 {
 		return 0, 0, 0
 	}
-	return n, s.latencySum.Load() / n, s.latencyMax.Load()
+	return n, l.sum.Load() / n, l.max.Load()
 }
+
+// ObserveLatency records one completed exchange's response time in
+// milliseconds. Negative values are ignored: a clock that ran backwards
+// would otherwise pull the session mean below zero.
+func (s *Stats) ObserveLatency(ms int64) { s.latency.observe(ms) }
+
+// Latency returns the number of observed exchanges, the mean response time in
+// milliseconds, and the slowest response in milliseconds. All three are 0 when
+// nothing has been observed.
+func (s *Stats) Latency() (n, meanMs, maxMs int64) { return s.latency.read() }
+
+// ObserveRecallLatency records one recall call's round trip to MuninnDB in
+// milliseconds, so a slow store can be told apart from a slow upstream. The
+// recall runs on the request hot path ahead of every captured turn, so its cost
+// is inside the exchange latency the summary already reports; without this the
+// only evidence of a degraded store is that turns got slower.
+func (s *Stats) ObserveRecallLatency(ms int64) { s.recallTimes.observe(ms) }
+
+// RecallLatency returns the number of observed recalls, the mean round trip in
+// milliseconds, and the slowest in milliseconds. All three are 0 when no recall
+// has been made.
+func (s *Stats) RecallLatency() (n, meanMs, maxMs int64) { return s.recallTimes.read() }
 
 // Snapshot is a point-in-time copy of the session counters, for the status
 // endpoint and anything else that needs the numbers outside Summary's
@@ -117,26 +146,34 @@ type Snapshot struct {
 	LatencyN      int64 `json:"latency_samples"`
 	LatencyMeanMs int64 `json:"latency_mean_ms"`
 	LatencyMaxMs  int64 `json:"latency_max_ms"`
+
+	RecallLatencyN      int64 `json:"recall_latency_samples"`
+	RecallLatencyMeanMs int64 `json:"recall_latency_mean_ms"`
+	RecallLatencyMaxMs  int64 `json:"recall_latency_max_ms"`
 }
 
 // Snapshot returns the current counter values.
 func (s *Stats) Snapshot() Snapshot {
 	n, mean, max := s.Latency()
+	recallN, recallMean, recallMax := s.RecallLatency()
 	return Snapshot{
-		Requests:      s.Requests.Load(),
-		Captured:      s.Captured.Load(),
-		Saved:         s.Flushed.Load(),
-		Dropped:       s.Dropped.Load(),
-		SaveErrors:    s.FlushErrors.Load(),
-		UpstreamError: s.UpstreamErrors.Load(),
-		ProxyErrors:   s.ProxyErrors.Load(),
-		Uncapturable:  s.Uncapturable.Load(),
-		Injections:    s.Injections.Load(),
-		InjectErrors:  s.InjectionErrors.Load(),
-		Recalls:       s.Recalls.Load(),
-		LatencyN:      n,
-		LatencyMeanMs: mean,
-		LatencyMaxMs:  max,
+		Requests:            s.Requests.Load(),
+		Captured:            s.Captured.Load(),
+		Saved:               s.Flushed.Load(),
+		Dropped:             s.Dropped.Load(),
+		SaveErrors:          s.FlushErrors.Load(),
+		UpstreamError:       s.UpstreamErrors.Load(),
+		ProxyErrors:         s.ProxyErrors.Load(),
+		Uncapturable:        s.Uncapturable.Load(),
+		Injections:          s.Injections.Load(),
+		InjectErrors:        s.InjectionErrors.Load(),
+		Recalls:             s.Recalls.Load(),
+		LatencyN:            n,
+		LatencyMeanMs:       mean,
+		LatencyMaxMs:        max,
+		RecallLatencyN:      recallN,
+		RecallLatencyMeanMs: recallMean,
+		RecallLatencyMaxMs:  recallMax,
 	}
 }
 
@@ -343,6 +380,12 @@ func (s *Stats) Summary() string {
 		}
 		if recalls > 0 || recallsSkipped > 0 {
 			sb.WriteString(fmt.Sprintf("\nrecall: %d queried, %d reused (window)", recalls, recallsSkipped))
+			// The recall runs ahead of every turn, so its round trip is inside
+			// the latency above. Naming it separately is what tells a slow
+			// MuninnDB apart from a slow upstream.
+			if n, meanMs, maxMs := s.RecallLatency(); n > 0 {
+				sb.WriteString(fmt.Sprintf("; %s avg, %s slowest", formatDuration(meanMs), formatDuration(maxMs)))
+			}
 		}
 		if gruns := s.GroundingRuns.Load(); gruns > 0 {
 			sb.WriteString(fmt.Sprintf("\ngrounding: %d turns judged, %d candidates dropped", gruns, s.GroundDropped.Load()))

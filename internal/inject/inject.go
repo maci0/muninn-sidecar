@@ -427,19 +427,27 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 		recallCtx, cancel := context.WithTimeout(ctx, inj.timeout)
 		defer cancel()
 
+		recallStart := inj.clock.Now()
 		memories, err := inj.recall(recallCtx, query)
+		// Time the store round trip on the request hot path: it is inside the
+		// exchange latency the session reports, so without it a turn that
+		// slowed down has no way to say whether MuninnDB or the upstream did.
+		recallMs := inj.clock.Since(recallStart).Milliseconds()
 		if inj.stats != nil {
 			inj.stats.Recalls.Add(1)
+			inj.stats.ObserveRecallLatency(recallMs)
 		}
 		if err != nil {
 			slog.Warn("inject: recall failed, passing through",
-				reqid.Field, reqid.From(ctx), "vault", inj.vault, "query_len", len(query), "err", err)
+				reqid.Field, reqid.From(ctx), "vault", inj.vault, "query_len", len(query),
+				"duration_ms", recallMs, "err", err)
 			if inj.stats != nil {
 				inj.stats.InjectionErrors.Add(1)
 			}
 			return body, 0 // graceful fallback
 		}
-		slog.Debug("inject: recall returned", reqid.Field, reqid.From(ctx), "count", len(memories))
+		slog.Debug("inject: recall returned", reqid.Field, reqid.From(ctx),
+			"count", len(memories), "duration_ms", recallMs)
 
 		inj.observeCalibration(memories) // self-tune the gate to this vault's scores
 		// Read the gate after the calibration, not before the recall: the

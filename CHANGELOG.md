@@ -13,6 +13,21 @@ minor bump is safe.
 
 ### Added
 
+- **A CONNECT tunnel and a spliced upgrade now report one outcome line.** Both
+  are hijacked connections rather than requests, so neither produced a `turn`
+  line, and every stage inside them (hijack, TLS handshake, blind-tunnel dial,
+  upgrade dial) logged at debug. With the default WARN level, a tunnel the agent
+  could not use was invisible: an agent that does not trust msc's CA failed its
+  handshake, and the session summary showed a counted request with nothing
+  explaining it. Each now ends in one `tunnel` line carrying its `request_id`,
+  target, lifetime, and agent, error with a `reason` naming the stage that gave
+  up.
+- **The MuninnDB recall is timed on its own.** The recall runs in front of every
+  captured turn, so a degraded store showed up only as response time climbing,
+  indistinguishable from a slow upstream. Its round trip is now on the recall
+  log lines (`duration_ms`), in the summary's `recall:` line, and in the status
+  snapshot as `recall_latency_{samples,mean_ms,max_ms}`.
+
 - **Breaking: an enum option outside its set is now rejected.**
   `-chunk`, `-query-transform`, and `-rerank` (`msc-bench`) and `-inject-format`
   (`msc-qa`) selected a code path in a switch, so a typo silently fell through

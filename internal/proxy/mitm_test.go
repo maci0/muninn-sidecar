@@ -1041,3 +1041,106 @@ func TestBlindTunnelStatusOnDeadClient(t *testing.T) {
 	}
 	t.Fatalf("tunnel status failure was not logged: %s", logs.String())
 }
+
+// TestTunnelOutcomeLineOnFailedHandshake pins the outcome line for a CONNECT
+// tunnel the agent could not use. Every stage inside handleConnect logged at
+// debug, so a tunnel that died at the TLS handshake (an agent that does not
+// trust msc's CA, most often) was invisible at the level an operator runs at:
+// the session summary counted the CONNECT as a request, and no turn line
+// accounted for where it went.
+func TestTunnelOutcomeLineOnFailedHandshake(t *testing.T) {
+	logs := captureLogs(t)
+
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0", Upstream: "https://api.example.invalid",
+		Store: st, CA: mustCA(t), MITMHosts: []string{"*"}, Stats: &stats.Stats{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	// Intercept-all: msc confirms the CONNECT, then waits for a ClientHello
+	// that never comes, so the TLS handshake fails.
+	_, _, raw := connectStatus(t, addr, "api.example.invalid:443")
+	raw.Close()
+
+	line := waitForLogs(t, logs, "tunnel")
+	if line["level"] != "ERROR" {
+		t.Errorf("a tunnel the agent could not use logged at %v, want ERROR: %v", line["level"], line)
+	}
+	if line["kind"] != "connect" {
+		t.Errorf("tunnel line kind = %v, want connect: %v", line["kind"], line)
+	}
+	if line["reason"] != "tls handshake failed" {
+		t.Errorf("tunnel line does not name the stage that failed: %v", line)
+	}
+	if line["request_id"] == "" || line["request_id"] == nil {
+		t.Errorf("tunnel line lost the CONNECT's correlation ID: %v", line)
+	}
+	if line["target"] != "api.example.invalid:443" {
+		t.Errorf("tunnel line lost its target: %v", line)
+	}
+}
+
+// TestTunnelOutcomeLineOnBlindTunnel is the other half of the contract: a
+// tunnel that worked reports Info, carries how long it lived, and names no
+// reason. Without that half, a run of successful tunnels would be
+// indistinguishable from a run that never got past the handshake, since both
+// produce the same per-request turn lines for the traffic they carry.
+func TestTunnelOutcomeLineOnBlindTunnel(t *testing.T) {
+	logs := captureLogs(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			accepted <- c
+		}
+	}()
+
+	// Scoped MITM: 127.0.0.1 is not allowlisted, so the CONNECT is blind-tunneled.
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0", Upstream: "https://api.example.invalid",
+		Store: st, CA: mustCA(t), MITMHosts: []string{"api.example.invalid"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	_, _, raw := connectStatus(t, addr, ln.Addr().String())
+	raw.Close()
+	select {
+	case c := <-accepted:
+		c.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("blind tunnel never reached the upstream")
+	}
+
+	line := waitForLogs(t, logs, "tunnel")
+	if line["level"] != "INFO" {
+		t.Errorf("a working tunnel logged at %v, want INFO: %v", line["level"], line)
+	}
+	if _, ok := line["reason"]; ok {
+		t.Errorf("a working tunnel reported a failure reason: %v", line)
+	}
+	if _, ok := line["duration_ms"]; !ok {
+		t.Errorf("tunnel line does not say how long the connection lived: %v", line)
+	}
+}
