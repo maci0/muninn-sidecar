@@ -360,7 +360,10 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	// The cached verdict only stands in for a fresh recall while it is young.
 	// Past intentCacheTTL the vault may hold memories this query would now
 	// match (the sidecar writes to it throughout the session), so ask again.
-	cachedFresh := inj.hasLastQuery && inj.clock.Now().Sub(inj.lastQueryAt) < intentCacheTTL
+	// Since, not Now().Sub: a wall-clock step backwards mid-session would
+	// otherwise make a stale verdict read as young for as long as the clock
+	// stays behind.
+	cachedFresh := inj.hasLastQuery && inj.clock.Since(inj.lastQueryAt) < intentCacheTTL
 	sameIntent := cachedFresh && (qhash == inj.lastQueryHash ||
 		(inj.querySimReuse < 1 && len(inj.lastQueryTokens) > 0 &&
 			jaccard(curTokens, inj.lastQueryTokens) >= inj.querySimReuse))

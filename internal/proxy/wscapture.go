@@ -138,7 +138,7 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 		// stored with duration_ms 0 and never reaches the latency stats.
 		var durationMs int64
 		if !reqAt.IsZero() {
-			durationMs = e.p.now().Sub(reqAt).Milliseconds()
+			durationMs = e.p.since(reqAt).Milliseconds()
 		}
 		e.p.store.Store(&store.CapturedExchange{
 			Agent:      e.p.agentName,
