@@ -85,6 +85,15 @@ const (
 // limit on the first request. 20 entries (~1k tokens) is ample session bootstrap.
 const maxWhereLeftOffEntries = 20
 
+// intentCacheTTL bounds how long a recall result (or a recall miss) may stand in
+// for a fresh query. The sidecar writes memories into the same vault
+// continuously, including ones that answer a question that recalled nothing
+// earlier in the session, so a cached "nothing found" and a cached window both
+// go stale against the vault the injector itself keeps changing. A tool-use
+// chain resends the same user message seconds apart, so this only has to
+// outlast a round trip, not the session.
+const intentCacheTTL = 2 * time.Minute
+
 // Injector enriches LLM API requests with recalled memories from MuninnDB.
 // It maintains a session-level memory window: recalled memories persist across
 // turns with decaying scores, so context from earlier turns fades gradually
@@ -100,6 +109,7 @@ type Injector struct {
 	autoCalibrate bool
 	timeout       time.Duration
 	stats         *stats.Stats
+	now           func() time.Time // wall clock for the intent-cache TTL (tests substitute it)
 
 	grounder   grounding.Grounder // optional answer-grounding rerank (nil = cosine gate only)
 	groundTopK int
@@ -117,11 +127,14 @@ type Injector struct {
 	// user message resent with new tool results) reuse the session window
 	// instead of firing a redundant recall. lastWasEmpty drives the negative
 	// cache (a repeated intent that already recalled nothing skips re-querying).
+	// lastQueryAt bounds that reuse: the vault gains memories mid-session, so a
+	// verdict older than intentCacheTTL is re-queried rather than trusted.
 	// Guarded by mu.
 	lastQueryHash   uint64
 	lastQueryTokens []string
 	hasLastQuery    bool
 	lastWasEmpty    bool
+	lastQueryAt     time.Time
 
 	// Session-start: call where_left_off and guide once on first enrichment.
 	sessionOnce sync.Once
@@ -186,6 +199,7 @@ func New(cfg Config) *Injector {
 		autoCalibrate:  cfg.AutoCalibrate,
 		timeout:        cfg.Timeout,
 		stats:          cfg.Stats,
+		now:            time.Now,
 		grounder:       cfg.Grounder,
 		groundTopK:     cfg.GroundTopK,
 		recentMemories: make(map[string]trackedMemory),
@@ -311,7 +325,11 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		curTokens = wordSet(query)
 	}
 	inj.mu.Lock()
-	sameIntent := inj.hasLastQuery && (qhash == inj.lastQueryHash ||
+	// The cached verdict only stands in for a fresh recall while it is young.
+	// Past intentCacheTTL the vault may hold memories this query would now
+	// match (the sidecar writes to it throughout the session), so ask again.
+	cachedFresh := inj.hasLastQuery && inj.now().Sub(inj.lastQueryAt) < intentCacheTTL
+	sameIntent := cachedFresh && (qhash == inj.lastQueryHash ||
 		(inj.querySimReuse < 1 && len(inj.lastQueryTokens) > 0 &&
 			jaccard(curTokens, inj.lastQueryTokens) >= inj.querySimReuse))
 	windowEmpty := len(inj.recentMemories) == 0
@@ -371,6 +389,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		inj.lastQueryTokens = curTokens
 		inj.hasLastQuery = true
 		inj.lastWasEmpty = len(inj.recentMemories) == 0
+		inj.lastQueryAt = inj.now()
 		inj.mu.Unlock()
 	}
 

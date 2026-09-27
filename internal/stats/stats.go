@@ -39,6 +39,13 @@ type Stats struct {
 
 	models sync.Map // model name → *atomic.Int64
 
+	// modelNames counts the distinct names currently in models, so RecordModel
+	// can stop growing the map at maxTrackedModels without a second lookup.
+	modelNames atomic.Int64
+	// modelsDropped counts calls that named a model beyond the tracked set, so
+	// the summary reports an honest total instead of a silently truncated one.
+	modelsDropped atomic.Int64
+
 	// Response-time accounting for captured exchanges, in milliseconds.
 	// Kept as three separate counters rather than a histogram: a session is a
 	// few dozen turns, so a mean and a max answer "was the agent slow, and how
@@ -113,14 +120,47 @@ func (s *Stats) Snapshot() Snapshot {
 	}
 }
 
-// RecordModel increments the usage count for a model.
+// maxTrackedModels caps the distinct model names a session tracks. The name
+// comes from the request body, so its cardinality is the client's: an agent (or
+// a loop hitting the proxy) that varies the model field per request would grow
+// this map without bound for the life of the process. A real session uses a
+// handful of models; the rest are counted in ModelsDropped and reported as
+// "other".
+const maxTrackedModels = 16
+
+// maxModelNameLen caps one model name's length. A name is client-supplied text
+// copied verbatim from the request body, so without this a single multi-megabyte
+// "model" string is retained for the session and printed into the summary.
+const maxModelNameLen = 64
+
+// RecordModel increments the usage count for a model. Names past
+// maxTrackedModels are counted in ModelsDropped rather than tracked
+// individually.
 func (s *Stats) RecordModel(model string) {
 	if model == "" {
 		return
 	}
-	v, _ := s.models.LoadOrStore(model, &atomic.Int64{})
+	if len(model) > maxModelNameLen {
+		model = model[:maxModelNameLen]
+	}
+	if v, loaded := s.models.Load(model); loaded {
+		v.(*atomic.Int64).Add(1)
+		return
+	}
+	if s.modelNames.Load() >= maxTrackedModels {
+		s.modelsDropped.Add(1)
+		return
+	}
+	v, loaded := s.models.LoadOrStore(model, &atomic.Int64{})
+	if !loaded {
+		s.modelNames.Add(1)
+	}
 	v.(*atomic.Int64).Add(1)
 }
+
+// ModelsDropped returns the number of requests whose model was not tracked
+// individually because the tracked set was full.
+func (s *Stats) ModelsDropped() int64 { return s.modelsDropped.Load() }
 
 // Models returns a snapshot of model usage counts, sorted by count descending.
 func (s *Stats) Models() []ModelCount {
@@ -252,6 +292,15 @@ func (s *Stats) Summary() string {
 
 	// Line 4: model breakdown (only if we tracked any).
 	models := s.Models()
+	if dropped := s.ModelsDropped(); dropped > 0 {
+		// Name more than the tracked set allows: say so rather than print a
+		// breakdown that silently omits the rest.
+		if len(models) == 0 {
+			sb.WriteString(fmt.Sprintf("\nmodels: %d untracked (more than %d distinct)", dropped, maxTrackedModels))
+		} else {
+			models = append(models, ModelCount{Name: "other", Count: dropped})
+		}
+	}
 	if len(models) > 0 {
 		sb.WriteString("\nmodels: ")
 		parts := make([]string, 0, len(models))

@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -140,6 +141,65 @@ func TestRecordModelEmpty(t *testing.T) {
 	models := s.Models()
 	if len(models) != 0 {
 		t.Fatalf("expected no models recorded for empty string, got %d", len(models))
+	}
+}
+
+// The model name arrives from the request body, so the distinct-name set is the
+// client's to grow. Recording must stop at the cap and account for the rest.
+func TestRecordModelDistinctNamesBounded(t *testing.T) {
+	s := &Stats{}
+	for i := range maxTrackedModels * 3 {
+		s.RecordModel(fmt.Sprintf("model-%d", i))
+	}
+	if got := len(s.Models()); got != maxTrackedModels {
+		t.Errorf("tracked %d distinct models, want the cap %d", got, maxTrackedModels)
+	}
+	if got, want := s.ModelsDropped(), int64(maxTrackedModels*2); got != want {
+		t.Errorf("ModelsDropped = %d, want %d", got, want)
+	}
+	// A name already inside the cap still counts after it is full.
+	s.RecordModel("model-0")
+	if got := s.ModelsDropped(); got != maxTrackedModels*2 {
+		t.Errorf("recording a tracked name changed ModelsDropped to %d", got)
+	}
+	for _, m := range s.Models() {
+		if m.Name == "model-0" && m.Count != 2 {
+			t.Errorf("model-0 count = %d, want 2", m.Count)
+		}
+	}
+}
+
+// The summary must not present a capped breakdown as if it were the whole one.
+func TestSummaryReportsUntrackedModels(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(1)
+	s.Flushed.Store(1)
+	s.RecordModel("claude-3-opus")
+	for i := range maxTrackedModels * 2 {
+		s.RecordModel(fmt.Sprintf("other-%d", i))
+	}
+
+	got := s.Summary()
+	if !strings.Contains(got, "claude-3-opus (1)") {
+		t.Errorf("tracked model missing from summary: %q", got)
+	}
+	if !strings.Contains(got, "other (") {
+		t.Errorf("summary omits the untracked remainder: %q", got)
+	}
+}
+
+// One model name is client-supplied text copied verbatim from the request body;
+// it must not be retained or printed at unbounded length.
+func TestRecordModelTruncatesLongName(t *testing.T) {
+	s := &Stats{}
+	s.RecordModel(strings.Repeat("m", maxModelNameLen*10))
+
+	models := s.Models()
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+	if len(models[0].Name) != maxModelNameLen {
+		t.Errorf("model name length = %d, want %d", len(models[0].Name), maxModelNameLen)
 	}
 }
 

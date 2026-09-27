@@ -120,6 +120,13 @@ reuse. A continuation neither re-queries nor advances decay, so
 the turn counter tracks distinct *intents*, not raw requests. First turn and an
 empty window always recall.
 
+Reuse is bounded by `intentCacheTTL` (2 minutes). The sidecar writes memories
+into the same vault throughout the session, including ones that answer a
+question that recalled nothing earlier, so a cached window or a cached miss
+goes stale against the vault the injector itself keeps changing. Past the TTL
+the query is re-asked. A tool-use round trip is seconds, so the bound costs
+nothing on the path reuse exists for.
+
 ### 2. How to recall — `semantic`
 
 MuninnDB offers four recall presets. Benchmarked on a labeled SQuAD corpus

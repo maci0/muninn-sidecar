@@ -347,6 +347,80 @@ func TestEnrichEmptyResults(t *testing.T) {
 	}
 }
 
+// The negative cache suppresses a repeated intent that already recalled
+// nothing. The sidecar writes memories into the same vault during the session,
+// so that "nothing" stops being true; past the TTL the query must be re-asked
+// rather than answered from a verdict the vault has since overtaken.
+func TestNegativeCacheExpires(t *testing.T) {
+	var recalls atomic.Int32
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		recalls.Add(1)
+		w.Write(fakeRecallResponse(nil))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second})
+	clock := time.Now()
+	inj.now = func() time.Time { return clock }
+
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"how do we deploy"}]}`)
+	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
+		t.Fatal(err)
+	}
+	// Within the TTL the repeated intent is served from the negative cache.
+	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
+		t.Fatal(err)
+	}
+	if got := recalls.Load(); got != 1 {
+		t.Fatalf("recall fired %d times inside the TTL, want 1 (negative cache)", got)
+	}
+
+	// Past it, the vault is re-queried.
+	clock = clock.Add(intentCacheTTL + time.Second)
+	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
+		t.Fatal(err)
+	}
+	if got := recalls.Load(); got != 2 {
+		t.Errorf("recall fired %d times, want 2 after the intent cache expired", got)
+	}
+}
+
+// The same staleness applies to a reused window: a continuation inside the TTL
+// reuses it, one past the TTL re-recalls.
+func TestIntentWindowReuseExpires(t *testing.T) {
+	var recalls atomic.Int32
+	srv := newRecallServer(func(w http.ResponseWriter, r *http.Request) {
+		recalls.Add(1)
+		w.Write(fakeRecallResponse([]memory{
+			{ID: "m1", Concept: "deploy", Content: "deploy content", Score: 0.9},
+		}))
+	})
+	defer srv.Close()
+
+	inj := New(Config{MCPURL: srv.URL, Timeout: 2 * time.Second, Budget: 2048})
+	clock := time.Now()
+	inj.now = func() time.Time { return clock }
+
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"how do we deploy"}]}`)
+	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
+		t.Fatal(err)
+	}
+	if got := recalls.Load(); got != 1 {
+		t.Fatalf("recall fired %d times for a continuation, want 1 (window reuse)", got)
+	}
+
+	clock = clock.Add(intentCacheTTL + time.Second)
+	if _, _, err := inj.Enrich(t.Context(), body); err != nil {
+		t.Fatal(err)
+	}
+	if got := recalls.Load(); got != 2 {
+		t.Errorf("recall fired %d times, want 2 after the intent cache expired", got)
+	}
+}
+
 // The recall query is the user's raw latest turn, so it carries whatever PII
 // they typed. Only the scrubbed form may reach the memory backend.
 func TestEnrichRedactsQueryBeforeRecall(t *testing.T) {
