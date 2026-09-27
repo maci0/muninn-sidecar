@@ -109,6 +109,28 @@ minor bump is safe.
   `ERA` (commented-out code) were never selected, so a suppression that silences
   a whole line or a whole file, and a block of code left commented out, passed
   silently. The tree passes all five today.
+
+- **ruff selects `ALL`.** The list of enabled groups was hand-kept, and it only
+  grows when someone remembers to extend it, so whole correctness families
+  (airflow, tryceratops, eradicate, flake8-2020, todo/fixme hygiene) ran never
+  while the style families stayed on. Five ignores replace the list, each with
+  its reason: `COM` (the formatter owns trailing commas), `CPY` (per-file
+  copyright headers), `D` (docstring prose; the rules contradict each other and
+  the tree fails them), `PLR2004` (inline dataset thresholds) and `T20` (`print`
+  in a script that reports what it wrote). `preview` stays off, so a ruff bump
+  can still land a stable rule but never an unopted-into preview one.
+
+- **The Makefile's own recipes are linted.** `make lint-non-go` shellchecked
+  `git ls-files '*.sh'`, which cannot see a Makefile, so the ~200 lines of shell
+  that every contributor and every CI job runs were the least-checked shell in
+  the repo. `make lint-make` dry-runs each goal and shellchecks what make would
+  have run; the goal list comes out of the `.PHONY` declaration, so a target
+  added later is covered without an edit. It runs as part of `make lint-non-go`,
+  and therefore in CI. It found two unquoted command substitutions in the recipe
+  bodies (both now `xargs -0`), an unquoted `$(go env ...)` inside a message
+  that printed a split path when `GOPATH` held a space, and three unquoted
+  `$pkg` in the fuzz loop, which broke on a module path containing a space.
+
 - **A staticcheck on the wrong version now fails `make lint-go` instead of
   warning.** `make tools` is a separate command, so the copy on PATH can be
   older than the pin while still satisfying the presence gate, and a different

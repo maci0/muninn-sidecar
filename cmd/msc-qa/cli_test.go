@@ -145,16 +145,28 @@ func FuzzLastNonEmptyLine(f *testing.F) {
 	})
 }
 
+// FuzzBuildCLIPrompt: what the prompt must carry is the *sanitized* question
+// and context, not the caller's raw strings. buildCLIPrompt runs both through
+// redact.Secrets and marker neutralization on the way in, by design, so an
+// input the redactor rewrites is in the prompt under its rewritten form.
+// Asserting the raw strings made this target fail on its own crasher
+// (a context that redacts) and taught the fuzzer that redaction is a defect.
 func FuzzBuildCLIPrompt(f *testing.F) {
 	f.Add("question", "context")
 	f.Add("", "")
+	f.Add("0s00+00000000", "0s00+00000000")
 	f.Fuzz(func(t *testing.T, q, c string) {
 		p := buildCLIPrompt(q, c)
-		if !strings.Contains(p, q) {
-			t.Fatalf("prompt missing question %q", q)
+		if !strings.Contains(p, fenceQuestion(q)) {
+			t.Fatalf("prompt missing fenced question %q", fenceQuestion(q))
 		}
-		if c != "" && !strings.Contains(p, c) {
-			t.Fatalf("prompt missing non-empty context %q", c)
+		// A context fence exists exactly when there is context to put in it.
+		hasFence := strings.Contains(p, apiformat.ContextPrefix)
+		if want := sanitizeBlock(c) != ""; hasFence != want {
+			t.Fatalf("prompt context fence = %v, want %v (context %q)", hasFence, want, c)
+		}
+		if want := sanitizeBlock(c); want != "" && !strings.Contains(p, want) {
+			t.Fatalf("prompt missing context %q", want)
 		}
 	})
 }

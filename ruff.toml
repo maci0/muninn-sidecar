@@ -8,57 +8,36 @@ line-length = 100
 target-version = "py310"
 
 [lint]
-select = [
-    "F",    # pyflakes: unused/undefined names, shadowed imports
-    "E",    # pycodestyle errors
-    "W",    # pycodestyle warnings
-    "I",    # import order
-    "UP",   # pyupgrade: modern syntax for the pinned target
-    "B",    # flake8-bugbear: mutable defaults, shadowed loop vars, ...
-    "SIM",  # flake8-simplify
-    "C4",   # comprehensions
-    "RET",  # return flow
-    "PIE",  # misc lints
-    "PT",   # pytest style
-    "PL",   # pylint
-    "RUF",  # ruff-specific, incl. RUF100 (dead noqa)
-    "S",    # bandit: assert/eval/weak-hash/subprocess misuse
-    "BLE",  # blind except
-    "ANN",  # missing type annotations
-    "ARG",  # unused function arguments
-    "TID",  # banned imports (relative imports above the top level, etc.)
-    "TC",   # typing-only imports belong in a TYPE_CHECKING block
-    "FA",   # __future__ imports that the pinned target already defaults to
-    "A",    # builtin shadowing (a parameter named `id` or `type`)
-    "T10",  # debugger left in the source
-    "EM",   # exception messages must not be string literals
-    "TRY",  # try/except/finally footguns
-    "G",    # logging format
-    "PERF", # per-call performance traps
-    "FURB", # modern rewrites of the same semantics
-    "SLOT", # dataclass __slots__ sanity
-    "SLF",  # private member access from outside the class
-    "PTH",  # os.path/open() where pathlib belongs
-    "DTZ",  # naive datetimes where an aware one is meant
-    "ISC",  # implicit string concat that reads as one token
-    "LOG",  # logger misuse
-    "FBT",  # boolean trap (positional bools)
-    "Q",    # quote consistency beyond the formatter's style
-    "EXE",  # shebang and executable-bit agreement
-    "N",    # pep8-naming: class/function/variable naming conventions
-    "PGH",  # pygrep-hooks: blanket `# noqa` and `# type: ignore` (PGH003/004)
-    "RSE",  # unnecessary raise / raise-from (never reached, or bare `raise`)
-    "PLW",  # pylint warnings (already-error checks kept out of `PL`)
-    "FLY",  # static string joins and splits
-    "ERA",  # commented-out code
-]
-# `COM` is deliberately absent: COM812's missing trailing commas are the
-# formatter's call, and the two rules disagree on the same lines.
+# `ALL`, not a hand-kept list of prefixes: a list only grows when someone
+# remembers to extend it, and whole correctness families (airflow,
+# tryceratops, eradicate, flake8-2020, todo/fixme hygiene) sat off that way
+# while the style families stayed on. The tree passes the whole set today, so
+# the strictest configuration ruff offers is also the free one. `preview` stays
+# off, so `ALL` means the stable rule set: a ruff bump can still land a new
+# stable rule, but never a preview one nobody opted into.
+select = ["ALL"]
+
 ignore = [
+    # Trailing commas belong to `ruff format`, which adds them; COM812 reports
+    # their absence, so the two rules disagree on the same lines and only one of
+    # them edits the file.
+    "COM",
+    # Copyright headers. The repo carries its licence at the top level, and the
+    # rule's own message asks for a "Copyright (c) [year] [fullname]"
+    # placeholder rather than naming one.
+    "CPY",
+    # Docstring prose, not docstring defects. The rules contradict each other:
+    # ruff reports D212/D213 and D203/D211 as incompatible and drops one of
+    # each pair on every run, so which half is live is not readable here. The
+    # tree also fails them today, so enabling the family means editing prose
+    # before any of its useful half is checking anything.
+    "D",
     # Dataset converters carry their thresholds inline (page counts, minimum
     # answer length): they are read next to the filter that uses them, and
     # naming all of them would bury the conversion logic.
     "PLR2004",
+    # `print` in a script whose job is to write datasets and say what it wrote.
+    "T20",
 ]
 
 [lint.per-file-ignores]

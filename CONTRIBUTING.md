@@ -142,9 +142,10 @@ supply-chain property. `make vuln` (and CI) then mainly guards stdlib CVEs.
 - **`-race` clean.** Shared state uses `sync`/`sync/atomic`; the store worker is
   single-goroutine by design.
 - **gofmt + `go vet` + staticcheck clean.** No new warnings. The non-Go files
-  are held to the same bar: `ruff` (`ruff.toml`) for every tracked `*.py`,
-  `shellcheck`
-  for every tracked `*.sh`, `yamllint` (`.yamllint.yml`) for the workflow YAML.
+  are held to the same bar: `ruff` (`ruff.toml`, rule set `ALL`) for every
+  tracked `*.py`, `shellcheck` for every tracked `*.sh` and for this repo's own
+  Makefile recipes (`make lint-make`, which reads the goal list out of
+  `.PHONY`), `yamllint` (`.yamllint.yml`) for the workflow YAML.
   All of them are required, locally and in CI, and CI runs `make lint-ci` with
   the two Python linters pinned in the Makefile, so a different local ruff
   version is the one thing that can turn a green run red.

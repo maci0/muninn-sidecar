@@ -28,7 +28,7 @@ BUILDFLAGS = -trimpath -buildvcs=false
 CGO = CGO_ENABLED=0
 
 .PHONY: help doctor tools tools-staticcheck tools-govulncheck check build build-all build-matrix install \
-	test test-short test-fast cover lint lint-go lint-non-go lint-ci lint-available check-race check-release \
+	test test-short test-fast cover lint lint-go lint-non-go lint-make lint-ci lint-available check-race check-release \
 	go-version-check vet vuln fmt \
 	fmt-check tidy tidy-check clean eval eval-models fuzz bench versions
 
@@ -93,6 +93,7 @@ help:
 	@echo '  make build-matrix compile for every GOOS/GOARCH the CI build job covers'
 	@echo '  make lint-go      go vet + staticcheck only, the pair CI runs'
 	@echo '  make lint-non-go  shellcheck + ruff + yamllint only, the three CI runs'
+	@echo '  make lint-make    shellcheck over this Makefile'"'"'s own recipes, read out of .PHONY'
 	@echo '  make lint-ci      lint-non-go with the pinned ruff/yamllint (what the CI lint job runs)'
 	@echo '  make tidy         go mod tidy, writing the result'
 	@echo '  make tidy-check   fail if go mod tidy changes go.mod/go.sum'
@@ -179,7 +180,9 @@ check-race:
 # and the same install CI does. Split per tool so a job that needs one linter
 # does not pay to build the other.
 tools: tools-staticcheck tools-govulncheck
-	@echo "installed into $$(go env GOBIN || echo $$(go env GOPATH)/bin); that directory must be on PATH"
+	@gobin=$$(go env GOBIN); \
+	 if [ -z "$$gobin" ]; then gobin=$$(go env GOPATH)/bin; fi; \
+	 echo "installed into $$gobin; that directory must be on PATH"
 
 tools-staticcheck:
 	go install $(STATICCHECK_PKG)
@@ -319,14 +322,14 @@ FUZZTIME ?= 5s
 # would turn the CI fuzz job green without fuzzing anything.
 fuzz:
 	@set -e; ran=0; for pkg in $$(go list ./...); do \
-	  targets=$$(go test -list '^Fuzz' $$pkg) || \
+	  targets=$$(go test -list '^Fuzz' "$$pkg") || \
 	    { echo "go test -list failed for $$pkg" >&2; exit 1; }; \
 	  for fn in $$(printf '%s\n' "$$targets" | grep '^Fuzz' || true); do \
 	    ran=$$((ran + 1)); \
 	    echo "== $$pkg $$fn =="; \
-	    go test $$pkg -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) && continue; \
+	    go test "$$pkg" -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) && continue; \
 	    echo "   retrying $$fn once (a real crasher is saved to testdata and re-fails; this only absorbs loaded-runner 'context deadline exceeded' flakes)"; \
-	    go test $$pkg -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) || exit 1; \
+	    go test "$$pkg" -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) || exit 1; \
 	  done; \
 	done; \
 	if [ "$$ran" -eq 0 ]; then \
@@ -356,10 +359,10 @@ YAMLLINT    ?= yamllint
 # finding would print "not installed" and the target would still succeed.
 exe = $(firstword $(1))
 
-lint-non-go:
+lint-non-go: lint-make
 	@command -v $(call exe,$(SHELLCHECK)) >/dev/null 2>&1 || { \
 	  echo "shellcheck is required (CI runs it): https://www.shellcheck.net/#install" >&2; exit 1; }
-	$(SHELLCHECK) $$(git ls-files '*.sh')
+	git ls-files -z '*.sh' | xargs -0 -r -- $(SHELLCHECK)
 	@command -v $(call exe,$(RUFF)) >/dev/null 2>&1 || { \
 	  echo "ruff is required (CI runs it): uv tool install ruff" >&2; exit 1; }
 	$(RUFF) check .
@@ -367,6 +370,40 @@ lint-non-go:
 	@command -v $(call exe,$(YAMLLINT)) >/dev/null 2>&1 || { \
 	  echo "yamllint is required (CI runs it): uv tool install yamllint" >&2; exit 1; }
 	$(YAMLLINT) .
+
+# The recipes above are the build, so they are shell code too, and the pass
+# over `git ls-files '*.sh'` above never sees them: a Makefile is not a .sh
+# file. `make -n <target>` expands one target into the shell lines make would
+# run, which is what shellcheck needs, and the goal list is read back out of
+# the .PHONY declaration, so a target added later is covered by the same run
+# instead of needing an edit here. The .PHONY list is also the whole coverage
+# claim: a target that is not declared there is not checked, and every target
+# in this Makefile is.
+#
+# One target at a time, not all of them in one dry run: make prints the recipes
+# end to end with nothing between them, and the first recipe's `exit` makes
+# every later line unreachable, so one concatenated script is ~100 SC2317
+# findings that say nothing about the code.
+#
+# The dry runs still evaluate the $(shell ...) calls in the variable
+# definitions above, and those only read git, the Go version and the clock, so
+# nothing is built, installed or run. Their stdout is captured into a variable
+# rather than piped, so a make failure is not hidden behind shellcheck's exit
+# status, and make's own "Nothing to be done for" chatter (it prints those on
+# stdout) is dropped with the rest of stderr.
+#
+# LINT_MAKE_DRY_RUN is the recursion guard. `make -n` executes a recipe line
+# containing $(MAKE) rather than printing it, and lint-ci has one, so without
+# the guard a dry run of lint-ci runs it for real, which reaches this target
+# for real, which dry-runs the goal list again.
+lint-make:
+	@if [ -n "$$LINT_MAKE_DRY_RUN" ]; then echo 'lint-make: already inside a dry run, skipping'; exit 0; fi; \
+	 for t in $$(make -qp 2>/dev/null | sed -n 's/^\.PHONY: *//p'); do \
+	   out=$$(LINT_MAKE_DRY_RUN=1 $(MAKE) --no-print-directory -n "$$t" 2>/dev/null) \
+	     || { echo "make -n $$t failed" >&2; exit 1; }; \
+	   printf '%s\n' "$$out" | $(SHELLCHECK) -s bash - \
+	     || { echo "shellcheck: findings in the $$t recipe" >&2; exit 1; }; \
+	 done
 
 lint: lint-go lint-non-go
 
