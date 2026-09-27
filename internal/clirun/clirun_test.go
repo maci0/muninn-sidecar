@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,60 @@ func TestRunDeliversStdin(t *testing.T) {
 	}
 	if out != prompt {
 		t.Errorf("child read %d bytes, want the %d-byte prompt", len(out), len(prompt))
+	}
+}
+
+// A user-supplied command line has to survive a binary installed under a path
+// with a space in it, which is the norm on Windows (C:\Program Files\...) and
+// common elsewhere. Whitespace splits fields; quoted whitespace does not.
+func TestSplitCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"plain", "claude -p", []string{"claude", "-p"}},
+		{"extra spaces", "  claude   -p  ", []string{"claude", "-p"}},
+		{"windows program files", `"C:\Program Files\Git\bin\bash.exe" -c "echo hi"`,
+			[]string{`C:\Program Files\Git\bin\bash.exe`, "-c", "echo hi"}},
+		{"an unquoted path with a space still splits", `C:\Program Files\bash.exe`,
+			[]string{`C:\Program`, `Files\bash.exe`}},
+		{"double quotes hold a path with spaces", `"/opt/my agent/bin/agent" --flag`,
+			[]string{"/opt/my agent/bin/agent", "--flag"}},
+		{"single quotes hold a space", `agent -p 'what is x'`,
+			[]string{"agent", "-p", "what is x"}},
+		{"empty quoted field is kept", `agent "" x`, []string{"agent", "", "x"}},
+		{"unterminated quote takes the rest", `agent "oops`, []string{"agent", "oops"}},
+		{"empty", "   ", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SplitCommand(tt.in)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("SplitCommand(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// A command named with a quoted path must run, end to end: the split is only
+// correct if exec gets the path whole.
+func TestSplitCommandRunsQuotedPath(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "my agent")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho ran\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	argv := SplitCommand(`"` + bin + `" -x`)
+	out, err := Run(context.Background(), argv, "", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "ran\n" {
+		t.Errorf("out = %q, want %q", out, "ran\n")
 	}
 }
 

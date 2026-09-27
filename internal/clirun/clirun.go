@@ -57,6 +57,54 @@ func Run(ctx context.Context, argv []string, stdin string, timeout time.Duration
 	return out.String(), err
 }
 
+// SplitCommand turns a user-supplied command line ("claude -p", or an agent
+// installed under a path with a space in it) into argv for Run. Whitespace
+// separates fields unless it sits inside single or double quotes, which are
+// removed; that is the only quoting a user needs to name a binary, and it is
+// what Windows paths require, since C:\Program Files\... has to be written
+// "C:\Program Files\..." to survive as one argv[0].
+//
+// Backslash is not an escape character: on Windows it is a path separator, so
+// honoring shell-style backslash escapes would corrupt the very paths the
+// quoting exists to protect. An unterminated quote takes the rest of the
+// string as the field it opened.
+func SplitCommand(cmd string) []string {
+	var (
+		argv    []string
+		field   strings.Builder
+		quote   byte
+		started bool
+	)
+	flush := func() {
+		if started {
+			argv = append(argv, field.String())
+			field.Reset()
+			started = false
+		}
+	}
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			} else {
+				field.WriteByte(c)
+			}
+		case c == '\'' || c == '"':
+			quote = c
+			started = true
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			flush()
+		default:
+			field.WriteByte(c)
+			started = true
+		}
+	}
+	flush()
+	return argv
+}
+
 // IsolateProcessGroup puts the child in its own process group and replaces the
 // kill-on-timeout that exec.CommandContext installs with one that signals the
 // whole group. A CLI agent spawns helpers of its own; killing only the direct

@@ -188,7 +188,7 @@ func (r *cliRewriter) Rewrite(ctx context.Context, query string, max int) []stri
 
 func buildRewriter(cmd, url, model, key string, timeout time.Duration) rewriter {
 	if cmd != "" {
-		if argv := strings.Fields(cmd); len(argv) > 0 {
+		if argv := clirun.SplitCommand(cmd); len(argv) > 0 {
 			return &cliRewriter{name: cmd, argv: argv, timeout: timeout}
 		}
 	}

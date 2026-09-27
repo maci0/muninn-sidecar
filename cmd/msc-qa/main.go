@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/clirun"
 	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
@@ -55,7 +56,7 @@ func run() error {
 		modelURL    = flag.String("model-url", "", "OpenAI-compatible base URL (e.g. http://localhost:1234/v1); empty = build-only, no scoring")
 		modelKey    = flag.String("model-key", "", "model API key (default $OPENAI_API_KEY)")
 		model       = flag.String("model", "gpt-4o-mini", "model name(s); comma-separated to compare several")
-		modelCmd    = flag.String("model-cmd", "", "comma-separated reader CLIs (e.g. \"claude -p,codex exec --skip-git-repo-check,grok -p\"); each reads the prompt on stdin, the last non-empty stdout line is the answer")
+		modelCmd    = flag.String("model-cmd", "", "comma-separated reader CLIs (e.g. \"claude -p,codex exec --skip-git-repo-check,grok -p\"); each reads the prompt on stdin, the last non-empty stdout line is the answer (quote a path containing spaces)")
 		minScore    = flag.Float64("min-score", 0.6, "injection cosine threshold (the gate)")
 		n           = flag.Int("n", 100, "number of questions to evaluate")
 		sampleSeed  = flag.Int64("sample-seed", 1, "question-sampling shuffle seed: all eligible questions are shuffled deterministically then truncated to -n, so runs stay reproducible and paired across models")
@@ -64,7 +65,7 @@ func run() error {
 		timeout     = flag.Duration("timeout", 60*time.Second, "per-call timeout")
 		mdFile      = flag.String("md", "", "append a results row per model to this markdown file")
 		groundURL   = flag.String("ground-url", "", "add a 4th \"grounded\" arm: LLM answer-grounding filter on the injected context via an OpenAI-compatible URL")
-		groundCmd   = flag.String("ground-cmd", "", "add a 4th \"grounded\" arm via a CLI agent grounder (e.g. \"claude -p\")")
+		groundCmd   = flag.String("ground-cmd", "", "add a 4th \"grounded\" arm via a CLI agent grounder (e.g. \"claude -p\"); quote a path containing spaces")
 		groundMod   = flag.String("ground-model", "qwen2.5:7b-instruct", "grounding model name (for -ground-url)")
 		groundKey   = flag.String("ground-key", "", "grounding model API key (for -ground-url)")
 		groundTopK  = flag.Int("ground-topk", 5, "ground only the top-K recalled passages per question")
@@ -211,7 +212,7 @@ func run() error {
 		}
 	}
 	for _, cmd := range splitCSV(*modelCmd) {
-		if argv := strings.Fields(cmd); len(argv) > 0 {
+		if argv := clirun.SplitCommand(cmd); len(argv) > 0 {
 			readers = append(readers, &cliClient{name: cmd, argv: argv, timeout: *timeout})
 		}
 	}

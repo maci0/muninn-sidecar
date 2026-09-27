@@ -134,25 +134,20 @@ func (c *cliClient) label() string { return c.name }
 // recalled memory block, and /proc/<pid>/cmdline exposes argv to every user on
 // the host for the life of the call. Same reasoning as the CLI grounder in
 // internal/grounding.
+//
+// clirun.Run does the running, so this client also inherits the output cap and
+// the process-group kill the other two CLI backends have: a reader that
+// overran its deadline took only its direct child down before, leaving any
+// helper it spawned running past the call.
 func (c *cliClient) answer(ctx context.Context, question, contextBlock string) (string, error) {
-	cctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
 	prompt := buildCLIPrompt(question, contextBlock)
-	// clirun, not a bare exec.CommandContext: the agent is a black box that
-	// prints reasoning we never parse and spawns helpers of its own. It caps the
-	// captured output (a bytes.Buffer here grows with whatever the agent prints,
-	// over an N-questions × 4-arms loop) and signals the whole process group on
-	// timeout, so a judge that forks helpers cannot orphan them past the call.
-	stdout, err := clirun.Run(cctx, c.argv, prompt, c.timeout)
-	if err != nil {
-		// A non-zero exit can still leave a usable answer on stdout (some agents
-		// exit non-zero on warnings); prefer any captured line over the error.
-		if line := lastNonEmptyLine(stdout); line != "" {
-			return line, nil
-		}
-		return "", err
+	stdout, err := clirun.Run(ctx, c.argv, prompt, c.timeout)
+	// A non-zero exit can still leave a usable answer on stdout (some agents
+	// exit non-zero on warnings); prefer any captured line over the error.
+	if line := lastNonEmptyLine(stdout); line != "" {
+		return line, nil
 	}
-	return lastNonEmptyLine(stdout), nil
+	return "", err
 }
 
 // buildCLIPrompt flattens the chat arms into one prompt string for single-shot

@@ -459,6 +459,7 @@ Flags:
       --ground-url URL      Opt-in answer-grounding rerank via an OpenAI-compatible model;
                             drops recalled passages the model says don't answer the query
       --ground-cmd CMD      Answer-grounding rerank via a CLI agent (e.g. "claude -p"); offline
+                            (quote a path containing spaces: "C:\Program Files\...\claude.exe")
       --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
       --ground-topk K       Candidates to ground per recall (default: 3)
       --ground-timeout D    In-flight grounding-call timeout (default: 10s); fails open to the gate

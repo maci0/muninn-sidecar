@@ -289,7 +289,7 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 // CLI command takes precedence over an HTTP URL when both are given.
 func New(cmd, url, model, key string, timeout time.Duration) Grounder {
 	if cmd != "" {
-		if argv := strings.Fields(cmd); len(argv) > 0 {
+		if argv := clirun.SplitCommand(cmd); len(argv) > 0 {
 			return &cliGrounder{name: cmd, argv: argv, timeout: timeout}
 		}
 	}

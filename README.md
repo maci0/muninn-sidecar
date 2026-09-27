@@ -300,6 +300,7 @@ To inspect the resolved configuration without launching anything, run `msc --dry
     --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
     --ground-url URL      Opt-in answer-grounding rerank via an OpenAI-compatible model (fast local judge, ~1s); drops recalled passages the model says don't answer the query
     --ground-cmd CMD      Answer-grounding rerank via a CLI agent (e.g. "claude -p"); frontier-quality but slow (~3.5s) — best for offline use
+                          (quote a path containing spaces: "C:\Program Files\...\claude.exe")
     --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
     --ground-topk K       Candidates to ground per recall (default: 3)
     --ground-timeout D    In-flight grounding-call timeout (default: 10s); a slow judge fails open to the cosine gate
