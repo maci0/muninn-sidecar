@@ -110,7 +110,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// the shared pipeline and the reverse proxy treat it like the plain path.
 		req.URL.Scheme = "https"
 		req.URL.Host = target
-		ir, proceed := p.instrument(w, req, time.Now())
+		ir, proceed := p.instrument(w, req, p.now())
 		if !proceed {
 			return
 		}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"hash/fnv"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -258,6 +259,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 			for k := range doc {
 				keys = append(keys, k)
 			}
+			sort.Strings(keys) // map order is per-run random; keep the log replayable
 			slog.DebugContext(ctx, "inject: unknown request format, skipping", "keys", keys)
 		}
 		return body, 0, nil // unknown format, pass through

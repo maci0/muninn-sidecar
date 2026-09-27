@@ -1,0 +1,91 @@
+package proxy
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// fakeClock is a manually advanced clock: every capture timestamp and duration
+// is a function of how far it has been advanced, so replaying the same request
+// sequence produces byte-identical exchanges.
+type fakeClock struct {
+	now time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{now: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}
+}
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
+func (c *fakeClock) Since(t time.Time) time.Duration { return c.now.Sub(t) }
+
+func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
+
+func TestCaptureIsReplayableFromClock(t *testing.T) {
+	// The upstream advances the scripted clock while the request is in flight, so
+	// each captured duration is exactly the scripted 1500ms.
+	var clock *fakeClock
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clock.advance(1500 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"msg_1","content":[{"type":"text","text":"hi"}]}`)
+	}))
+	defer upstream.Close()
+
+	// Two runs of the same request sequence against the same scripted clock must
+	// produce identical exchange bytes: timestamps and durations come from the
+	// injected clock, not the host wall clock.
+	run := func() string {
+		clock = newFakeClock()
+		rec := &recordStore{}
+		p, err := New(Config{
+			ListenAddr: "127.0.0.1:0",
+			Upstream:   upstream.URL,
+			AgentName:  "test-agent",
+			Store:      rec,
+			Clock:      clock,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr, err := p.Start()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { p.Shutdown(context.Background()) })
+
+		for i := 0; i < 3; i++ {
+			clock.advance(10 * time.Second)
+			resp, err := http.Post("http://"+addr+"/v1/messages", "application/json",
+				strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+		}
+
+		var out strings.Builder
+		for _, ex := range rec.all() {
+			b, _ := json.Marshal(ex)
+			out.Write(b)
+			out.WriteByte('\n')
+		}
+		return out.String()
+	}
+
+	first := run()
+	second := run()
+	if first != second {
+		t.Fatalf("replay diverged:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	if !strings.Contains(first, `"duration_ms":1500`) {
+		t.Errorf("expected scripted 1500ms durations in %s", first)
+	}
+}

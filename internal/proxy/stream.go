@@ -35,6 +35,7 @@ type streamCapture struct {
 	ctx        *captureCtx
 	store      Storer
 	statusCode int
+	clock      Clock
 	once       sync.Once
 
 	// Incremental SSE parsing: we track the last non-[DONE] data line
@@ -79,7 +80,7 @@ func (sc *streamCapture) finalize() {
 			return
 		}
 		respBody := sc.buildRespBody()
-		ex := buildExchange(sc.ctx, sc.statusCode, respBody)
+		ex := buildExchange(clockOrSystem(sc.clock), sc.ctx, sc.statusCode, respBody)
 		sc.store.Store(ex)
 	})
 }

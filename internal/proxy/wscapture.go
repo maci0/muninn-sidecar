@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/store"
 )
@@ -105,7 +104,7 @@ func (e *wsExchange) onServer(_ string, msg []byte) {
 			"content": []map[string]any{{"type": "text", "text": text}},
 		})
 		e.p.store.Store(&store.CapturedExchange{
-			Timestamp:  time.Now(),
+			Timestamp:  e.p.now(),
 			Agent:      e.p.agentName,
 			Method:     "WS",
 			Path:       "/backend-api/codex/responses",

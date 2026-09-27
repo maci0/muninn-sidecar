@@ -251,6 +251,12 @@ Safety bounds: line buffer capped at 1 MiB, text accumulation capped at 16 KiB, 
 
 Both the `store` and `inject` packages communicate with MuninnDB via JSON-RPC 2.0 (`tools/call`). The `mcpclient` package provides a shared client with typed errors: `ServerError` (5xx, retryable) and `ClientError` (4xx, not retryable). The store wraps this with retry logic (up to 3 attempts with exponential backoff); the injector uses it directly with tight timeouts (200ms default) since injection is latency-sensitive.
 
+### Injected Clock and Deterministic Ordering
+
+The capture path reads wall-clock time only through the `proxy.Clock` interface (`internal/proxy/clock.go`). `Config.Clock` supplies it and `SystemClock` is the default, so a test or simulator can drive request timestamps and durations from a scripted clock and replay a request sequence byte-for-byte (`TestCaptureIsReplayableFromClock`).
+
+Ordering that reaches stored or injected output is pinned the same way. The session memory window is a Go map, so `sortWindow` (`internal/inject/inject.go`) sorts by effective score and breaks ties on memory ID; without it, equally scored memories would swap places between the near-duplicate filter, the token budget, and the injected block on every run. `stats.Models` applies the same tiebreak so the session summary's model line is stable.
+
 ## Configuration
 
 Msc uses a flag-first, env-fallback, sensible-defaults approach. Every setting below resolves through `internal/config`, the single place the MuninnDB endpoint, the token, and the vault name are derived — `msc`, `msc-eval`, `msc-bench`, and `msc-qa` share it rather than each re-implementing the precedence, so a default or env var name cannot drift between them. The resolved endpoint is validated at startup (scheme must be `http`/`https`, host required), so a typo in `--mcp-url` or `MUNINN_MCP_URL` fails immediately with the offending value named, instead of surfacing as a transport error from the health check. `msc --dry-run` prints the resolved configuration (never the token) to verify it.

@@ -85,6 +85,7 @@ type Proxy struct {
 	mitmHosts      map[string]bool        // hosts to TLS-terminate; others are blind-tunneled
 	mitmAll        bool                   // intercept every CONNECT host (allowlist contained "*")
 	stats          *stats.Stats           // optional session counters (nil = no recording)
+	clock          Clock                  // source of capture timestamps and durations
 }
 
 // Config holds the parameters for creating a Proxy.
@@ -100,6 +101,7 @@ type Config struct {
 	CA             *mitm.CA     // non-nil enables TLS-MITM: CONNECT tunnels are terminated and intercepted
 	MITMHosts      []string     // extra hosts to TLS-terminate (besides the upstream host); "*" intercepts all. Others are blind-tunneled untouched.
 	Stats          *stats.Stats // optional session counters (e.g. MITM upgraded-stream count)
+	Clock          Clock        // source of capture timestamps/durations; nil = SystemClock
 }
 
 // New creates a Proxy. Use ListenAddr "127.0.0.1:0" in Config to bind to a
@@ -116,6 +118,11 @@ func New(cfg Config) (*Proxy, error) {
 		filterPatterns = defaultFilterPatterns
 	}
 
+	clock := cfg.Clock
+	if clock == nil {
+		clock = SystemClock{}
+	}
+
 	p := &Proxy{
 		listenAddr:     cfg.ListenAddr,
 		upstream:       upstream,
@@ -127,6 +134,7 @@ func New(cfg Config) (*Proxy, error) {
 		injector:       cfg.Injector,
 		ca:             cfg.CA,
 		stats:          cfg.Stats,
+		clock:          clock,
 	}
 
 	// MITM defaults to intercepting every CONNECT host: that's the whole point —
@@ -206,6 +214,12 @@ func New(cfg Config) (*Proxy, error) {
 // ListenAddr returns the actual address the proxy is listening on.
 func (p *Proxy) ListenAddr() string { return p.listenAddr }
 
+// now reads the injected clock, or the system clock when none was configured.
+func (p *Proxy) now() time.Time { return clockOrSystem(p.clock).Now() }
+
+// since reads elapsed time from the injected clock, or the system clock.
+func (p *Proxy) since(t time.Time) time.Duration { return clockOrSystem(p.clock).Since(t) }
+
 // SetMITMRoots overrides the root CAs used to verify real upstream servers on
 // the MITM forward leg. By default the system trust store is used; supply a
 // custom pool for environments with a private upstream CA (e.g. a corporate
@@ -256,7 +270,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r, ok := p.instrument(w, r, time.Now())
+	r, ok := p.instrument(w, r, p.now())
 	if !ok {
 		return // instrument already wrote an error response
 	}
@@ -391,7 +405,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 			"method", ctx.method,
 			"path", ctx.path,
 			"agent", ctx.agent,
-			"duration_ms", time.Since(ctx.start).Milliseconds())
+			"duration_ms", p.since(ctx.start).Milliseconds())
 		if p.stats != nil {
 			p.stats.UpstreamErrors.Add(1)
 		}
@@ -425,6 +439,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 			ctx:        ctx,
 			store:      p.store,
 			statusCode: resp.StatusCode,
+			clock:      p.clock,
 		}
 		return nil
 	}
@@ -466,7 +481,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 
 	if p.store != nil {
-		ex := buildExchange(ctx, resp.StatusCode, body)
+		ex := buildExchange(p.clock, ctx, resp.StatusCode, sanitizeJSON(body))
 		p.store.Store(ex)
 	}
 
@@ -505,12 +520,13 @@ func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
 }
 
 // buildExchange constructs a CapturedExchange from capture context and
-// response data. This is the single construction site for exchanges,
-// used by both the non-streaming and streaming paths. The bodies are handed
-// over as captured: stripping injected context and muninn tool traffic, and
-// deriving model/usage, all parse bodies that reach tens of MiB, so they run
-// on the store's worker goroutine (see prepareExchange) rather than here.
-func buildExchange(ctx *captureCtx, statusCode int, respBody json.RawMessage) *store.CapturedExchange {
+// response data, reading the request duration from clock. This is the single
+// construction site for exchanges, used by both the non-streaming and
+// streaming paths. The bodies are handed over as captured: stripping injected
+// context and muninn tool traffic, and deriving model/usage, all parse bodies
+// that reach tens of MiB, so they run on the store's worker goroutine (see
+// prepareExchange) rather than here.
+func buildExchange(clock Clock, ctx *captureCtx, statusCode int, respBody json.RawMessage) *store.CapturedExchange {
 	return &store.CapturedExchange{
 		Timestamp:  ctx.start,
 		Agent:      ctx.agent,
@@ -519,7 +535,7 @@ func buildExchange(ctx *captureCtx, statusCode int, respBody json.RawMessage) *s
 		ReqBody:    ctx.reqBody,
 		StatusCode: statusCode,
 		RespBody:   respBody,
-		DurationMs: time.Since(ctx.start).Milliseconds(),
+		DurationMs: clock.Since(ctx.start).Milliseconds(),
 	}
 }
 

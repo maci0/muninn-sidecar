@@ -58,8 +58,13 @@ func (s *Stats) Models() []ModelCount {
 		})
 		return true
 	})
+	// sync.Map iterates in an unspecified order, so tie the count sort on name:
+	// equally-used models must keep a fixed position in the summary line.
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].Count > out[j].Count
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Name < out[j].Name
 	})
 	return out
 }
