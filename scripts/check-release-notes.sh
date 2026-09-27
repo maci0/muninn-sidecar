@@ -27,13 +27,31 @@ status=0
 fail() { echo "release-notes: $*" >&2; status=1; }
 
 # Every released version the changelog claims, in file order, from the
-# "## [0.4.4] - <date>" headings. `sort -V` is the version-aware order, so
-# 0.10.0 sorts above 0.9.0 and a string sort cannot hide a misordered file.
+# "## [0.4.4] - <date>" headings.
 versions=$(sed -n 's/^## \[\([0-9][0-9.]*\)]\( — .*\)\?$/\1/p' "$changelog")
 [ -n "$versions" ] || fail "no released version headings in $(basename "$changelog")"
 
-[ "$versions" = "$(printf '%s\n' "$versions" | sort -Vr)" ] ||
-	fail "released sections are not in descending version order"
+# The order check compares each version to the one above it, component by
+# component, numerically: 0.10.0 is above 0.9.0, which neither a string sort
+# nor a plain `sort -V` gives portably. `sort -V` is GNU-only, and BSD sort
+# (every macOS in the release matrix) rejects it, which turned this check into
+# a silent pass-by-error on the platform the check exists to protect. A
+# missing field counts as 0, so 0.5 and 0.5.0 compare equal.
+misordered=$(printf '%s\n' "$versions" | awk '
+function vcmp(a, b,   na, nb, i, x, y) {
+	na = split(a, x, "."); nb = split(b, y, ".")
+	for (i = 1; i <= na || i <= nb; i++) {
+		va = (i <= na) ? x[i] + 0 : 0
+		vb = (i <= nb) ? y[i] + 0 : 0
+		if (va != vb) return (va > vb) ? 1 : -1
+	}
+	return 0
+}
+NR == 1 { prev = $0; next }
+{ if (vcmp(prev, $0) < 0) { print prev " before " $0; exit } prev = $0 }
+')
+[ -z "$misordered" ] ||
+	fail "released sections are not in descending version order ($misordered)"
 
 # Every version that has a heading needs a link, and every link needs a
 # heading: a heading without a link renders as dead text, a link without a

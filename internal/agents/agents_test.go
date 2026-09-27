@@ -498,13 +498,19 @@ func TestExecMITMMissingBinary(t *testing.T) {
 	}
 }
 
+// fakePEMRoots is a system-roots stand-in that passes the probe's
+// CERTIFICATE-block check. The body is not a decodable certificate, which is
+// deliberate: the probe reads block headers, not certificate bytes, so the
+// fixture does not need a generated key pair.
+const fakePEMRoots = "-----BEGIN CERTIFICATE-----\nZmFrZS1yb290\n-----END CERTIFICATE-----\n"
+
 func TestWriteCombinedCABundle(t *testing.T) {
 	dir := t.TempDir()
 	rootsPath := filepath.Join(dir, "roots.pem")
 	caPath := filepath.Join(dir, "ca-cert.pem")
-	const roots = "FAKE SYSTEM ROOTS" // no trailing newline: separator must be inserted
+	const roots = fakePEMRoots // no trailing newline: separator must be inserted
 	const ca = "FAKE MSC CA\n"
-	if err := os.WriteFile(rootsPath, []byte(roots), 0o600); err != nil {
+	if err := os.WriteFile(rootsPath, []byte(strings.TrimSuffix(roots, "\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(caPath, []byte(ca), 0o600); err != nil {
@@ -525,9 +531,76 @@ func TestWriteCombinedCABundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != roots+"\n"+ca {
+	if want := strings.TrimSuffix(roots, "\n") + "\n" + ca; string(got) != want {
 		t.Fatalf("bundle content = %q, want system roots followed by CA", got)
 	}
+}
+
+// The macOS stub, in shape: a readable file naming the keychain, with no
+// certificate in it.
+const keychainStub = "# Mac OS X / OpenSSL PEM file\n" +
+	"# This file is a placeholder; the system roots live in the keychain.\n"
+
+// A bundle path that exists but holds no certificates is not a root store.
+// macOS's /etc/ssl/cert.pem is exactly that, and accepting it would write a
+// ca-bundle.pem holding msc's CA alone and point SSL_CERT_FILE at it, leaving
+// the child trusting one certificate.
+func TestFirstPEMRootsRejectsAFileWithNoCertificates(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "cert.pem")
+	if err := os.WriteFile(stub, []byte(keychainStub), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b := firstPEMRoots([]string{stub}); b != nil {
+		t.Errorf("a file with no CERTIFICATE block was accepted as system roots: %q", b)
+	}
+}
+
+// The probe has to keep looking past a stub rather than stop at the first
+// readable file, so a real bundle later in the list still wins.
+func TestFirstPEMRootsSkipsAStubAndUsesTheRealBundle(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "stub.pem")
+	real := filepath.Join(dir, "roots.pem")
+	if err := os.WriteFile(stub, []byte(keychainStub), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(real, []byte(fakePEMRoots), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(firstPEMRoots([]string{stub, real})); got != fakePEMRoots {
+		t.Errorf("probe returned %q, want the real bundle past the stub", got)
+	}
+}
+
+// With only a stub to find, the probe reports no roots, and that has to reach
+// both callers: no bundle written, and the trust-store-replacing variables
+// left unset rather than pointed at msc's CA alone.
+func TestStubRootsLeaveTrustStoreAlone(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "cert.pem")
+	if err := os.WriteFile(stub, []byte(keychainStub), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b := writeCABundleFrom(t, stub); b != "" {
+		t.Errorf("wrote a combined bundle from a stub: %q", b)
+	}
+}
+
+// writeCABundleFrom writes the combined bundle from the roots firstPEMRoots
+// finds at path, and returns the bundle path ("" when it wrote none).
+func writeCABundleFrom(t *testing.T, path string) string {
+	t.Helper()
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca-cert.pem")
+	if err := os.WriteFile(caPath, []byte("FAKE MSC CA\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bundlePath, err := writeCABundle(caPath, firstPEMRoots([]string{path}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bundlePath
 }
 
 // A dry-run preview lists the trust-store-replacing variables only when
@@ -540,7 +613,7 @@ func TestHasSystemCABundleMatchesTheBundleItWouldWrite(t *testing.T) {
 	if err := os.WriteFile(caPath, []byte("FAKE MSC CA\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(rootsPath, []byte("FAKE SYSTEM ROOTS\n"), 0o600); err != nil {
+	if err := os.WriteFile(rootsPath, []byte(fakePEMRoots), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SSL_CERT_FILE", rootsPath)

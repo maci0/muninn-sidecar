@@ -105,7 +105,7 @@ func cmdCA(o *opts) int {
 	fmt.Printf("SHA-256:             %s\n", fingerprint)
 	fmt.Println("\nmsc trusts this CA in agents it launches with --mitm automatically.")
 	fmt.Println("To trust it elsewhere (browser, system store, or a custom HTTPS client):")
-	for _, line := range caTrustHints(runtime.GOOS, certPath) {
+	for _, line := range caTrustHints(runtime.GOOS, certPath, agents.HasSystemCABundle()) {
 		fmt.Println(line)
 	}
 	return 0
@@ -116,7 +116,16 @@ func cmdCA(o *opts) int {
 // tests on the one platform they run on: `export` is not a cmd or PowerShell
 // command, and the cert path lives under %AppData%, which routinely contains a
 // space and so needs quoting there.
-func caTrustHints(goos, certPath string) []string {
+// caTrustHints returns the lines telling the user how to trust the CA outside
+// an msc-launched agent. goos is a parameter so both shells are covered by
+// tests on the one platform they run on: `export` is not a cmd or PowerShell
+// command, and the cert path lives under %AppData%, which routinely contains a
+// space and so needs quoting there. hasBundle is the system-roots probe's own
+// answer, not the OS name: the combined bundle is written when a PEM root
+// bundle is found, and Windows and macOS are both platforms where the roots
+// live in an OS store instead of a file, so naming a bundle there would point
+// at a file msc never writes.
+func caTrustHints(goos, certPath string, hasBundle bool) []string {
 	nodeCA := "export NODE_EXTRA_CA_CERTS=" + certPath
 	if goos == "windows" {
 		nodeCA = `$env:NODE_EXTRA_CA_CERTS = "` + certPath + `"`
@@ -127,13 +136,10 @@ func caTrustHints(goos, certPath string) []string {
 		"  # DENO_CERT replace the default roots, so they need a bundle of the system roots plus",
 		"  # this CA. msc builds that at " + agents.CABundlePath(certPath) + " when it launches an agent with --mitm.",
 	}
-	if goos == "windows" {
-		// Windows keeps its roots in the OS certificate store, not in a PEM
-		// file, so there is no system bundle for msc to prepend this CA to and
-		// no combined bundle to point those variables at.
-		hints[1] = "  # Windows keeps its trusted roots in the OS certificate store, not in a PEM file, so"
-		hints[2] = "  # there is no system bundle for msc to prepend this CA to. Set NODE_EXTRA_CA_CERTS"
-		hints[3] = "  # above, or import the certificate into the store (certmgr.msc, Trusted Root CAs)."
+	if !hasBundle {
+		hints[1] = "  # No system PEM root bundle was found (Windows and macOS keep their trusted roots in an"
+		hints[2] = "  # OS store, not a PEM file), so there is no system bundle for msc to prepend this CA to."
+		hints[3] = "  # Set NODE_EXTRA_CA_CERTS above, or import the certificate into the system trust store."
 	}
 	return hints
 }

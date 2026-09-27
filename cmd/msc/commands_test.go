@@ -593,7 +593,7 @@ func firstLine(s string) string {
 // under %AppData% usually contains a space, so the value has to be quoted.
 func TestCATrustHintsPerPlatform(t *testing.T) {
 	winPath := `C:\Users\a b\AppData\Roaming\muninn-sidecar\mitm\ca-cert.pem`
-	win := strings.Join(caTrustHints("windows", winPath), "\n")
+	win := strings.Join(caTrustHints("windows", winPath, false), "\n")
 	if strings.Contains(win, "export ") {
 		t.Errorf("windows hints must not print a POSIX export line: %s", win)
 	}
@@ -605,11 +605,25 @@ func TestCATrustHintsPerPlatform(t *testing.T) {
 	}
 
 	unixPath := "/home/u/.config/muninn-sidecar/mitm/ca-cert.pem"
-	unix := strings.Join(caTrustHints("darwin", unixPath), "\n")
+	unix := strings.Join(caTrustHints("linux", unixPath, true), "\n")
 	if !strings.Contains(unix, "export NODE_EXTRA_CA_CERTS="+unixPath) {
 		t.Errorf("posix hints must keep the export line: %s", unix)
 	}
 	if !strings.Contains(unix, agents.CABundlePath(unixPath)) {
 		t.Errorf("posix hints must name the combined bundle: %s", unix)
+	}
+}
+
+// macOS keeps its roots in the keychain, so no combined bundle is written
+// there, and the hint must not name one. The branch is keyed on the probe's
+// answer rather than the OS, so this holds on any host that finds no roots.
+func TestCATrustHintsOmitTheBundleWhereNoneIsWritten(t *testing.T) {
+	macPath := "/Users/u/Library/Application Support/muninn-sidecar/mitm/ca-cert.pem"
+	mac := strings.Join(caTrustHints("darwin", macPath, false), "\n")
+	if strings.Contains(mac, "ca-bundle.pem") {
+		t.Errorf("no combined bundle is written without system roots, so naming one misleads: %s", mac)
+	}
+	if !strings.Contains(mac, "export NODE_EXTRA_CA_CERTS="+macPath) {
+		t.Errorf("the additive variable still applies: %s", mac)
 	}
 }

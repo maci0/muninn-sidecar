@@ -25,9 +25,16 @@ const (
 	DefaultVault = "sidecar"
 )
 
-// tokenFile is the bearer-token file MuninnDB writes on first start, relative
-// to the user's home directory.
-const tokenFile = ".muninn/mcp.token"
+// tokenDir and tokenFile are the bearer-token file MuninnDB writes on first
+// start, relative to the user's home directory. Two constants rather than one
+// ".muninn/mcp.token", so the caller joins them with filepath.Join: a literal
+// slash there is a path separator on Unix but only a character inside a
+// filename on Windows, where it would leave the path with two separators and
+// the wrong one between them.
+const (
+	tokenDir  = ".muninn"
+	tokenFile = "mcp.token"
+)
 
 // tokenFileEnv overrides where the bearer-token file is read from, for a
 // deployment that keeps MuninnDB's token outside the default home-directory
@@ -191,7 +198,7 @@ func TokenFilePath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, tokenFile)
+	return filepath.Join(home, tokenDir, tokenFile)
 }
 
 // Token resolves the MuninnDB bearer token: the flag value if non-empty, else

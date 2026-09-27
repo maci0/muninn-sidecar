@@ -91,6 +91,26 @@ func TestGateReportsEachViolation(t *testing.T) {
 			want: "not in descending version order",
 		},
 		{
+			name: "two-digit minor below nine is out of order",
+			body: `# Changelog
+
+## [Unreleased]
+
+## [0.9.0] — 2026-09-27
+
+- something
+
+## [0.10.0] — 2026-08-01
+
+- something older
+
+[unreleased]: https://example.test/compare/v0.10.0...HEAD
+[0.9.0]: https://example.test/releases/tag/v0.9.0
+[0.10.0]: https://example.test/releases/tag/v0.10.0
+`,
+			want: "not in descending version order",
+		},
+		{
 			name: "no unreleased section",
 			body: strings.Replace(validChangelog, "## [Unreleased]\n\n", "", 1),
 			tag:  "v0.5.0",
@@ -113,6 +133,31 @@ func TestGateReportsEachViolation(t *testing.T) {
 				t.Errorf("gate output does not name the violation %q:\n%s", tc.want, out)
 			}
 		})
+	}
+}
+
+// The order check compares versions component by component, numerically: 0.10.0
+// is above 0.9.0. A string sort gets this backwards and would fail the valid
+// changelog below, so the case pins the comparison the release gate needs.
+func TestGateAcceptsTwoDigitMinorAboveNine(t *testing.T) {
+	body := `# Changelog
+
+## [Unreleased]
+
+## [0.10.0] — 2026-09-27
+
+- something
+
+## [0.9.0] — 2026-08-01
+
+- something older
+
+[unreleased]: https://example.test/compare/v0.9.0...HEAD
+[0.10.0]: https://example.test/releases/tag/v0.10.0
+[0.9.0]: https://example.test/releases/tag/v0.9.0
+`
+	if out, err := run(t, body, "v0.10.0"); err != nil {
+		t.Errorf("gate rejected 0.10.0 above 0.9.0: %v\n%s", err, out)
 	}
 }
 

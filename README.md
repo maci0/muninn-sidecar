@@ -68,12 +68,16 @@ differ by platform and are handled rather than assumed:
   it signals the agent process handle directly; SIGINT is still left to the
   kernel, since the agent shares msc's process group either way.
 - **MITM trust.** `SSL_CERT_FILE` and friends need a file to point at, so on
-  Linux and macOS the combined CA bundle is built from the system bundle msc
-  can find (`/etc/ssl/certs/ca-certificates.crt`,
+  Linux the combined CA bundle is built from the system bundle msc can find
+  (`/etc/ssl/certs/ca-certificates.crt`,
   `/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`,
-  `/etc/ssl/cert.pem`, or `$SSL_CERT_FILE`). Windows keeps its roots in the OS
-  certificate store rather than a PEM file, so there is nothing to combine
-  with; `msc ca` says so instead of naming a bundle that is never written.
+  `/etc/ssl/cert.pem`, or `$SSL_CERT_FILE`); a candidate holding no
+  certificate is skipped, since macOS and Windows both ship a file at
+  `/etc/ssl/cert.pem` with no roots in it. Where no bundle is found, macOS and
+  Windows keep their roots in the OS certificate store rather than a PEM file,
+  so there is nothing to combine with; `msc ca` says so instead of naming a
+  bundle that is never written, and the variables that would replace the
+  child's trust store stay unset.
 
 ## Usage
 

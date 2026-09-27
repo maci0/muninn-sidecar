@@ -42,6 +42,24 @@ configuration changes** (see `CONTRIBUTING.md`). Every such entry opens with
   in the one tunnel path where the log line naming the failure is all the
   operator gets. `writeStatus` now takes the ID, which both call sites already
   held.
+- **MITM trust on macOS no longer points at a bundle holding one certificate.**
+  The system CA bundle probe accepted the first file it could read, and macOS
+  ships `/etc/ssl/cert.pem` as a stub naming the keychain with no certificates
+  in it. msc wrote a `ca-bundle.pem` holding nothing but its own CA and pointed
+  `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` at it, leaving the
+  launched agent unable to verify any other host. A candidate with no
+  `CERTIFICATE` block is now skipped and the probe continues, so a real bundle
+  later in the list still wins.
+- **`msc ca` names a combined bundle only where one is written.** The hint
+  branched on the OS name, so it promised a `ca-bundle.pem` on macOS that msc
+  never writes. It now takes the system-roots probe's own answer.
+- **The release gate's version order check works on BSD.** It compared with
+  `sort -V`, which GNU-only: BSD `sort` rejected it, so `make check-release`
+  lost the check on macOS. Versions are now compared component by component,
+  numerically, which also keeps 0.10.0 above 0.9.0.
+- **The MuninnDB token path is built with the platform separator.** The home
+  path joined a literal `.muninn/mcp.token`, which is a separator on Unix and
+  an ordinary filename character on Windows.
 
 ### Security
 

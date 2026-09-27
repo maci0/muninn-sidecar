@@ -27,10 +27,10 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	var args []string
 	if o.mitm {
 		// A combined system-roots+CA bundle only exists where msc can find a
-		// system bundle to combine with. Where none exists (Windows keeps its
-		// roots in the OS store), ExecMITM passes an empty bundle path and the
-		// trust-store-replacing variables stay unset, so the preview must not
-		// list them.
+		// system bundle to combine with. Where none exists (Windows and macOS
+		// keep their roots in an OS store, not a PEM file), ExecMITM passes an
+		// empty bundle path and the trust-store-replacing variables stay unset,
+		// so the preview must not list them.
 		bundlePath := ""
 		if agents.HasSystemCABundle() {
 			bundlePath = agents.CABundlePath(caCertPath)
