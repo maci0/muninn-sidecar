@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/stats"
 )
 
 // maxToolNames caps tracked tool names to prevent unbounded growth in
@@ -34,6 +35,7 @@ type streamCapture struct {
 	io.ReadCloser
 	ctx        *captureCtx
 	store      Storer
+	stats      *stats.Stats // optional session counters (nil = no recording)
 	statusCode int
 	clock      Clock
 	once       sync.Once
@@ -73,7 +75,9 @@ func (sc *streamCapture) Close() error {
 }
 
 // finalize stores the captured exchange exactly once, whether triggered by
-// EOF in Read() or by Close().
+// EOF in Read() or by Close(). The exchange's DurationMs is the full stream
+// time (arrival to last byte), so the latency sample is recorded here rather
+// than in captureResponse, which would only have seen the first byte.
 func (sc *streamCapture) finalize() {
 	sc.once.Do(func() {
 		if sc.store == nil {
@@ -81,6 +85,9 @@ func (sc *streamCapture) finalize() {
 		}
 		respBody := sc.buildRespBody()
 		ex := buildExchange(clockOrSystem(sc.clock), sc.ctx, sc.statusCode, respBody)
+		if sc.stats != nil {
+			sc.stats.ObserveLatency(ex.DurationMs)
+		}
 		sc.store.Store(ex)
 	})
 }
@@ -117,7 +124,7 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 			if len(data) <= maxStreamBuf {
 				sc.lineBuf = append(sc.lineBuf[:0], data...)
 			} else {
-				slog.Warn("SSE line buffer exceeded limit, dropping partial line", "len", len(data), "path", sc.ctx.path)
+				slog.Warn("SSE line buffer exceeded limit, dropping partial line", "request_id", sc.ctx.id, "len", len(data), "path", sc.ctx.path)
 			}
 			break
 		}

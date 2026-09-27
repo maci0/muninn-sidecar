@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -2263,3 +2264,224 @@ func errorsNew(s string) error { return &strErr{s} }
 type strErr struct{ s string }
 
 func (e *strErr) Error() string { return e.s }
+
+func TestErrorHandlerCountsProxyErrors(t *testing.T) {
+	// A transport failure the agent sees as a 502 is msc's own fault, not an
+	// upstream error response: the session summary must count it separately.
+	st := &stats.Stats{}
+	p := &Proxy{agentName: "claude", stats: st}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	p.errorHandler(rec, req, errorsNew("boom"))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("expected 502, got %d", rec.Code)
+	}
+	if got := st.ProxyErrors.Load(); got != 1 {
+		t.Errorf("ProxyErrors = %d, want 1", got)
+	}
+	if got := st.UpstreamErrors.Load(); got != 0 {
+		t.Errorf("transport failure must not count as an upstream error, got %d", got)
+	}
+}
+
+func TestErrorHandlerCancelNotCounted(t *testing.T) {
+	// A client interrupt is normal operation, not a proxy fault: no 502, no
+	// counter, so the summary doesn't cry wolf on every user Ctrl-C.
+	st := &stats.Stats{}
+	p := &Proxy{agentName: "claude", stats: st}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	p.errorHandler(rec, req, context.Canceled)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("canceled request must not get an error response, got %d", rec.Code)
+	}
+	if got := st.ProxyErrors.Load(); got != 0 {
+		t.Errorf("ProxyErrors = %d, want 0", got)
+	}
+}
+
+func TestRequestIDCorrelatesLogs(t *testing.T) {
+	// Every request gets a distinct correlation ID, it reaches the capture
+	// context, and it appears on the upstream-error log line — the field that
+	// ties one agent turn's log lines together.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"error":{"type":"rate_limit_error"}}`)
+	}))
+	defer upstream.Close()
+
+	st := &stats.Stats{}
+	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: upstream.URL, AgentName: "claude", Stats: st})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+	for range 2 {
+		resp, err := http.Post("http://"+addr+"/v1/messages", "application/json", strings.NewReader(`{"model":"m"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	ids := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Msg       string `json:"msg"`
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line is not valid JSON: %v (%s)", err, line)
+		}
+		if entry.Msg != "upstream error response" {
+			continue
+		}
+		if entry.RequestID == "" {
+			t.Fatalf("upstream error log line has no request_id: %s", line)
+		}
+		if ids[entry.RequestID] {
+			t.Errorf("request_id %q reused across two requests", entry.RequestID)
+		}
+		ids[entry.RequestID] = true
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 distinct request_ids, got %d: %s", len(ids), logs.String())
+	}
+	if got := st.UpstreamErrors.Load(); got != 2 {
+		t.Errorf("UpstreamErrors = %d, want 2", got)
+	}
+}
+
+func TestCaptureResponseRecordsLatency(t *testing.T) {
+	// Non-streaming: the full response is in hand when the sample is taken, so
+	// the session summary can report how slow the agent's turns got.
+	rec := &recordStore{}
+	st := &stats.Stats{}
+	p := &Proxy{store: rec, stats: st}
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req = req.WithContext(withCapture(req.Context(), &captureCtx{
+		start: time.Now().Add(-1500 * time.Millisecond),
+		path:  req.URL.Path,
+		agent: "claude",
+	}))
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"hi"}]}`)),
+		Request:    req,
+	}
+
+	if err := p.captureResponse(resp); err != nil {
+		t.Fatalf("captureResponse: %v", err)
+	}
+	n, mean, max := st.Latency()
+	if n != 1 || mean < 1500 || max < 1500 {
+		t.Fatalf("Latency() = (%d, %d, %d), want one sample of >=1500ms", n, mean, max)
+	}
+}
+
+func TestStreamCaptureRecordsFullStreamLatency(t *testing.T) {
+	// A streaming turn is timed to its last byte, not its first: the sample is
+	// recorded in finalize, after the deltas have been read.
+	clock := newFakeClock()
+	st := &stats.Stats{}
+	sc := &streamCapture{
+		ReadCloser: io.NopCloser(strings.NewReader("data: {\"type\":\"content_block_delta\"}\n\n")),
+		ctx:        &captureCtx{start: clock.Now(), path: "/v1/messages", agent: "claude"},
+		store:      &recordStore{},
+		stats:      st,
+		clock:      clock,
+	}
+
+	// Read the stream without hitting EOF (which finalizes on its own), let
+	// the clock run, then close: the sample covers the whole stream.
+	buf := make([]byte, 16)
+	if n, err := sc.Read(buf); n == 0 || (err != nil && err != io.EOF) {
+		t.Fatalf("read: n=%d err=%v", n, err)
+	}
+	clock.advance(2 * time.Second)
+	sc.Close()
+
+	if n, _, max := st.Latency(); n != 1 || max != 2000 {
+		t.Fatalf("Latency() = (%d, _, %d), want one 2000ms sample", n, max)
+	}
+}
+
+func TestStatusEndpointReportsSessionState(t *testing.T) {
+	// The status endpoint is the operator's entry point when the agent is
+	// misbehaving: it must report the counters and latency the session recorded,
+	// without forwarding the request upstream or storing it as a memory.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("status request reached the upstream: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer upstream.Close()
+
+	st := &stats.Stats{}
+	rec := &recordStore{}
+	st.Flushed.Store(3)
+	st.UpstreamErrors.Store(1)
+	st.ObserveLatency(1200)
+	st.ObserveLatency(300)
+
+	p, err := New(Config{ListenAddr: "127.0.0.1:0", Upstream: upstream.URL, AgentName: "claude", Store: rec, Stats: st})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	resp, err := http.Get("http://" + addr + StatusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q", ct)
+	}
+
+	var body struct {
+		Status string `json:"status"`
+		Agent  string `json:"agent"`
+		Stats  stats.Snapshot
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Status != "ok" || body.Agent != "claude" {
+		t.Errorf("unexpected body: %+v", body)
+	}
+	if body.Stats.Saved != 3 || body.Stats.UpstreamError != 1 {
+		t.Errorf("counters not reported: %+v", body.Stats)
+	}
+	if body.Stats.LatencyN != 2 || body.Stats.LatencyMeanMs != 750 || body.Stats.LatencyMaxMs != 1200 {
+		t.Errorf("latency not reported: %+v", body.Stats)
+	}
+	if n := len(rec.all()); n != 0 {
+		t.Errorf("status request must not be captured, got %d exchanges", n)
+	}
+}

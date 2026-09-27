@@ -29,6 +29,13 @@ const dedupRingSize = 8
 // maxBatchSize is the maximum number of memories sent in a single MuninnDB call.
 const maxBatchSize = 10
 
+// dropLogEvery throttles the queue-full warning. A full queue drops one
+// exchange per Store call, so warning on each drop turns a sustained MuninnDB
+// outage into one warn line per agent turn and buries everything else. The
+// first drop always warns and every dropLogEvery-th after it; Stats.Dropped
+// carries the exact count.
+const dropLogEvery = 100
+
 // formattedMemory holds a pre-formatted exchange ready for MuninnDB.
 type formattedMemory struct {
 	concept string
@@ -54,7 +61,8 @@ type MuninnStore struct {
 	// goroutine, which is already running by the time it is installed, so it
 	// needs its own synchronization rather than the startup ordering.
 	prepareMu sync.RWMutex
-	prepare   Preparer // capture-side normalization, run on the worker (nil = bodies stored as captured)
+	prepare   Preparer     // capture-side normalization, run on the worker (nil = bodies stored as captured)
+	dropped   atomic.Int64 // exchanges dropped on a full queue (drives the throttled warning)
 
 	// flushCtx governs MCP flush calls and their retries. It stays live for the
 	// whole session (so transient blips get full retries), and Drain arms a
@@ -172,9 +180,12 @@ func (s *MuninnStore) Store(ex *CapturedExchange) {
 	select {
 	case s.queue <- ex:
 	default:
-		slog.Warn("muninn store queue full, dropping exchange", "path", ex.Path)
 		if s.stats != nil {
 			s.stats.Dropped.Add(1)
+		}
+		if n := s.dropped.Add(1); n == 1 || n%dropLogEvery == 0 {
+			slog.Warn("muninn store queue full, dropping exchanges",
+				"path", ex.Path, "dropped_total", n)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1274,4 +1275,33 @@ func TestSetPreparerConcurrentWithStore(t *testing.T) {
 	close(stop)
 	wg.Wait()
 	s.Drain()
+}
+
+func TestStoreQueueFullWarningIsThrottled(t *testing.T) {
+	// A sustained MuninnDB outage drops one exchange per request; warning on
+	// every drop buries the rest of the log. The first drop and every 100th
+	// after it are logged, and the exact count goes to Stats.
+	st := &stats.Stats{}
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	// No worker and a zero-capacity queue: every Store is a drop.
+	s := &MuninnStore{queue: make(chan *CapturedExchange), stats: st}
+	const drops = dropLogEvery*2 + 1
+	for range drops {
+		s.Store(&CapturedExchange{Path: "/v1/messages"})
+	}
+
+	if got := st.Dropped.Load(); got != drops {
+		t.Errorf("Dropped = %d, want %d", got, drops)
+	}
+	if got := s.dropped.Load(); got != drops {
+		t.Errorf("internal drop count = %d, want %d", got, drops)
+	}
+	warnings := strings.Count(logs.String(), "queue full")
+	if want := 3; warnings != want {
+		t.Errorf("queue-full warnings = %d, want %d (first, then every %d):\n%s", warnings, want, dropLogEvery, logs.String())
+	}
 }

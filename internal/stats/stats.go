@@ -24,6 +24,7 @@ type Stats struct {
 	CacheRead   atomic.Int64 // Anthropic cache_read_input_tokens
 
 	UpstreamErrors atomic.Int64 // captured responses with a 4xx/5xx status from the upstream LLM API
+	ProxyErrors    atomic.Int64 // requests the proxy failed itself (dial/TLS/transport error, agent got a 502)
 
 	Injections      atomic.Int64 // requests enriched with recalled memories
 	InjectedTokens  atomic.Int64 // approximate tokens injected across all enrichments
@@ -37,6 +38,79 @@ type Stats struct {
 	Upgraded        atomic.Int64 // protocol-upgrade (e.g. WebSocket) streams spliced through MITM but not captured
 
 	models sync.Map // model name → *atomic.Int64
+
+	// Response-time accounting for captured exchanges, in milliseconds.
+	// Kept as three separate counters rather than a histogram: a session is a
+	// few dozen turns, so a mean and a max answer "was the agent slow, and how
+	// slow was the worst turn" without the storage a distribution would cost.
+	latencyN   atomic.Int64 // completed exchanges observed
+	latencySum atomic.Int64 // summed response time
+	latencyMax atomic.Int64 // slowest response observed
+}
+
+// ObserveLatency records one completed exchange's response time in
+// milliseconds. Negative values are ignored: a clock that ran backwards
+// would otherwise pull the session mean below zero.
+func (s *Stats) ObserveLatency(ms int64) {
+	if ms < 0 {
+		return
+	}
+	s.latencyN.Add(1)
+	s.latencySum.Add(ms)
+	for {
+		cur := s.latencyMax.Load()
+		if ms <= cur || s.latencyMax.CompareAndSwap(cur, ms) {
+			return
+		}
+	}
+}
+
+// Latency returns the number of observed exchanges, the mean response time in
+// milliseconds, and the slowest response in milliseconds. All three are 0 when
+// nothing has been observed.
+func (s *Stats) Latency() (n, meanMs, maxMs int64) {
+	n = s.latencyN.Load()
+	if n == 0 {
+		return 0, 0, 0
+	}
+	return n, s.latencySum.Load() / n, s.latencyMax.Load()
+}
+
+// Snapshot is a point-in-time copy of the session counters, for the status
+// endpoint and anything else that needs the numbers outside Summary's
+// human-readable rendering.
+type Snapshot struct {
+	Captured      int64 `json:"captured"`
+	Saved         int64 `json:"saved"`
+	Dropped       int64 `json:"dropped"`
+	SaveErrors    int64 `json:"save_errors"`
+	UpstreamError int64 `json:"upstream_errors"`
+	ProxyErrors   int64 `json:"proxy_errors"`
+	Injections    int64 `json:"injections"`
+	InjectErrors  int64 `json:"injection_errors"`
+	Recalls       int64 `json:"recalls"`
+	LatencyN      int64 `json:"latency_samples"`
+	LatencyMeanMs int64 `json:"latency_mean_ms"`
+	LatencyMaxMs  int64 `json:"latency_max_ms"`
+}
+
+// Snapshot returns the current counter values.
+func (s *Stats) Snapshot() Snapshot {
+	n, mean, max := s.Latency()
+	return Snapshot{
+		Captured:      s.Captured.Load(),
+		Saved:         s.Flushed.Load(),
+		Dropped:       s.Dropped.Load(),
+		SaveErrors:    s.FlushErrors.Load(),
+		UpstreamError: s.UpstreamErrors.Load(),
+		ProxyErrors:   s.ProxyErrors.Load(),
+		Injections:    s.Injections.Load(),
+		InjectErrors:  s.InjectionErrors.Load(),
+		Recalls:       s.Recalls.Load(),
+		LatencyN:      n,
+		LatencyMeanMs: mean,
+		LatencyMaxMs:  max,
+	}
 }
 
 // RecordModel increments the usage count for a model.
@@ -90,8 +164,10 @@ func (s *Stats) Summary() string {
 
 	upgraded := s.Upgraded.Load()
 	upstreamErrors := s.UpstreamErrors.Load()
+	proxyErrors := s.ProxyErrors.Load()
 
-	if captured == 0 && dropped == 0 && injections == 0 && upgraded == 0 && upstreamErrors == 0 {
+	if captured == 0 && dropped == 0 && injections == 0 && upgraded == 0 &&
+		upstreamErrors == 0 && proxyErrors == 0 {
 		return ""
 	}
 
@@ -114,10 +190,21 @@ func (s *Stats) Summary() string {
 	if upstreamErrors > 0 {
 		sb.WriteString(fmt.Sprintf(", %d upstream errors", upstreamErrors))
 	}
+	if proxyErrors > 0 {
+		sb.WriteString(fmt.Sprintf(", %d proxy errors", proxyErrors))
+	}
 	// Individual atomic loads are non-atomic as a group, so a concurrent flush
 	// can make the arithmetic transiently negative; clamp before display.
 	if queued := max(captured-dropped-flushed-deduped-skipped-errors, 0); queued > 0 {
 		sb.WriteString(fmt.Sprintf(" (%d queued)", queued))
+	}
+
+	// Response time for the turns that completed. Without this a session that
+	// got slower shows no sign of it: the exchange and token counts look the
+	// same on a fast and a degraded upstream.
+	if n, meanMs, maxMs := s.Latency(); n > 0 {
+		sb.WriteString(fmt.Sprintf("\nlatency: %s avg, %s slowest (%d completed)",
+			formatDuration(meanMs), formatDuration(maxMs), n))
 	}
 
 	// Line 2: token totals (only if we saw any).
@@ -186,5 +273,19 @@ func formatCount(n int64) string {
 		return fmt.Sprintf("%.1fK", float64(n)/1_000)
 	default:
 		return fmt.Sprintf("%d", n)
+	}
+}
+
+// formatDuration formats a millisecond duration for the summary line: whole
+// milliseconds below a second, then seconds with one decimal, then minutes
+// (LLM turns of several minutes are normal for large contexts).
+func formatDuration(ms int64) string {
+	switch {
+	case ms < 1_000:
+		return fmt.Sprintf("%dms", ms)
+	case ms < 60_000:
+		return fmt.Sprintf("%.1fs", float64(ms)/1_000)
+	default:
+		return fmt.Sprintf("%.1fmin", float64(ms)/60_000)
 	}
 }

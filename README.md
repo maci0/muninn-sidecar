@@ -218,6 +218,33 @@ SSE streaming responses are handled incrementally — chunks flow through to the
 
 `msc` sets a per-agent `MSC_UPSTREAM_<AGENT>` sentinel (e.g. `MSC_UPSTREAM_CLAUDE`) in the child environment so a nested `msc` for the same agent detects the real upstream and avoids infinite proxy loops, while a nested `msc` for a different agent resolves its own upstream.
 
+## Seeing what the sidecar is doing
+
+When the agent misbehaves, three things answer the usual questions: did the turn succeed, how long did it take, and which dependency failed.
+
+**End of session.** `msc` prints a summary on exit: memories saved/deduped/skipped/dropped, save errors, upstream errors, proxy errors, token totals, injection counts, the per-model breakdown, and the mean and slowest response time.
+
+**The status endpoint.** The proxy itself answers `GET /__msc/health` while the session is running (the port is printed in the startup line, or is random with `--dry-run` showing the plan):
+
+```console
+$ curl -s http://127.0.0.1:41287/__msc/health
+{"status":"ok","agent":"claude","upstream":"https://api.anthropic.com","uptime_s":214,"stats":{"captured":9,"saved":9,"dropped":0,"save_errors":0,"upstream_errors":1,"proxy_errors":0,"injections":6,"injection_errors":0,"recalls":7,"latency_samples":9,"latency_mean_ms":4310,"latency_max_ms":18720}}
+```
+
+It is a liveness endpoint: it does not probe MuninnDB, so a MuninnDB outage shows up as climbing `save_errors` rather than as a failing probe. Reachability is checked once at startup, and `msc` refuses to launch without `--force`.
+
+**The logs.** Text on stderr by default, JSON with `--log-json`. The default level is WARN, so a healthy session is quiet; `--debug` adds per-request detail. Every request gets a `request_id` (`req-1`, `req-2`, …) carried in the request context, never in a header, and every log line on the request path carries it, so the lines belonging to one turn can be picked out when a session interleaves several:
+
+```console
+$ msc --debug claude
+time=2026-09-27T11:41:21.944+08:00 level=WARN msg="upstream error response" request_id=req-1 status=429 method=POST path=/v1/messages agent=claude duration_ms=812
+time=2026-09-27T11:41:21.950+08:00 level=ERROR msg="proxy error" request_id=req-2 err="dial tcp 127.0.0.1:1: connect: connection refused" method=POST path=/v1/messages agent=claude
+```
+
+With `--log-json` the same lines are JSON objects, so a log pipeline can key on `level`, `msg`, and `request_id` without parsing a message string.
+
+A 4xx/5xx from the provider is a warn (the provider refused) and counts as an upstream error; a failure msc itself causes is an error and counts as a proxy error; a request you cancelled (Ctrl-C in the agent) is debug-level noise and counts as neither. See [ARCHITECTURE.md](ARCHITECTURE.md#observability) for the full picture.
+
 ## Configuration
 
 ### Environment variables

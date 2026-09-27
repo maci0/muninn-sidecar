@@ -255,7 +255,17 @@ Both the `store` and `inject` packages communicate with MuninnDB via JSON-RPC 2.
 
 The capture path reads wall-clock time only through the `proxy.Clock` interface (`internal/proxy/clock.go`). `Config.Clock` supplies it and `SystemClock` is the default, so a test or simulator can drive request timestamps and durations from a scripted clock and replay a request sequence byte-for-byte (`TestCaptureIsReplayableFromClock`).
 
-Ordering that reaches stored or injected output is pinned the same way. The session memory window is a Go map, so `sortWindow` (`internal/inject/inject.go`) sorts by effective score and breaks ties on memory ID; without it, equally scored memories would swap places between the near-duplicate filter, the token budget, and the injected block on every run. `stats.Models` applies the same tiebreak so the session summary's model line is stable.
+Ordering that reaches stored or injected output is pinned the same way. The session memory window is a Go map, so `sortByScore` (`internal/inject/window.go`) sorts by effective score and breaks ties on memory ID; without it, equally scored memories would swap places between the near-duplicate filter, the token budget, and the injected block on every run. `stats.Models` applies the same tiebreak so the session summary's model line is stable.
+
+## Observability
+
+`msc` logs through `log/slog` to stderr: text by default, JSON with `--log-json` for a log pipeline. The default level is WARN, so a healthy session prints only the two startup lines and the end-of-session summary; `--debug` adds the per-request detail. A handful of messages use the INFO level for information the WARN default would otherwise hide entirely (WebSocket frame types under `MSC_WS_DEBUG`, auto-calibration results), which is intentional: an operator who turns on debug wants them.
+
+**Correlation.** Every request mints a `request_id` (`req-<n>`, from a process-wide counter) and carries it in the request context, not in a header — the forwarded request must stay byte-identical to what the agent sent. Every log line on the request path (inject failure, upstream error response, capture skip, proxy transport error, dropped stream line) carries it, so the lines belonging to one agent turn can be picked out of a session that interleaves several. The exchange stored in MuninnDB is keyed by timestamp, path, and agent, not by this ID, so a turn is found in the memory store by its content.
+
+**What a turn reports.** Upstream failures (4xx/5xx) are logged at warn with status, method, path, agent, and `duration_ms`, and counted in `Stats.UpstreamErrors`. Failures msc causes itself (dial/TLS/transport error, agent gets a 502) are logged at error and counted separately in `Stats.ProxyErrors`, so the session summary distinguishes "the provider refused" from "the sidecar could not reach it". A client that cancels mid-flight (the user interrupting the agent) is debug-level noise and counts as neither. Response time is sampled once per completed exchange — full body for a non-streaming response, last byte for a stream — and reported as mean and max.
+
+**Counters.** `Stats` is the single counter set, incremented from the proxy, the store worker, and the injector. It is printed in the end-of-session summary, and served as JSON on the proxy's own `GET /__msc/health` (`proxy.StatusPath`), which reports the agent, upstream, uptime, and a `stats.Snapshot`: captures, saved, dropped, save errors, upstream and proxy errors, injections, injection errors, recalls, and the latency samples. The endpoint is liveness only — it does not probe MuninnDB, so a MuninnDB outage shows up as climbing save errors rather than as a failing probe. Reachability is checked once at startup instead (`msc` refuses to launch without `--force`).
 
 ## Configuration
 
@@ -278,6 +288,7 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach. Every setting b
 | Grounding in-flight timeout | `--ground-timeout` | — | 10s (slow judge fails open to the cosine gate) |
 | Recall timeout | — | — | 200ms per MCP call |
 | Debug logging | `--debug` | — | Off (WARN level) |
+| JSON logs | `--log-json` | — | Off (text to stderr) |
 
 ## Supported Agents
 

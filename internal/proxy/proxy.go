@@ -59,6 +59,19 @@ const maxRequestBodySize = 50 << 20 // 50 MiB
 // exceeding this limit are rejected to prevent OOM from a compromised upstream.
 const maxNonStreamBodySize = 50 << 20 // 50 MiB
 
+// StatusPath is the local status endpoint served by the proxy, e.g.
+// `curl http://127.0.0.1:<port>/__msc/health`. It answers "is the sidecar up,
+// what has it captured, how long are the turns taking, and is anything failing"
+// without the operator having to read the log stream. The path is under a
+// reserved prefix no agent API uses, and it is served before the capture
+// pipeline so it is never forwarded upstream or stored as a memory.
+//
+// Liveness only: it does not probe MuninnDB, so a MuninnDB outage degrades the
+// counters reported here rather than failing the endpoint. Reachability is
+// checked once at startup (msc refuses to launch without --force) and its
+// failures show up as save errors in the snapshot.
+const StatusPath = "/__msc/health"
+
 // Proxy is a transparent reverse proxy that sits between a coding agent and
 // its LLM API upstream. All traffic is forwarded, but only requests matching
 // CapturePaths are recorded to MuninnDB (asynchronously). The agent sees the
@@ -87,6 +100,7 @@ type Proxy struct {
 	mitmAll        bool                   // intercept every CONNECT host (allowlist contained "*")
 	stats          *stats.Stats           // optional session counters (nil = no recording)
 	clock          Clock                  // source of capture timestamps and durations
+	started        time.Time              // when Start() began serving (status endpoint)
 
 	// Deadlines for the pre-request half of a hijacked tunnel, fixed at
 	// construction so no goroutine ever reads a value another one can change.
@@ -252,6 +266,7 @@ func (p *Proxy) Start() (string, error) {
 	}
 	addr := ln.Addr().String()
 	p.listenAddr = addr
+	p.started = p.now()
 
 	slog.Debug("proxy listening", "addr", addr, "upstream", redactURL(p.upstream))
 
@@ -274,6 +289,17 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 // capture), stashes metadata in the request context, then delegates to the
 // stdlib reverse proxy which calls rewrite -> upstream -> captureResponse.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Every request gets a correlation ID before anything else happens, so a
+	// log line from any stage of the pipeline (inject, upstream, capture) can
+	// be tied back to this one turn. It stays in the request context: the
+	// forwarded request must stay byte-identical to what the agent sent.
+	r = r.WithContext(withRequestID(r.Context(), nextRequestID()))
+
+	if r.URL.Path == StatusPath && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		p.serveStatus(w)
+		return
+	}
+
 	// MITM mode: an agent that routes via HTTPS_PROXY opens a tunnel with CONNECT.
 	// Terminate TLS and intercept the decrypted traffic (the same pipeline).
 	if r.Method == http.MethodConnect && p.ca != nil {
@@ -288,6 +314,41 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.reverseProxy.ServeHTTP(w, r)
 }
 
+// serveStatus answers StatusPath with the session's operational state: what
+// the sidecar is proxying, how long it has been up, and the capture/injection
+// counters, so an operator can tell a working sidecar from a silently failing
+// one without reading logs. Non-GET methods fall through to the proxy, so a
+// captured agent API path is never shadowed.
+func (p *Proxy) serveStatus(w http.ResponseWriter) {
+	var snap stats.Snapshot
+	if p.stats != nil {
+		snap = p.stats.Snapshot()
+	}
+	body := struct {
+		Status   string         `json:"status"`
+		Agent    string         `json:"agent"`
+		Upstream string         `json:"upstream"`
+		UptimeS  int64          `json:"uptime_s"`
+		Stats    stats.Snapshot `json:"stats"`
+	}{
+		Status:   "ok",
+		Agent:    p.agentName,
+		Upstream: redactURL(p.upstream),
+		Stats:    snap,
+	}
+	if !p.started.IsZero() {
+		body.UptimeS = int64(p.since(p.started).Seconds())
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	if err := enc.Encode(body); err != nil {
+		// The status line is already committed; the partial body is all the agent
+		// or operator gets, and a status endpoint is not worth a log line per hit.
+		slog.Debug("status encoding failed", "err", err)
+	}
+}
+
 // instrument applies the capture/inject pipeline shared by the plain reverse-proxy
 // path and the MITM tunnel: if the path is captured, it buffers the body (within
 // the size limit), enriches it with recalled memories, and stashes capture
@@ -295,8 +356,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // whether to proceed forwarding — false means an error response was already
 // written. Non-captured requests pass through untouched.
 func (p *Proxy) instrument(w http.ResponseWriter, r *http.Request, start time.Time) (*http.Request, bool) {
+	id := requestID(r.Context())
 	capture := p.shouldCapture(r.URL.Path)
-	slog.Debug("request", "path", r.URL.Path, "capture", capture)
+	slog.Debug("request", "request_id", id, "path", r.URL.Path, "capture", capture)
 	if !capture {
 		return r, true
 	}
@@ -306,12 +368,12 @@ func (p *Proxy) instrument(w http.ResponseWriter, r *http.Request, start time.Ti
 		var err error
 		reqBody, err = io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize+1))
 		if err != nil {
-			slog.Warn("failed to read request body for capture", "path", r.URL.Path, "err", err)
+			slog.Warn("failed to read request body for capture", "request_id", id, "path", r.URL.Path, "err", err)
 			writeJSONError(w, http.StatusInternalServerError, "failed to read request body")
 			return r, false
 		}
 		if int64(len(reqBody)) > maxRequestBodySize {
-			slog.Warn("request body exceeds size limit", "path", r.URL.Path, "limit", maxRequestBodySize)
+			slog.Warn("request body exceeds size limit", "request_id", id, "path", r.URL.Path, "limit", maxRequestBodySize)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body exceeds proxy size limit")
 			return r, false
 		}
@@ -322,7 +384,7 @@ func (p *Proxy) instrument(w http.ResponseWriter, r *http.Request, start time.Ti
 	if p.injector != nil && len(reqBody) > 0 {
 		enriched, _, err := p.injector.Enrich(r.Context(), reqBody)
 		if err != nil {
-			slog.Warn("inject enrichment failed, using original body", "path", r.URL.Path, "err", err)
+			slog.Warn("inject enrichment failed, using original body", "request_id", id, "path", r.URL.Path, "err", err)
 		} else if len(enriched) > 0 {
 			forwardBody = enriched
 		}
@@ -332,6 +394,7 @@ func (p *Proxy) instrument(w http.ResponseWriter, r *http.Request, start time.Ti
 	r.ContentLength = int64(len(forwardBody))
 
 	ctx := &captureCtx{
+		id:      id,
 		start:   start,
 		method:  r.Method,
 		path:    r.URL.Path,
@@ -399,7 +462,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// Reading it here would block on (and then destroy) the upgraded stream, so
 	// skip capture and let the reverse proxy splice the connection natively.
 	if resp.StatusCode == http.StatusSwitchingProtocols {
-		slog.Debug("skipping capture of protocol upgrade response", "path", ctx.path)
+		slog.Debug("skipping capture of protocol upgrade response", "request_id", ctx.id, "path", ctx.path)
 		return nil
 	}
 
@@ -412,6 +475,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// actionable) and counted for the session summary.
 	if resp.StatusCode >= 400 {
 		slog.Warn("upstream error response",
+			"request_id", ctx.id,
 			"status", resp.StatusCode,
 			"method", ctx.method,
 			"path", ctx.path,
@@ -426,7 +490,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// protobuf, not JSON — the extractors can't read them and storing the binary
 	// would only add noise. Skip capture; the response still forwards untouched.
 	if strings.Contains(contentType, "application/grpc") {
-		slog.Debug("skipping gRPC response capture (protobuf not decodable)", "path", ctx.path)
+		slog.Debug("skipping gRPC response capture (protobuf not decodable)", "request_id", ctx.id, "path", ctx.path)
 		return nil
 	}
 
@@ -437,7 +501,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	// and only add noise to the memory store. Skip capture (same reasoning as the
 	// gRPC skip); the body still forwards to the agent untouched.
 	if enc := resp.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "gzip") {
-		slog.Debug("skipping capture of non-gzip encoded response", "encoding", enc, "path", ctx.path)
+		slog.Debug("skipping capture of non-gzip encoded response", "request_id", ctx.id, "encoding", enc, "path", ctx.path)
 		return nil
 	}
 
@@ -449,6 +513,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 			ReadCloser: resp.Body,
 			ctx:        ctx,
 			store:      p.store,
+			stats:      p.stats,
 			statusCode: resp.StatusCode,
 			clock:      p.clock,
 		}
@@ -461,7 +526,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 		return err
 	}
 	if int64(len(body)) > maxNonStreamBodySize {
-		slog.Warn("non-streaming response exceeds size limit", "path", ctx.path, "limit", maxNonStreamBodySize)
+		slog.Warn("non-streaming response exceeds size limit", "request_id", ctx.id, "path", ctx.path, "limit", maxNonStreamBodySize)
 		return fmt.Errorf("response body exceeds %d-byte limit", maxNonStreamBodySize)
 	}
 
@@ -472,14 +537,14 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 		gr, err := gzip.NewReader(bytes.NewReader(body))
 		if err != nil {
-			slog.Warn("failed to decompress gzip response, storing raw", "path", ctx.path, "err", err)
+			slog.Warn("failed to decompress gzip response, storing raw", "request_id", ctx.id, "path", ctx.path, "err", err)
 		} else {
 			decompressed, err := io.ReadAll(io.LimitReader(gr, maxDecompressSize+1))
 			gr.Close()
 			if err != nil {
-				slog.Warn("gzip decompression incomplete, storing raw", "path", ctx.path, "err", err)
+				slog.Warn("gzip decompression incomplete, storing raw", "request_id", ctx.id, "path", ctx.path, "err", err)
 			} else if int64(len(decompressed)) > maxDecompressSize {
-				slog.Warn("gzip response exceeds decompression limit, serving compressed", "path", ctx.path, "limit", maxDecompressSize)
+				slog.Warn("gzip response exceeds decompression limit, serving compressed", "request_id", ctx.id, "path", ctx.path, "limit", maxDecompressSize)
 			} else {
 				body = decompressed
 				resp.Header.Del("Content-Encoding")
@@ -490,6 +555,14 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	}
 
 	resp.Body = io.NopCloser(bytes.NewReader(body))
+
+	// Non-streaming: the body is now fully in hand, so this is the whole
+	// response time for the turn. The streaming path measures its own at EOF
+	// (streamCapture.finalize), where the clock covers the last delta rather
+	// than just the first byte.
+	if p.stats != nil {
+		p.stats.ObserveLatency(p.since(ctx.start).Milliseconds())
+	}
 
 	if p.store != nil {
 		ex := buildExchange(p.clock, ctx, resp.StatusCode, sanitizeJSON(body))
@@ -505,10 +578,13 @@ func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) 
 	// not a proxy fault: log at debug and skip the 502 so it doesn't generate
 	// error-level noise that masks real upstream failures.
 	if errors.Is(err, context.Canceled) {
-		slog.Debug("proxy request canceled by client", "method", r.Method, "path", r.URL.Path)
+		slog.Debug("proxy request canceled by client", "request_id", requestID(r.Context()), "method", r.Method, "path", r.URL.Path)
 		return
 	}
-	slog.Error("proxy error", "err", err, "method", r.Method, "path", r.URL.Path, "agent", p.agentName)
+	slog.Error("proxy error", "request_id", requestID(r.Context()), "err", err, "method", r.Method, "path", r.URL.Path, "agent", p.agentName)
+	if p.stats != nil {
+		p.stats.ProxyErrors.Add(1)
+	}
 	writeJSONError(w, http.StatusBadGateway, "upstream request failed")
 }
 
@@ -537,6 +613,7 @@ func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
 // model/usage, all parse bodies that reach tens of MiB, so they run on the
 // store's worker goroutine (see prepareExchange) rather than here.
 func buildExchange(clock Clock, ctx *captureCtx, statusCode int, respBody json.RawMessage) *store.CapturedExchange {
+	clock = clockOrSystem(clock)
 	return &store.CapturedExchange{
 		Agent:      ctx.agent,
 		Path:       ctx.path,

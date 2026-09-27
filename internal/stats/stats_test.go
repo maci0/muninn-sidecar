@@ -283,3 +283,92 @@ func TestFormatCount(t *testing.T) {
 		}
 	}
 }
+
+func TestObserveLatency(t *testing.T) {
+	s := &Stats{}
+	s.ObserveLatency(100)
+	s.ObserveLatency(300)
+	s.ObserveLatency(200)
+
+	n, mean, max := s.Latency()
+	if n != 3 || mean != 200 || max != 300 {
+		t.Fatalf("Latency() = (%d, %d, %d), want (3, 200, 300)", n, mean, max)
+	}
+}
+
+func TestObserveLatencyIgnoresNegative(t *testing.T) {
+	// A clock that ran backwards must not pull the session mean below zero.
+	s := &Stats{}
+	s.ObserveLatency(500)
+	s.ObserveLatency(-1)
+
+	n, mean, max := s.Latency()
+	if n != 1 || mean != 500 || max != 500 {
+		t.Fatalf("Latency() = (%d, %d, %d), want (1, 500, 500)", n, mean, max)
+	}
+}
+
+func TestLatencyEmpty(t *testing.T) {
+	s := &Stats{}
+	if n, mean, max := s.Latency(); n != 0 || mean != 0 || max != 0 {
+		t.Fatalf("Latency() = (%d, %d, %d), want zeros", n, mean, max)
+	}
+}
+
+func TestSummaryWithLatency(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(2)
+	s.Flushed.Store(2)
+	s.ObserveLatency(1200)
+	s.ObserveLatency(900)
+
+	got := s.Summary()
+	if !strings.Contains(got, "latency: 1.1s avg, 1.2s slowest (2 completed)") {
+		t.Fatalf("expected latency line in summary: %q", got)
+	}
+}
+
+func TestSummaryNoLatencyLineWhenUnobserved(t *testing.T) {
+	s := &Stats{}
+	s.Captured.Store(3)
+	s.Flushed.Store(3)
+
+	if strings.Contains(s.Summary(), "latency:") {
+		t.Fatalf("latency line should be absent when nothing was observed: %q", s.Summary())
+	}
+}
+
+func TestSummaryProxyErrorsOnly(t *testing.T) {
+	// A session that only ever failed to reach the upstream (no captures) must
+	// still report it rather than printing an empty summary.
+	s := &Stats{}
+	s.ProxyErrors.Store(2)
+
+	got := s.Summary()
+	if got == "" {
+		t.Fatal("expected non-empty summary for proxy errors alone")
+	}
+	if !strings.Contains(got, "2 proxy errors") {
+		t.Fatalf("expected '2 proxy errors' in summary: %q", got)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		ms   int64
+		want string
+	}{
+		{0, "0ms"},
+		{812, "812ms"},
+		{1000, "1.0s"},
+		{45000, "45.0s"},
+		{60000, "1.0min"},
+		{243000, "4.0min"},
+	}
+
+	for _, tt := range tests {
+		if got := formatDuration(tt.ms); got != tt.want {
+			t.Errorf("formatDuration(%d) = %q, want %q", tt.ms, got, tt.want)
+		}
+	}
+}

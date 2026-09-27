@@ -8,6 +8,20 @@ import (
 	"sort"
 )
 
+// sortByScore orders memories by descending effective score, breaking ties on
+// ID. The tiebreak is required, not cosmetic: the window is a Go map, so
+// without it equal-scored memories are emitted, gated, and budget-truncated in
+// a different order on every request, and the same turn does not replay to the
+// same injected block.
+func sortByScore(mems []memory) {
+	sort.Slice(mems, func(i, j int) bool {
+		if mems[i].Score != mems[j].Score {
+			return mems[i].Score > mems[j].Score
+		}
+		return mems[i].ID < mems[j].ID
+	})
+}
+
 // snapshotWindow returns the current session window decayed at the current turn
 // WITHOUT advancing the turn counter or evicting — used on continuations, where
 // no new intent has arrived so memories should neither age nor be re-recalled.
@@ -30,12 +44,9 @@ func (inj *Injector) decayedWindowLocked(turn int) []memory {
 		m.Score = decayedScore(m.Score, turn-tm.lastSeen)
 		out = append(out, m)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Score != out[j].Score {
-			return out[i].Score > out[j].Score
-		}
-		return out[i].ID < out[j].ID
-	})
+	if len(out) > 1 {
+		sortByScore(out)
+	}
 	return out
 }
 
