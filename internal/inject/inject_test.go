@@ -454,6 +454,44 @@ func TestNegativeCacheExpiresBeforeIntentTTL(t *testing.T) {
 	}
 }
 
+// A clock that steps backwards must not pin a cached verdict in place. The
+// production SystemClock answers Since from the monotonic reading, so an NTP
+// correction does not rewind it; a clock without one (a script, another
+// implementation of clock.Clock) reports a negative age, and every age
+// comparison against a TTL is true for a negative number, so a stale
+// "recalled nothing" would suppress recall for as long as the clock stayed
+// behind. ageSince reports such a reading as aged out instead.
+func TestAgeSinceTreatsARewoundClockAsAgedOut(t *testing.T) {
+	start := time.Date(2026, 3, 29, 1, 30, 0, 0, time.UTC) // 01:30 on a spring-forward day
+
+	if age, ok := ageSince(&rewindingClock{at: start}, start); !ok || age != 0 {
+		t.Errorf("a clock that has not moved reports age %d (ok=%v), want 0, true", age, ok)
+	}
+	// The host clock steps back an hour: the record is now dated in the future.
+	if age, ok := ageSince(&rewindingClock{at: start.Add(-time.Hour)}, start); ok {
+		t.Errorf("a record dated in the future reported age %d, ok=true; want aged out", age)
+	}
+	// And forward, normally.
+	if age, ok := ageSince(&rewindingClock{at: start.Add(3 * time.Second)}, start); !ok || age != 3*time.Second {
+		t.Errorf("age = %d, ok = %v; want 3s, true", age, ok)
+	}
+}
+
+// rewindingClock is a wall-clock-only Clock: Unlike SystemClock it has no
+// monotonic reading, so a step back makes Since negative the way a host clock
+// that lost its monotonic reference would.
+type rewindingClock struct{ at time.Time }
+
+func (c *rewindingClock) Now() time.Time { return c.at }
+
+func (c *rewindingClock) Since(t time.Time) time.Duration { return c.at.Sub(t) }
+
+func (c *rewindingClock) After(time.Duration) <-chan time.Time { return nil }
+
+func (c *rewindingClock) NewTicker(time.Duration) clock.Ticker { return nil }
+
+func (c *rewindingClock) AfterFunc(time.Duration, func()) clock.Timer { return nil }
+
 // A session-start fetch that comes back empty is not the answer: the MCP
 // endpoint can still be coming up when the sidecar starts. The pair is
 // re-fetched on a later turn and the continuity context arrives.

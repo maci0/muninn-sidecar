@@ -276,6 +276,21 @@ func New(cfg Config) *Injector {
 	}
 }
 
+// ageSince reports how long ago the clock says t was, and whether that age can
+// be trusted as a freshness measure. It reads clk.Since, which the system clock
+// answers from the monotonic reading, so an NTP correction or a hand-set host
+// clock cannot rewind it. A clock that has genuinely moved behind t leaves the
+// record dated in the future, and that is not evidence of freshness: a cache
+// entry stamped later than now is reported as aged out, so a wall-clock step
+// backwards can never pin a stale verdict in place.
+func ageSince(clk clock.Clock, t time.Time) (time.Duration, bool) {
+	d := clk.Since(t)
+	if d < 0 {
+		return 0, false
+	}
+	return d, true
+}
+
 // Enrich parses a request body, recalls relevant memories, and injects them
 // as system-level context. Returns the enriched body and estimated injected
 // token count. Every failure is handled gracefully by returning the
@@ -360,18 +375,17 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	// The cached verdict only stands in for a fresh recall while it is young.
 	// Past intentCacheTTL the vault may hold memories this query would now
 	// match (the sidecar writes to it throughout the session), so ask again.
-	// Since, not Now().Sub: a wall-clock step backwards mid-session would
-	// otherwise make a stale verdict read as young for as long as the clock
-	// stays behind.
-	cachedFresh := inj.hasLastQuery && inj.clock.Since(inj.lastQueryAt) < intentCacheTTL
+	queryAge, queryAged := ageSince(inj.clock, inj.lastQueryAt)
+	cachedFresh := inj.hasLastQuery && queryAged && queryAge < intentCacheTTL
 	sameIntent := cachedFresh && (qhash == inj.lastQueryHash ||
 		(inj.querySimReuse < 1 && len(inj.lastQueryTokens) > 0 &&
 			jaccard(curTokens, inj.lastQueryTokens) >= inj.querySimReuse))
 	windowEmpty := len(inj.recentMemories) == 0
 	// A cached miss expires on its own, shorter clock (negativeCacheTTL): the
 	// vault it says is empty is the one this sidecar is writing the answer to.
+	emptyAge, emptyAged := ageSince(inj.clock, inj.lastEmptyAt)
 	negCached := sameIntent && windowEmpty && inj.lastWasEmpty &&
-		inj.clock.Now().Sub(inj.lastEmptyAt) < negativeCacheTTL
+		emptyAged && emptyAge < negativeCacheTTL
 	inj.mu.Unlock()
 
 	minScore := inj.currentMinScore()
