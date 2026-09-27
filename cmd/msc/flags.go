@@ -51,6 +51,19 @@ const (
 	exitUsage = 2 // usage/config errors
 )
 
+// flagValue returns the value for a flag that requires one. Written without
+// =value, the value is the following argument, so next is the index of that
+// argument; written with =value, next is i unchanged.
+func flagValue(args []string, i int, key, val string, hasVal bool) (string, int, error) {
+	if hasVal {
+		return val, i, nil
+	}
+	if i+1 >= len(args) {
+		return "", i, fmt.Errorf("%s requires a value", key)
+	}
+	return args[i+1], i + 1, nil
+}
+
 // parseFlags extracts msc's global flags from args and returns the remaining
 // positional arguments. Parsing stops at the first non-flag argument (unless
 // it is an internal command like 'list' or 'status', in which case flag parsing
@@ -161,31 +174,29 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			o.noRedact = true
 			i++
 			continue
-		case "--inject-budget":
-			v := val
-			if !hasVal {
-				i++
-				if i >= len(args) {
-					return nil, actionNone, fmt.Errorf("%s requires a value", key)
-				}
-				v = args[i]
+		case "--inject-budget", "--ground-topk":
+			v, ni, verr := flagValue(args, i, key, val, hasVal)
+			if verr != nil {
+				return nil, actionNone, verr
 			}
+			i = ni
 			n, err := strconv.Atoi(v)
 			if err != nil || n <= 0 {
-				return nil, actionNone, fmt.Errorf("--inject-budget must be a positive integer")
+				return nil, actionNone, fmt.Errorf("%s must be a positive integer", key)
 			}
-			o.injectBudget = n
+			if key == "--inject-budget" {
+				o.injectBudget = n
+			} else {
+				o.groundTopK = n
+			}
 			i++
 			continue
 		case "--inject-min-score":
-			v := val
-			if !hasVal {
-				i++
-				if i >= len(args) {
-					return nil, actionNone, fmt.Errorf("%s requires a value", key)
-				}
-				v = args[i]
+			v, ni, verr := flagValue(args, i, key, val, hasVal)
+			if verr != nil {
+				return nil, actionNone, verr
 			}
+			i = ni
 			f, err := strconv.ParseFloat(v, 64)
 			if err != nil || f <= 0 || f > 1 {
 				return nil, actionNone, fmt.Errorf("--inject-min-score must be in (0,1]")
@@ -194,14 +205,11 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			i++
 			continue
 		case "--mitm-host":
-			v := val
-			if !hasVal {
-				i++
-				if i >= len(args) {
-					return nil, actionNone, fmt.Errorf("%s requires a value", key)
-				}
-				v = args[i]
+			v, ni, verr := flagValue(args, i, key, val, hasVal)
+			if verr != nil {
+				return nil, actionNone, verr
 			}
+			i = ni
 			// Comma-separated and/or repeated; scoping implies --mitm.
 			for _, h := range strings.Split(v, ",") {
 				if h = strings.TrimSpace(h); h != "" {
@@ -212,14 +220,11 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			i++
 			continue
 		case "--recall-mode":
-			v := val
-			if !hasVal {
-				i++
-				if i >= len(args) {
-					return nil, actionNone, fmt.Errorf("%s requires a value", key)
-				}
-				v = args[i]
+			v, ni, verr := flagValue(args, i, key, val, hasVal)
+			if verr != nil {
+				return nil, actionNone, verr
 			}
+			i = ni
 			switch v {
 			case "semantic", "recent", "balanced", "deep":
 				o.recallMode = v
@@ -228,31 +233,12 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			}
 			i++
 			continue
-		case "--ground-topk":
-			v := val
-			if !hasVal {
-				i++
-				if i >= len(args) {
-					return nil, actionNone, fmt.Errorf("%s requires a value", key)
-				}
-				v = args[i]
-			}
-			n, err := strconv.Atoi(v)
-			if err != nil || n <= 0 {
-				return nil, actionNone, fmt.Errorf("--ground-topk must be a positive integer")
-			}
-			o.groundTopK = n
-			i++
-			continue
 		case "--ground-timeout":
-			v := val
-			if !hasVal {
-				i++
-				if i >= len(args) {
-					return nil, actionNone, fmt.Errorf("%s requires a value", key)
-				}
-				v = args[i]
+			v, ni, verr := flagValue(args, i, key, val, hasVal)
+			if verr != nil {
+				return nil, actionNone, verr
 			}
+			i = ni
 			d, err := time.ParseDuration(v)
 			if err != nil || d <= 0 {
 				return nil, actionNone, fmt.Errorf("--ground-timeout must be a positive duration (e.g. 10s)")
@@ -261,14 +247,11 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			i++
 			continue
 		case "--vault", "--mcp-url", "--token", "--ground-cmd", "--ground-url", "--ground-model":
-			v := val
-			if !hasVal {
-				i++
-				if i >= len(args) {
-					return nil, actionNone, fmt.Errorf("%s requires a value", key)
-				}
-				v = args[i]
+			v, ni, verr := flagValue(args, i, key, val, hasVal)
+			if verr != nil {
+				return nil, actionNone, verr
 			}
+			i = ni
 			if v == "" {
 				return nil, actionNone, fmt.Errorf("%s requires a non-empty value", key)
 			}

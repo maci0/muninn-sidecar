@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -901,47 +902,23 @@ func loadSquadQA(path string, n int) ([]qaItem, error) {
 	return out, nil
 }
 
-// loadHotpotQA reads the official HotpotQA array format ([{question, answer,
-// context, supporting_facts}]). Multi-hop questions with a single gold answer
-// (incl. yes/no). Pairs with `msc-bench -corpus hotpot` seeding.
-func loadHotpotQA(path string, n int) ([]qaItem, error) {
+// loadFlatQA reads a flat [{question, answer}] JSON, keeping the first n
+// questions that carry both. label names the source in the error text. Callers
+// pass the official HotpotQA array format ({question, answer, context,
+// supporting_facts}, multi-hop questions with a single gold answer including
+// yes/no, as seeded by `msc-bench -corpus hotpot`) or the dump format
+// `msc-bench -dump-qa` produces for an arbitrary seeded vault.
+func loadFlatQA(path, label string, n int) ([]qaItem, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read hotpot: %w", err)
+		return nil, fmt.Errorf("read %s: %w", label, err)
 	}
 	var data []struct {
 		Question string `json:"question"`
 		Answer   string `json:"answer"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, fmt.Errorf("parse hotpot: %w", err)
-	}
-	var out []qaItem
-	for _, d := range data {
-		if d.Question == "" || d.Answer == "" {
-			continue
-		}
-		out = append(out, qaItem{Question: d.Question, Answers: []string{d.Answer}})
-		if len(out) >= n {
-			break
-		}
-	}
-	return out, nil
-}
-
-// loadGenericQA reads a flat [{question, answer}] JSON (e.g. produced by
-// `msc-bench -dump-qa`), the format for arbitrary seeded vaults.
-func loadGenericQA(path string, n int) ([]qaItem, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read generic qa: %w", err)
-	}
-	var data []struct {
-		Question string `json:"question"`
-		Answer   string `json:"answer"`
-	}
-	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, fmt.Errorf("parse generic qa: %w", err)
+		return nil, fmt.Errorf("parse %s: %w", label, err)
 	}
 	var out []qaItem
 	for _, d := range data {
@@ -964,9 +941,9 @@ func loadDataset(dataset, path string, n int, seed int64) ([]qaItem, error) {
 	var err error
 	switch dataset {
 	case "hotpot":
-		qs, err = loadHotpotQA(path, math.MaxInt)
+		qs, err = loadFlatQA(path, "hotpot", math.MaxInt)
 	case "generic":
-		qs, err = loadGenericQA(path, math.MaxInt)
+		qs, err = loadFlatQA(path, "generic qa", math.MaxInt)
 	default:
 		qs, err = loadSquadQA(path, math.MaxInt)
 	}

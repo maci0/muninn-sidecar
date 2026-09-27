@@ -26,6 +26,7 @@ import (
 	"hash/fnv"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"

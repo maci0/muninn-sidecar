@@ -7,21 +7,85 @@ import (
 	"strings"
 )
 
-// squadFile is the SQuAD v1.1/v2.0 JSON shape (only the fields we need).
+// The SQuAD v1.1/v2.0 JSON shape (only the fields we need).
 type squadFile struct {
-	Data []struct {
-		Title      string `json:"title"`
-		Paragraphs []struct {
-			Context string `json:"context"`
-			QAs     []struct {
-				Question     string `json:"question"`
-				IsImpossible bool   `json:"is_impossible"`
-				Answers      []struct {
-					Text string `json:"text"`
-				} `json:"answers"`
-			} `json:"qas"`
-		} `json:"paragraphs"`
-	} `json:"data"`
+	Data []squadArticle `json:"data"`
+}
+
+type squadArticle struct {
+	Title      string      `json:"title"`
+	Paragraphs []squadPara `json:"paragraphs"`
+}
+
+type squadPara struct {
+	Context string    `json:"context"`
+	QAs     []squadQA `json:"qas"`
+}
+
+type squadQA struct {
+	Question     string        `json:"question"`
+	IsImpossible bool          `json:"is_impossible"`
+	Answers      []squadAnswer `json:"answers"`
+}
+
+type squadAnswer struct {
+	Text string `json:"text"`
+}
+
+// seedChunks appends a paragraph's memories under base: one per sentence when
+// chunk is "sentence" (concept base#s, which tests whether finer chunks
+// localize the answer better at the cost of more siblings), one per paragraph
+// otherwise. Reports how many sentence chunks were seeded, which bounds the
+// gold concepts a present probe may name.
+func seedChunks(items []item, base, context, chunk string, maxItems int) ([]item, int) {
+	if chunk != "sentence" {
+		return append(items, item{Concept: base, Content: context}), 0
+	}
+	seededSents := 0
+	for si, s := range splitSentences(context) {
+		if len(items) >= maxItems {
+			break
+		}
+		items = append(items, item{Concept: fmt.Sprintf("%s#%d", base, si), Content: s})
+		seededSents++
+	}
+	return items, seededSents
+}
+
+// presentProbe returns the paragraph's first answerable question, golded on the
+// seeded chunk that holds the answer. ok is false when the paragraph has no
+// answerable question, or when sentence chunking left the answer in a sentence
+// that maxItems truncation never seeded: an unseeded gold could not be
+// retrieved. One probe per paragraph keeps the gold unambiguous.
+func (p squadPara) presentProbe(base, chunk string, seededSents int) (probe, bool) {
+	for _, qa := range p.QAs {
+		if qa.IsImpossible || qa.Question == "" || len(qa.Answers) == 0 {
+			continue
+		}
+		gold := base
+		if chunk == "sentence" {
+			si := sentenceContaining(p.Context, qa.Answers[0].Text)
+			if si < 0 || si >= seededSents {
+				continue
+			}
+			gold = fmt.Sprintf("%s#%d", base, si)
+		}
+		return probe{Query: qa.Question, Gold: gold, Answer: qa.Answers[0].Text, Present: true}, true
+	}
+	return probe{}, false
+}
+
+// negativeProbe returns the paragraph's first answerable question as a negative
+// probe. Whatever paragraph it came from was never seeded, so a correct gate
+// must suppress it.
+func (p squadPara) negativeProbe() (probe, bool) {
+	for _, qa := range p.QAs {
+		if qa.IsImpossible || qa.Question == "" {
+			continue
+		}
+		return probe{Query: qa.Question, Gold: "", Present: false}, true
+	}
+	return probe{}, false
 }
 
 // genSquad builds a retrieval/gate test instrument from a real SQuAD file:
@@ -34,13 +98,9 @@ type squadFile struct {
 //     whole held-out articles (not held-out paragraphs of seeded articles) keeps
 //     the absent set genuinely off-topic, avoiding same-article contamination.
 func genSquad(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk string) ([]item, []probe, []probe, error) {
-	raw, err := os.ReadFile(path)
+	sq, err := loadSquad(path)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read squad file: %w", err)
-	}
-	var sq squadFile
-	if err := json.Unmarshal(raw, &sq); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse squad json: %w", err)
+		return nil, nil, nil, err
 	}
 	if len(sq.Data) < seedArticles+1 {
 		return nil, nil, nil, fmt.Errorf("squad file has %d articles, need > %d", len(sq.Data), seedArticles)
@@ -62,45 +122,13 @@ func genSquad(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk 
 			}
 			seenContent[para.Context] = true
 
-			// Chunk the paragraph into memories. paragraph: one memory per
-			// paragraph (concept title#p). sentence: one memory per sentence
-			// (concept title#p#s) — finer granularity, tests whether smaller
-			// chunks localize the answer better at the cost of more siblings.
 			base := fmt.Sprintf("%s#%d", slug(art.Title), pi)
-			goldConcept := base
-			seededSents := 0
-			if chunk == "sentence" {
-				sents := splitSentences(para.Context)
-				for si, s := range sents {
-					if len(items) >= maxItems {
-						break
-					}
-					items = append(items, item{Concept: fmt.Sprintf("%s#%d", base, si), Content: s})
-					seededSents++
-				}
-				// Gold = the sentence containing the answer (set per-probe below).
-			} else {
-				items = append(items, item{Concept: base, Content: para.Context})
-			}
+			var seededSents int
+			items, seededSents = seedChunks(items, base, para.Context, chunk, maxItems)
 
 			if len(present) < nPresent {
-				for _, qa := range para.QAs {
-					if qa.IsImpossible || qa.Question == "" || len(qa.Answers) == 0 {
-						continue
-					}
-					gold := goldConcept
-					if chunk == "sentence" {
-						// Find the sentence index containing the answer text. Skip if
-						// missing or beyond the seeded prefix (maxItems truncation):
-						// an unseeded gold could never be retrieved.
-						si := sentenceContaining(para.Context, qa.Answers[0].Text)
-						if si < 0 || si >= seededSents {
-							continue
-						}
-						gold = fmt.Sprintf("%s#%d", base, si)
-					}
-					present = append(present, probe{Query: qa.Question, Gold: gold, Answer: qa.Answers[0].Text, Present: true})
-					break // one probe per paragraph keeps gold unambiguous
+				if pr, ok := para.presentProbe(base, chunk, seededSents); ok {
+					present = append(present, pr)
 				}
 			}
 		}
@@ -112,12 +140,8 @@ func genSquad(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk 
 			if len(absent) >= nAbsent {
 				break
 			}
-			for _, qa := range para.QAs {
-				if qa.IsImpossible || qa.Question == "" {
-					continue
-				}
-				absent = append(absent, probe{Query: qa.Question, Gold: "", Present: false})
-				break
+			if pr, ok := para.negativeProbe(); ok {
+				absent = append(absent, pr)
 			}
 		}
 	}
@@ -136,13 +160,9 @@ func genSquad(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk 
 // ceiling can be measured against finer chunks (does localizing the answer
 // separate the answer-bearing chunk from same-article siblings?).
 func genSquadHardNeg(path string, seedArticles, maxItems, nPresent, nAbsent int, chunk string) ([]item, []probe, []probe, error) {
-	raw, err := os.ReadFile(path)
+	sq, err := loadSquad(path)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read squad file: %w", err)
-	}
-	var sq squadFile
-	if err := json.Unmarshal(raw, &sq); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse squad json: %w", err)
+		return nil, nil, nil, err
 	}
 	if len(sq.Data) < seedArticles {
 		return nil, nil, nil, fmt.Errorf("squad file has %d articles, need >= %d", len(sq.Data), seedArticles)
@@ -158,57 +178,44 @@ func genSquadHardNeg(path string, seedArticles, maxItems, nPresent, nAbsent int,
 			if para.Context == "" {
 				continue
 			}
-			if pi%2 == 0 {
-				// Even paragraph → seed it + a present probe.
-				if len(items) >= maxItems || seenContent[para.Context] {
+			if pi%2 != 0 {
+				if len(hardNeg) >= nAbsent {
 					continue
 				}
-				seenContent[para.Context] = true
-				base := fmt.Sprintf("%s#%d", slug(art.Title), pi)
-				seededSents := 0
-				if chunk == "sentence" {
-					for si, s := range splitSentences(para.Context) {
-						if len(items) >= maxItems {
-							break
-						}
-						items = append(items, item{Concept: fmt.Sprintf("%s#%d", base, si), Content: s})
-						seededSents++
-					}
-				} else {
-					items = append(items, item{Concept: base, Content: para.Context})
-				}
-				if len(present) < nPresent {
-					for _, qa := range para.QAs {
-						if qa.IsImpossible || qa.Question == "" || len(qa.Answers) == 0 {
-							continue
-						}
-						gold := base
-						if chunk == "sentence" {
-							// Skip if the answer sentence is missing or was truncated
-							// by maxItems: an unseeded gold could never be retrieved.
-							si := sentenceContaining(para.Context, qa.Answers[0].Text)
-							if si < 0 || si >= seededSents {
-								continue
-							}
-							gold = fmt.Sprintf("%s#%d", base, si)
-						}
-						present = append(present, probe{Query: qa.Question, Gold: gold, Answer: qa.Answers[0].Text, Present: true})
-						break
-					}
-				}
-			} else if len(hardNeg) < nAbsent {
 				// Odd paragraph → never seeded; its question is a hard negative.
-				for _, qa := range para.QAs {
-					if qa.IsImpossible || qa.Question == "" {
-						continue
-					}
-					hardNeg = append(hardNeg, probe{Query: qa.Question, Gold: "", Present: false})
-					break
+				if pr, ok := para.negativeProbe(); ok {
+					hardNeg = append(hardNeg, pr)
+				}
+				continue
+			}
+			// Even paragraph → seed it + a present probe.
+			if len(items) >= maxItems || seenContent[para.Context] {
+				continue
+			}
+			seenContent[para.Context] = true
+			base := fmt.Sprintf("%s#%d", slug(art.Title), pi)
+			var seededSents int
+			items, seededSents = seedChunks(items, base, para.Context, chunk, maxItems)
+			if len(present) < nPresent {
+				if pr, ok := para.presentProbe(base, chunk, seededSents); ok {
+					present = append(present, pr)
 				}
 			}
 		}
 	}
 	return items, present, hardNeg, nil
+}
+
+func loadSquad(path string) (squadFile, error) {
+	var sq squadFile
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return sq, fmt.Errorf("read squad file: %w", err)
+	}
+	if err := json.Unmarshal(raw, &sq); err != nil {
+		return sq, fmt.Errorf("parse squad json: %w", err)
+	}
+	return sq, nil
 }
 
 // splitSentences splits text on sentence-ending punctuation followed by a space.

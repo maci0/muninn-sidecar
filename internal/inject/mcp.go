@@ -43,17 +43,22 @@ func (inj *Injector) fetchGuide(ctx context.Context) string {
 	return parseGuide(respBody)
 }
 
+// mcpResponse is the JSON-RPC envelope every MuninnDB tool replies in. The
+// tool's own payload is carried as text inside a content block, not as the
+// result value itself.
+type mcpResponse struct {
+	Result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"result"`
+}
+
 // parseMCPTextContent extracts the text from the first text-typed content block
-// in a JSON-RPC response. Both parseGuide and parseWhereLeftOff share this structure.
+// in a JSON-RPC response.
 func parseMCPTextContent(body []byte) string {
-	var rpcResp struct {
-		Result struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
-	}
+	var rpcResp mcpResponse
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
 		return ""
 	}
@@ -170,25 +175,17 @@ func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error)
 }
 
 // parseRecallResponse extracts memories from a JSON-RPC response.
-// The MCP response wraps the tool result in result.content[].text.
 // JSON-RPC protocol errors are handled by mcpclient.Client.Call before
 // this function is called, so this function only receives success responses.
 func parseRecallResponse(body []byte) ([]memory, error) {
-	var rpcResp struct {
-		Result struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
-	}
+	var rpcResp mcpResponse
 
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
 		return nil, fmt.Errorf("parse JSON-RPC response: %w", err)
 	}
 
-	// The recall tool returns its result as JSON text inside content[n].text.
-	// The loop skips non-text items and returns results from the first parseable text block.
+	// The recall payload is JSON text inside a content block; the first text
+	// block that parses wins.
 	for _, content := range rpcResp.Result.Content {
 		if content.Type != "text" {
 			continue

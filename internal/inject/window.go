@@ -15,16 +15,27 @@ func (inj *Injector) snapshotWindow() []memory {
 	inj.mu.Lock()
 	defer inj.mu.Unlock()
 
-	cur := inj.turn
+	return inj.decayedWindowLocked(inj.turn)
+}
+
+// decayedWindowLocked returns the whole session window with each score decayed
+// at turn, ordered by score descending with ties broken on ID. The tiebreak
+// matters: the window is backed by a map, so without it equal-scored memories
+// would come back in a different order on every call, and the injected block
+// would stop being replayable. Callers must hold inj.mu.
+func (inj *Injector) decayedWindowLocked(turn int) []memory {
 	out := make([]memory, 0, len(inj.recentMemories))
 	for _, tm := range inj.recentMemories {
 		m := tm.memory
-		m.Score = decayedScore(m.Score, cur-tm.lastSeen)
+		m.Score = decayedScore(m.Score, turn-tm.lastSeen)
 		out = append(out, m)
 	}
-	if len(out) > 1 {
-		sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
-	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 
@@ -61,19 +72,5 @@ func (inj *Injector) mergeMemories(recalled []memory) []memory {
 		}
 	}
 
-	// Build sorted output from the merged window.
-	merged := make([]memory, 0, len(inj.recentMemories))
-	for _, tm := range inj.recentMemories {
-		turnsAgo := currentTurn - tm.lastSeen
-		m := tm.memory
-		m.Score = decayedScore(m.Score, turnsAgo)
-		merged = append(merged, m)
-	}
-	if len(merged) > 1 {
-		sort.Slice(merged, func(i, j int) bool {
-			return merged[i].Score > merged[j].Score
-		})
-	}
-
-	return merged
+	return inj.decayedWindowLocked(currentTurn)
 }
