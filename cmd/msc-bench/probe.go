@@ -30,8 +30,10 @@ func seedCorpus(ctx context.Context, c *mcpclient.Client, vault string, items []
 				"summary": it.Content,
 				"type":    "reference",
 				// Content-addressed, like the live store: rerunning -seed over
-				// the same corpus updates those memories instead of writing a
-				// second copy of each one.
+				// the same corpus presents the server with the same identities
+				// and stores nothing new instead of doubling the corpus, and
+				// the duplicates would otherwise crowd recall's top-k and skew
+				// the numbers the tool measures.
 				"dedup_key": mcpclient.DedupKey(vault, it.Concept, it.Content),
 			})
 		}

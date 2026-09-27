@@ -5,6 +5,13 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`msc-bench -seed` is idempotent again.** Seeded memories went out without
+  the content-addressed `dedup_key` every other write path carries, so a rerun
+  of `-seed` stored a second copy of the whole corpus. The duplicates crowd
+  recall's top-k and skew the retrieval numbers the tool exists to measure.
+
 ### Changed
 
 - **A failing sidecar says so, and a log line names its turn.** Three
