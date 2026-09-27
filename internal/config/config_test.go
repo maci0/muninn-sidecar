@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,6 +156,53 @@ func TestTokenReadsFile(t *testing.T) {
 	}
 	if got := Token(""); got != "filetok" {
 		t.Errorf("file token %q (whitespace must be trimmed)", got)
+	}
+}
+
+// A token file that is present but unreadable is a fault, not "no token
+// configured": silently dropping it launched msc with no Authorization header,
+// so every MCP call failed 401 and the cause surfaced as a generic delivery
+// error far from the file. The read still returns no token (a server needing no
+// auth must not be blocked by a broken file), but the reason is named.
+func TestTokenUnreadableFileIsReported(t *testing.T) {
+	t.Setenv("MUNINN_TOKEN", "")
+	dir := t.TempDir()
+	// A directory where a file is expected: the read fails with something
+	// other than "does not exist", on every platform and without depending on
+	// running as a user that cannot read a 0000 file.
+	t.Setenv("MUNINN_TOKEN_FILE", dir)
+
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	if got := Token(""); got != "" {
+		t.Errorf("an unreadable token file must yield no token, got %q", got)
+	}
+	out := logs.String()
+	if !strings.Contains(out, dir) {
+		t.Errorf("unreadable token file was silent; want the path in the log, got:\n%s", out)
+	}
+}
+
+// A missing file is a valid deployment (a server that needs no auth) and must
+// stay quiet: warning on every run without a token would train operators to
+// ignore the line that names a real read failure.
+func TestTokenMissingFileIsQuiet(t *testing.T) {
+	t.Setenv("MUNINN_TOKEN", "")
+	t.Setenv("MUNINN_TOKEN_FILE", filepath.Join(t.TempDir(), "absent"))
+
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	if got := Token(""); got != "" {
+		t.Errorf("no token configured, got %q", got)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("a missing token file must be silent, got:\n%s", logs.String())
 	}
 }
 

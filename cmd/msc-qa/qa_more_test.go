@@ -329,6 +329,38 @@ func TestRecallErrorIsReported(t *testing.T) {
 	}
 }
 
+// A 2xx whose body is not a JSON-RPC reply is the same class of fault as a
+// failed call: read as "no memories" it becomes answer-coverage 0/100 reported
+// as a real score, so the parse failure has to reach the caller.
+func TestUnparseableRecallIsReported(t *testing.T) {
+	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A well-formed HTTP 200 carrying an intermediary's HTML page.
+		w.Write([]byte("<html>gateway error</html>"))
+	}))
+	defer muninn.Close()
+	cl := mcpclient.New(muninn.URL, "", time.Second)
+	defer cl.Close()
+	cands, err := recallStructured(context.Background(), cl, "v", "q", 0.6, false)
+	if err == nil {
+		t.Fatalf("an undecodable recall reply must be an error, got %d candidates", len(cands))
+	}
+	if len(cands) != 0 {
+		t.Errorf("expected no candidates alongside the error, got %d", len(cands))
+	}
+}
+
+// A reply that decodes and carries no memories is a genuine empty result, not a
+// failure: the run reports 0 recall without erroring.
+func TestEmptyRecallIsNotAnError(t *testing.T) {
+	cands, err := parseRecallPayload([]byte(`{"result":{"content":[{"type":"text","text":"{\"memories\":[]}"}]}}`), 0.6)
+	if err != nil {
+		t.Fatalf("an empty memory list is a measurement, not a fault: %v", err)
+	}
+	if len(cands) != 0 {
+		t.Errorf("want no candidates, got %d", len(cands))
+	}
+}
+
 // TestRecallErrorReachesCaller: a transport failure must not be indistinguishable
 // from an empty vault, or the arms are scored on empty context and the run reads
 // as a completed evaluation.
@@ -722,7 +754,15 @@ func FuzzParseRecallPayload(f *testing.F) {
 			return // no server-controlled input picks the threshold; a NaN gate
 			// compares false against everything and is not a parser contract
 		}
-		cands := parseRecallPayload(resp, minScore)
+		cands, err := parseRecallPayload(resp, minScore)
+		if err != nil {
+			// A reply that does not decode is reported, never returned as an
+			// empty candidate set: a broken envelope read as "no memories" would
+			// be scored as answer-coverage 0/100, a real-looking measurement of a
+			// transport fault. The multi-error harness above already pins the
+			// message; the fuzz body only needs the no-panic contract.
+			return
+		}
 		for i, c := range cands {
 			// The gate itself: nothing below the threshold may be returned.
 			if c.Score < minScore {

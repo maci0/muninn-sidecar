@@ -1359,6 +1359,15 @@ func TestSetPreparerConcurrentWithStore(t *testing.T) {
 
 	s := New(srv.URL, "", "test", &stats.Stats{})
 
+	// Install the preparer before any capture is queued, then keep swapping it
+	// concurrently below. An exchange the worker reaches before the first
+	// SetPreparer is legitimately normalized by no preparer (the caller has not
+	// installed one yet, which is what proxy.New relies on), so a run that
+	// started the swapper and the store together measured that window rather
+	// than the synchronization. With one in force from the start, every flush
+	// must carry the tag, and any lost swap during the run shows up.
+	s.SetPreparer(func(ex *CapturedExchange) { ex.Model = "test-model" })
+
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 

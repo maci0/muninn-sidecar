@@ -68,7 +68,7 @@ func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query s
 		// measurement. Surface the failure instead.
 		return nil, fmt.Errorf("recall %q from vault %q: %w", query, vault, err)
 	}
-	return parseRecallPayload(resp, minScore), nil
+	return parseRecallPayload(resp, minScore)
 }
 
 // parseRecallPayload turns a raw muninn_recall JSON-RPC reply into the gated
@@ -76,7 +76,13 @@ func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query s
 // live MCP server: this is server-controlled JSON, decoded twice (the envelope,
 // then the text content block's payload), and every one of those numbers is a
 // float the gate and formatInjected print verbatim.
-func parseRecallPayload(resp []byte, minScore float64) []cand {
+//
+// A reply that does not decode is an error, not an empty result. This harness
+// exists to measure, and a broken envelope read as "no memories" turns a
+// transport fault into answer-coverage 0/100 reported as a real score. A reply
+// that decodes and carries no memories is a genuine empty result and returns
+// nil with no error.
+func parseRecallPayload(resp []byte, minScore float64) ([]cand, error) {
 	var rpc struct {
 		Result struct {
 			Content []struct {
@@ -84,8 +90,8 @@ func parseRecallPayload(resp []byte, minScore float64) []cand {
 			} `json:"content"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(resp, &rpc) != nil {
-		return nil
+	if err := json.Unmarshal(resp, &rpc); err != nil {
+		return nil, fmt.Errorf("parse recall envelope (%d bytes): %w", len(resp), err)
 	}
 	for _, c := range rpc.Result.Content {
 		if c.Type != "text" {
@@ -99,8 +105,8 @@ func parseRecallPayload(resp []byte, minScore float64) []cand {
 				Score       float64 `json:"score"`
 			} `json:"memories"`
 		}
-		if json.Unmarshal([]byte(c.Text), &inner) != nil {
-			return nil
+		if err := json.Unmarshal([]byte(c.Text), &inner); err != nil {
+			return nil, fmt.Errorf("parse recall payload (%d bytes): %w", len(c.Text), err)
 		}
 		var parts []cand
 		for _, m := range inner.Memories {
@@ -112,9 +118,9 @@ func parseRecallPayload(resp []byte, minScore float64) []cand {
 				parts = append(parts, cand{Concept: m.Concept, Content: m.Content, Score: rel})
 			}
 		}
-		return parts
+		return parts, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // formatInjected renders gated candidates into the context body for a given

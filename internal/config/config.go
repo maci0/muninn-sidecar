@@ -7,6 +7,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -218,6 +219,17 @@ func Token(flagVal string) string {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		// A missing file is "no token configured", which is a valid deployment
+		// (a server that needs no auth) and says nothing. Any other failure is a
+		// fault: silently dropping it launched msc with no Authorization header,
+		// so every MCP call failed 401 and the cause surfaced as a generic
+		// delivery error far from the file that could not be read. Name the path
+		// and the reason, and carry on with no token so a transient read failure
+		// does not block a server that does not need one.
+		if !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("cannot read MuninnDB token file, continuing without a token",
+				"path", path, "err", err)
+		}
 		return ""
 	}
 	// Warn if the token file is readable by group or other users. Only where

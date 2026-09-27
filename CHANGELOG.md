@@ -33,6 +33,22 @@ minor bump is safe.
 
 ### Fixed
 
+- **An unreadable MuninnDB token file is no longer silent.** `config.Token`
+  returned an empty token for any read failure, so a file that exists but cannot
+  be read (a permission change, a directory in its place, a transient I/O error)
+  was indistinguishable from "none configured". msc then ran with no
+  `Authorization` header and every MCP call failed 401, surfacing far from the
+  file as a generic delivery error. A missing file stays silent, since a server
+  that needs no auth is a valid deployment; any other read failure now names the
+  path and the reason.
+- **`msc-qa` no longer reports an undecodable recall reply as zero recall.** A
+  2xx body that is not a JSON-RPC reply (an intermediary's HTML page, a
+  truncated payload) parsed to an empty candidate set, which the harness then
+  scored as a measurement: every arm built from nothing, answer-coverage 0/100
+  reported as a result. The parse failure now reaches the caller and is counted
+  like any other recall failure, alongside the existing "recall failed for N/M
+  questions" warning and the all-questions-failed abort. A reply that decodes
+  and carries no memories is still a genuine empty result.
 - **A panic in a turn no longer takes the session down.** The request pipeline
   had no recovery of its own, so a panic fell through to the stdlib's
   per-connection recover with `http.Server.ErrorLog` left nil. That default
