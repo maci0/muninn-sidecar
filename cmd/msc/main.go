@@ -203,9 +203,9 @@ func run() int {
 		if w := config.ArgSecretWarning("--token", o.token, "MUNINN_TOKEN"); w != "" {
 			slog.Warn(w)
 		}
-		if u, err := url.Parse(mcpURL); err == nil && u.Scheme == "http" && !config.IsLoopbackHost(u.Hostname()) {
+		if config.PlaintextRemoteHost(mcpURL) {
 			slog.Warn("bearer token will be sent over unencrypted HTTP; use HTTPS for remote MuninnDB endpoints",
-				"mcp_url", mcpURL)
+				"mcp_url", config.RedactURL(mcpURL))
 		}
 	}
 
@@ -215,7 +215,7 @@ func run() int {
 	// The injection numbers come from the same helpers the dry-run preview uses,
 	// so the two cannot report different values.
 	slog.Debug("resolved config",
-		"mcp_url", mcpURL,
+		"mcp_url", config.RedactURL(mcpURL),
 		"vault", vault,
 		"token", token != "",
 		"inject", !o.noInject,
@@ -249,14 +249,30 @@ func run() int {
 	if !o.force {
 		healthErr = muninn.HealthCheck()
 		if healthErr != nil && !o.dryRun {
-			logerr("MuninnDB at %s is unreachable: %v", mcpURL, healthErr)
+			logerr("MuninnDB at %s is unreachable: %v", config.RedactURL(mcpURL), healthErr)
 			logf("Captures will be lost. Use --force to launch anyway.")
 			return 1
 		}
 	}
 
 	upstream := agent.Resolve()
-	slog.Debug("resolved upstream", "agent", cmd, "upstream", upstream)
+
+	// The upstream is where the agent's own API key ends up: the proxy forwards
+	// the request verbatim, Authorization header included. Every agent in the
+	// registry takes its upstream from an environment variable (DetectEnv), so
+	// this is a value a shell rc file, a .env loader, or a CI wrapper can set.
+	// Validate it like the other endpoints so a bad value fails here, and warn
+	// when the key would cross the network in the clear. A local upstream
+	// (ollama, a gateway on 127.0.0.1) is exempt: the traffic never leaves.
+	if err := config.ValidateURL("upstream", upstream); err != nil {
+		logerr("%v", err)
+		return exitUsage
+	}
+	if config.PlaintextRemoteHost(upstream) {
+		slog.Warn("the agent's API key and every captured turn will cross the network unencrypted to this upstream; use HTTPS",
+			"agent", cmd, "upstream", config.RedactURL(upstream))
+	}
+	slog.Debug("resolved upstream", "agent", cmd, "upstream", config.RedactURL(upstream))
 
 	// TLS-MITM mode: load/create the local CA so the proxy can intercept HTTPS
 	// CONNECT tunnels and the child can be told to trust it. Built before the
@@ -308,7 +324,7 @@ func run() int {
 		if groundKey != "" && o.groundCmd == "" && o.groundURL != "" {
 			if u, err := url.Parse(o.groundURL); err == nil {
 				switch {
-				case u.Scheme == "http" && !config.IsLoopbackHost(u.Hostname()):
+				case config.PlaintextRemoteHost(o.groundURL):
 					slog.Warn("OPENAI_API_KEY will be sent over unencrypted HTTP to the grounding endpoint; use HTTPS",
 						"ground_url", o.groundURL)
 				case !config.IsOpenAIHost(u.Hostname()):

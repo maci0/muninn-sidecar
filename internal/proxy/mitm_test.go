@@ -688,6 +688,88 @@ func FuzzStripPort(f *testing.F) {
 	})
 }
 
+func TestSameHost(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"api.openai.com", "api.openai.com", true},
+		{"API.OpenAI.com", "api.openai.com", true},      // DNS is case-insensitive
+		{"api.openai.com.", "api.openai.com", true},     // explicit DNS root dot
+		{"api.openai.com:443", "api.openai.com", false}, // caller must stripPort first
+		{"api.openai.com", "evil.example.com", false},
+		{"", "api.openai.com", false},
+		{"", "", true},
+	}
+	for _, c := range cases {
+		if got := sameHost(c.a, c.b); got != c.want {
+			t.Errorf("sameHost(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// TestMITMRejectsMismatchedSNI pins that a leaf is only ever minted for the
+// host the client opened the tunnel to. The client here names one host in the
+// CONNECT and a different one in the ClientHello; the CA is trusted by every
+// agent msc launches, so minting for the SNI would hand any client that can
+// reach the proxy a valid certificate for any name on demand.
+func TestMITMRejectsMismatchedSNI(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamPool := x509.NewCertPool()
+	upstreamPool.AddCert(upstream.Certificate())
+
+	ca := mustCA(t)
+	st := store.New("http://127.0.0.1:1", "", "t", &stats.Stats{})
+	p, err := New(Config{
+		ListenAddr: "127.0.0.1:0", Upstream: "https://unused.invalid",
+		Store: st, CA: ca, MITMHosts: []string{"*"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetMITMRoots(upstreamPool)
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Shutdown(context.Background())
+
+	raw, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+
+	// Tunnel to the real upstream, but claim a different name in the handshake.
+	target := strings.TrimPrefix(upstream.URL, "https://")
+	if _, err := io.WriteString(raw, "CONNECT "+target+" HTTP/1.1\r\nHost: "+target+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(raw)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT returned %d, want 200", resp.StatusCode)
+	}
+
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(ca.CertPEM()) {
+		t.Fatal("could not add msc CA to client pool")
+	}
+	tc := tls.Client(raw, &tls.Config{RootCAs: caPool, ServerName: "evil.example.com"})
+	// The client sees only the server's TLS alert ("internal error"), not the
+	// reason, so the assertion is the property itself: no leaf is minted for a
+	// name the client did not tunnel to. TestSameHost covers the comparison.
+	if err := tc.Handshake(); err == nil {
+		t.Fatal("handshake succeeded for an SNI that does not match the tunnel target; msc minted a leaf for an arbitrary name")
+	}
+}
+
 // TestMITMConnectHandshakeTimeout pins the bound on the TLS handshake of a
 // hijacked CONNECT tunnel. After Hijack the http.Server no longer owns the
 // connection, so its ReadHeaderTimeout stops applying: a client that opens

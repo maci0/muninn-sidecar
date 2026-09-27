@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
+	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 	"github.com/maci0/muninn-sidecar/internal/mitm"
 )
@@ -196,7 +197,7 @@ func cmdStatus(o *opts) int {
 
 	if o.asJSON {
 		out := map[string]any{
-			"mcp_url": mcpURL,
+			"mcp_url": config.RedactURL(mcpURL),
 			"vault":   vault,
 		}
 		if err != nil {
@@ -222,9 +223,9 @@ func cmdStatus(o *opts) int {
 	}
 
 	if err == nil {
-		fmt.Printf("MuninnDB: %s (reachable)\n", mcpURL)
+		fmt.Printf("MuninnDB: %s (reachable)\n", config.RedactURL(mcpURL))
 	} else {
-		fmt.Printf("MuninnDB: %s (unreachable: %v)\n", mcpURL, err)
+		fmt.Printf("MuninnDB: %s (unreachable: %v)\n", config.RedactURL(mcpURL), err)
 	}
 	fmt.Printf("Vault:    %s\n", vault)
 	if haveStats {

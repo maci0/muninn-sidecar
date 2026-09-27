@@ -197,6 +197,57 @@ func TestHostClassification(t *testing.T) {
 	}
 }
 
+// TestRedactURL pins that a password in the userinfo never reaches a log line
+// or a terminal, while the scheme, host, and path (what makes the line
+// diagnosable) survive.
+func TestRedactURL(t *testing.T) {
+	cases := map[string]string{
+		"http://user:hunter2@mcp.example.com:8750/mcp": "http://user:xxxxx@mcp.example.com:8750/mcp",
+		"https://user:hunter2@mcp.example.com/mcp":     "https://user:xxxxx@mcp.example.com/mcp",
+		"http://user@mcp.example.com/mcp":              "http://user@mcp.example.com/mcp",
+		"http://127.0.0.1:8750/mcp":                    "http://127.0.0.1:8750/mcp",
+		"":                                             "",
+	}
+	for in, want := range cases {
+		got := RedactURL(in)
+		if got != want {
+			t.Errorf("RedactURL(%q) = %q, want %q", in, got, want)
+		}
+		if strings.Contains(got, "hunter2") {
+			t.Errorf("RedactURL(%q) leaked the password: %q", in, got)
+		}
+	}
+}
+
+// TestPlaintextRemoteHost pins the condition callers warn on before forwarding
+// a credential: an http:// endpoint that is not loopback. Loopback traffic
+// never leaves the machine, so it is not a plaintext send.
+func TestPlaintextRemoteHost(t *testing.T) {
+	plaintext := []string{
+		"http://api.openai.com/v1",
+		"http://muninn.example.com:8750/mcp",
+		"http://10.0.0.5/mcp",
+	}
+	for _, raw := range plaintext {
+		if !PlaintextRemoteHost(raw) {
+			t.Errorf("PlaintextRemoteHost(%q) = false, want true", raw)
+		}
+	}
+	safe := []string{
+		"https://api.openai.com/v1",
+		"http://127.0.0.1:8750/mcp",
+		"http://localhost:11434/v1",
+		"http://[::1]:8750/mcp",
+		"://bad url",
+		"",
+	}
+	for _, raw := range safe {
+		if PlaintextRemoteHost(raw) {
+			t.Errorf("PlaintextRemoteHost(%q) = true, want false", raw)
+		}
+	}
+}
+
 // A root directory has no name to derive a vault from, and on Windows the root
 // is "C:\" rather than "/", so both shapes must fall back to DefaultVault
 // instead of naming the vault "\" or "C:".

@@ -135,6 +135,32 @@ func ValidateURL(option, raw string) error {
 	return nil
 }
 
+// PlaintextRemoteHost reports whether a request to raw would carry its
+// credentials off the machine unencrypted: an http:// endpoint that is not
+// loopback. Callers warn before forwarding a secret (a bearer token, an API
+// key) to such an endpoint, since anything on the path can read it. An
+// unparseable raw is not a plaintext send, so it reports false.
+func PlaintextRemoteHost(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "http" && !IsLoopbackHost(u.Hostname())
+}
+
+// RedactURL returns raw with any password in its userinfo removed, so an
+// endpoint carrying credentials (https://user:pass@host/mcp) is safe to put in
+// a log line or on a terminal. The scheme, host, and path stay: those are what
+// make the line diagnosable. Only the display form is redacted; the caller
+// still dials the original.
+func RedactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return u.Redacted()
+}
+
 // Token resolves the MuninnDB bearer token: the flag value if non-empty, else
 // MUNINN_TOKEN, else the ~/.muninn/mcp.token file. Returns "" when none is set;
 // a server that needs no auth is the only correct consumer of an empty token.

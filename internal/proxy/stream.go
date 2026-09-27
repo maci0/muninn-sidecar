@@ -17,6 +17,12 @@ import (
 // long tool-use chains.
 const maxToolNames = 20
 
+// maxRetainedLine caps a single SSE/ndjson line that streamCapture keeps in
+// memory (lastData, usageJSON). The partial line carried between Reads is
+// capped by maxStreamBuf; this is the same bound applied to a line that
+// arrives complete, whose length is otherwise the upstream's choice.
+const maxRetainedLine = maxStreamBuf
+
 // sseDataPrefix and sseDone are package-level byte slices to avoid per-call
 // []byte conversions inside the SSE hot path.
 var (
@@ -141,6 +147,17 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 			lineBytes = lineBytes[:len(lineBytes)-1]
 		}
 		data = data[idx+1:]
+
+		// A partial line carried between Reads is capped by maxStreamBuf above,
+		// but a line that arrives complete inside a single Read is not: its
+		// length is whatever the upstream chose to send. lastData and usageJSON
+		// keep such a line alive for the rest of the exchange, and usageJSON
+		// holds a second copy, so drop an implausibly long one instead of
+		// retaining it. No real SSE event is this long.
+		if len(lineBytes) > maxRetainedLine {
+			slog.Warn("SSE line exceeded limit, dropping", "request_id", sc.ctx.id, "len", len(lineBytes), "limit", maxRetainedLine, "path", sc.ctx.path)
+			continue
+		}
 
 		dBytes := lineBytes
 		if bytes.HasPrefix(lineBytes, sseDataPrefix) {

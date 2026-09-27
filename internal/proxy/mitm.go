@@ -102,11 +102,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	tlsConn := tls.Server(clientConn, &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			name := chi.ServerName
-			if name == "" {
-				name = stripPort(target)
+			// The leaf is minted for the host the client opened the tunnel to, not
+			// for whatever name the ClientHello happens to carry. Without this
+			// check the CA (which every agent msc launches is told to trust) signs
+			// a valid certificate for any name on demand, so any client reaching
+			// the proxy could present a cert for a different session's upstream.
+			if name := chi.ServerName; name != "" && !sameHost(name, stripPort(target)) {
+				return nil, fmt.Errorf("mitm: SNI %q does not match tunnel target %q", name, stripPort(target))
 			}
-			return p.ca.LeafFor(name)
+			return p.ca.LeafFor(stripPort(target))
 		},
 	})
 	if err := clientConn.SetReadDeadline(time.Now().Add(p.handshakeTimeout)); err != nil {
@@ -369,6 +373,16 @@ func stripPort(hostport string) string {
 		return h
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")
+}
+
+// sameHost reports whether two host names name the same endpoint, comparing
+// them the way DNS does: case-insensitively, and treating the DNS root's
+// explicit trailing dot as the same name ("API.OpenAI.com." == "api.openai.com").
+func sameHost(a, b string) bool {
+	canon := func(h string) string {
+		return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+	}
+	return canon(a) == canon(b)
 }
 
 // singleConnListener adapts one already-accepted net.Conn into a net.Listener so

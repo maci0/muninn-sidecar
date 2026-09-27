@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/redact"
 )
 
@@ -109,6 +110,10 @@ func (c *Client) HealthCheck() error {
 	if err != nil {
 		return err
 	}
+	// The request uses the real URL (a password in the userinfo is part of how
+	// the endpoint authenticates); only the error text names the redacted form,
+	// since these errors reach logs and the operator's terminal.
+	shown := config.RedactURL(healthURL)
 
 	req, err := http.NewRequestWithContext(context.Background(), "GET", healthURL, nil)
 	if err != nil {
@@ -121,13 +126,13 @@ func (c *Client) HealthCheck() error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("unreachable at %s: %w", healthURL, err)
+		return fmt.Errorf("unreachable at %s: %w", shown, err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("unhealthy (HTTP %d) at %s", resp.StatusCode, healthURL)
+		return fmt.Errorf("unhealthy (HTTP %d) at %s", resp.StatusCode, shown)
 	}
 	return nil
 }

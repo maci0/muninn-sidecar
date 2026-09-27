@@ -1509,6 +1509,47 @@ func TestStreamCaptureNDJSON(t *testing.T) {
 	}
 }
 
+// TestStreamCaptureDropsOversizedLine pins the bound on a single SSE line that
+// arrives complete inside one Read. The partial line carried between Reads is
+// already capped, but a complete line's length is otherwise whatever the
+// upstream chose to send, and lastData/usageJSON would keep it alive (twice)
+// for the rest of the exchange. A hostile or broken upstream must not be able
+// to make an unbounded string be retained.
+func TestStreamCaptureDropsOversizedLine(t *testing.T) {
+	sc := &streamCapture{
+		ReadCloser: io.NopCloser(strings.NewReader("")),
+		ctx:        &captureCtx{start: time.Now()},
+		statusCode: 200,
+	}
+	// One oversized line carrying both markers that would be retained, so the
+	// test fails if either field is left holding the string.
+	huge := `{"usage":{"input_tokens":1},"pad":"` + strings.Repeat("A", maxRetainedLine) + `"}`
+	if len(huge) <= maxRetainedLine {
+		t.Fatalf("test line is %d bytes, needs to exceed the %d cap", len(huge), maxRetainedLine)
+	}
+	// A real event after it must still be captured: dropping the oversized line
+	// drops only that line, not the rest of the stream.
+	sc.processChunk([]byte(huge + "\n" + `data: {"choices":[{"delta":{"content":"ok"}}]}` + "\n"))
+
+	if len(sc.lastData) > maxRetainedLine {
+		t.Errorf("lastData retained an oversized line: %d bytes", len(sc.lastData))
+	}
+	if len(sc.usageJSON) > maxRetainedLine {
+		t.Errorf("usageJSON retained an oversized line: %d bytes", len(sc.usageJSON))
+	}
+	if strings.Contains(sc.lastData, strings.Repeat("A", 64)) {
+		t.Error("the oversized line was retained in lastData")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(sc.buildRespBody(), &doc); err != nil {
+		t.Fatalf("invalid synthetic response: %v", err)
+	}
+	block, _ := doc["content"].([]any)[0].(map[string]any)
+	if block["text"] != "ok" {
+		t.Errorf("expected text 'ok' after the oversized line, got %v", block["text"])
+	}
+}
+
 func TestStreamCaptureIgnoresSSEControlLines(t *testing.T) {
 	// SSE control lines and comments carry no event payload and must not
 	// override the accumulated answer.
