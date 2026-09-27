@@ -1,6 +1,10 @@
 # UX Review Fixes Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+Status: complete (2026-03-21). Every change below is in the tree; the "flushed"/"errors"
+copy now reads "saved", and the session summary's "errors" count sits under the `inject:`
+line where the metric is named.
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Fix all UX issues found in the muninn-sidecar CLI tool (a transparent reverse proxy for AI coding agents).
 
@@ -31,10 +35,10 @@
 **Files:**
 - Modify: `cmd/msc/main.go`
 
-- [ ] Change `"dumping to muninn vault=%q"` to `"storing in vault %q"`
-- [ ] Capitalize `"captures will be lost."` → `"Captures will be lost."`
-- [ ] Capitalize `"run 'msc --help'"` → `"Run 'msc --help'"`
-- [ ] Add `--force` warning after proxy starts
+- [x] Change `"dumping to muninn vault=%q"` to `"storing in vault %q"`
+- [x] Capitalize `"captures will be lost."` → `"Captures will be lost."`
+- [x] Capitalize `"run 'msc --help'"` → `"Run 'msc --help'"`
+- [x] Add `--force` warning after proxy starts
 
 ---
 
@@ -44,15 +48,15 @@
 - Modify: `internal/stats/stats.go`
 - Modify: `internal/stats/stats_test.go`
 
-- [ ] Change `"%d flushed"` → `"%d saved"` in `Summary()`
-- [ ] Change `"%d errors"` → `"%d store errors"` in `Summary()`
-- [ ] Change `"%d enriched, %s tokens injected"` → `"%d requests, %s tokens injected"` in `Summary()`
-- [ ] Update `stats_test.go` assertions to match new strings
+- [x] Change `"%d flushed"` → `"%d saved"` in `Summary()`
+- [x] Change `"%d errors"` → `"%d store errors"` in `Summary()`
+- [x] Change `"%d enriched, %s tokens injected"` → `"%d requests, %s tokens injected"` in `Summary()`
+- [x] Update `stats_test.go` assertions to match new strings
 
 ---
 
 ## Task 3: Run tests
 
-- [ ] Run `go test ./...` and verify all tests pass
+- [x] Run `go test ./...` and verify all tests pass
 
 ---
