@@ -72,6 +72,15 @@ func run() int {
 
 	switch action {
 	case actionHelp:
+		// 'msc list --help' is a request for that command's help, not the
+		// global one: the global usage cannot document flags that apply to a
+		// single command.
+		if len(remaining) > 0 {
+			if text, ok := commandUsage(remaining[0]); ok {
+				fmt.Fprint(os.Stdout, text)
+				return 0
+			}
+		}
 		usage(os.Stdout)
 		return 0
 	case actionVersion:
@@ -104,8 +113,7 @@ func run() int {
 
 	switch cmd {
 	case "help":
-		usage(os.Stdout)
-		return 0
+		return cmdHelp(agentArgs)
 	case "version":
 		if len(agentArgs) > 0 {
 			logerr("version does not accept arguments")
@@ -426,6 +434,9 @@ func run() int {
 		var pathErr *exec.Error
 		if errors.As(result.err, &pathErr) {
 			logerr("%s not found in PATH", cmd)
+			// 127 is the shell's "command not found", so a script can tell a
+			// mistyped agent name apart from an agent that ran and failed.
+			result.code = exitNotFound
 		} else {
 			slog.Error("agent exited with error", "err", result.err)
 		}

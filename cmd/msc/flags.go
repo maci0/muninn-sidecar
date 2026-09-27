@@ -48,7 +48,8 @@ const (
 )
 
 const (
-	exitUsage = 2 // usage/config errors
+	exitUsage    = 2   // usage/config errors
+	exitNotFound = 127 // the agent binary is not on PATH (the shell's code for it)
 )
 
 // flagValue returns the value for a flag that requires one. Written without

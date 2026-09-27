@@ -106,6 +106,10 @@ msc --json list
 msc ca
 msc --json ca
 
+# Help for one command or agent (same as 'msc <command> --help')
+msc help status
+msc help claude
+
 # Install shell completions
 msc completion zsh > ~/.zsh_functions/_msc
 msc completion bash >> ~/.bashrc
@@ -119,6 +123,17 @@ Flags must come before the agent name. Everything after it passes through to the
 
 ```bash
 msc -- claude --weird-flag
+```
+
+The commands above are the exception: their flags may follow the name, so
+`msc list --json` and `msc --json list` are the same.
+
+`msc` exits `0` on success, `1` when MuninnDB is unreachable, `2` on a usage
+error, and `127` when the agent binary is not in `PATH`. When the agent itself
+exits, its code is propagated (`128+N` if a signal killed it).
+
+```bash
+msc claude || echo "agent run failed with $?"
 ```
 
 ## How it works

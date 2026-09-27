@@ -239,6 +239,155 @@ func printVersion(o *opts) int {
 	return 0
 }
 
+// cmdHelp prints the global usage, or the help for a single topic. An unknown
+// topic is a usage error rather than a silent fallback to the global help, so
+// `msc help statuss` does not look like it worked.
+func cmdHelp(args []string) int {
+	if len(args) > 1 {
+		logerr("help takes at most one topic: msc help [command|agent]")
+		return exitUsage
+	}
+	if len(args) == 0 {
+		usage(os.Stdout)
+		return 0
+	}
+
+	topic := args[0]
+	if text, ok := commandUsage(topic); ok {
+		fmt.Fprint(os.Stdout, text)
+		return 0
+	}
+	if a, ok := agents.Registry[topic]; ok {
+		envKey := a.EnvKey
+		if len(a.ExtraEnvKeys) > 0 {
+			envKey += " (also: " + strings.Join(a.ExtraEnvKeys, ", ") + ")"
+		}
+		fmt.Fprintf(os.Stdout, "msc %s - wrap the %s agent, capturing its API traffic through MuninnDB\n\n", topic, topic)
+		fmt.Fprintf(os.Stdout, "  Base URL override: %s\n", envKey)
+		fmt.Fprintf(os.Stdout, "  Default upstream:   %s\n", a.DefaultURL)
+		fmt.Fprintf(os.Stdout, "  Launch:             msc [flags] %s [agent-args...]\n", topic)
+		fmt.Fprintf(os.Stdout, "  Preview:            msc --dry-run %s\n\n", topic)
+		fmt.Fprint(os.Stdout, "  Run 'msc --help' for the flags msc accepts before the agent name.\n")
+		return 0
+	}
+
+	topics := helpTopics()
+	if s := closestMatch(topic, topics); s != "" {
+		logerr("unknown help topic: %s. Did you mean %q?", topic, s)
+	} else {
+		logerr("unknown help topic: %s", topic)
+	}
+	logf("topics: %s", strings.Join(topics, ", "))
+	return exitUsage
+}
+
+// helpTopics lists every topic 'msc help' accepts, in the order it prints them.
+func helpTopics() []string {
+	topics := []string{"help", "list", "status", "ca", "version", "completion"}
+	return append(topics, agents.ListSorted()...)
+}
+
+// commandUsage returns the help text for one of msc's own subcommands. The
+// global usage names them but cannot document the flags that only apply to one
+// of them, so 'msc <cmd> --help' and 'msc help <cmd>' print this instead.
+func commandUsage(cmd string) (string, bool) {
+	switch cmd {
+	case "list":
+		return `Usage: msc list [--json]
+
+List the agents msc can wrap, with the environment variable each one reads for
+its API base URL and the upstream that variable defaults to.
+
+Flags:
+  -j, --json   Emit a JSON array of {name, env_key, default_url} instead of the table
+
+Examples:
+  msc list           Human-readable table
+  msc --json list    Machine-readable output
+
+Exit codes: 0 on success.
+`, true
+	case "status":
+		return `Usage: msc status [--json]
+
+Check whether MuninnDB is reachable and report the resolved vault, without
+launching an agent. When MuninnDB answers, the vault's memory count and health
+are included; an empty vault is called out, since nothing can be injected until
+exchanges are captured.
+
+Flags:
+  -j, --json        Emit {mcp_url, vault, status, error?, memories?, vault_health?}
+      --mcp-url URL MuninnDB MCP endpoint (default: http://127.0.0.1:8750/mcp)
+      --token TOKEN MuninnDB bearer token (default: ~/.muninn/mcp.token)
+      --vault NAME  Vault to report on (default: current directory name)
+
+Examples:
+  msc status                Human-readable connectivity report
+  msc --json status         Machine-readable output
+  msc status --vault proj   Check a specific vault
+
+Exit codes: 0 when MuninnDB is reachable, 1 when it is not.
+`, true
+	case "ca":
+		return `Usage: msc ca [--json]
+
+Create (if needed) and print msc's TLS-MITM certificate authority: the path to
+its certificate and its SHA-256 fingerprint. msc trusts it automatically in the
+agents it launches with --mitm; run this to trust it in anything else (browser,
+system store, custom HTTPS client), then follow the printed instructions.
+
+The CA lives in <config dir>/muninn-sidecar/mitm (0700) and persists across runs.
+
+Flags:
+  -j, --json   Emit {path, sha256, certificate} instead of the human-readable report
+
+Examples:
+  msc ca                     Print the path, fingerprint, and trust instructions
+  msc --json ca | jq -r .path  Resolve the cert path in a script
+
+Exit codes: 0 on success, 1 if the CA cannot be created or read.
+`, true
+	case "version":
+		return `Usage: msc version [--json]   (also: msc -v)
+
+Print msc's version, the commit and build date it was built from, and the Go
+version and platform it targets.
+
+Flags:
+  -j, --json   Emit {version, commit, date, go, os, arch} instead of one line
+
+Exit codes: 0 on success.
+`, true
+	case "completion":
+		return `Usage: msc completion <bash|zsh|fish>
+
+Write a shell completion script to stdout.
+
+Arguments:
+  bash|zsh|fish   The shell to generate completions for
+
+Examples:
+  msc completion zsh > ~/.zsh_functions/_msc
+  source <(msc completion bash)
+
+Exit codes: 0 on success, 2 for a missing, extra, or unsupported shell argument.
+`, true
+	case "help":
+		return `Usage: msc help [command|agent]
+
+Print the global usage, or the help for one command or agent.
+
+Examples:
+  msc help          Global usage
+  msc help status   Help for the status command
+  msc help claude   How msc wraps the claude agent
+
+Exit codes: 0 on success, 2 for an unknown topic.
+`, true
+	}
+	return "", false
+}
+
 func usage(w io.Writer) {
 	names := agents.ListSorted()
 
@@ -250,7 +399,9 @@ Transparently proxy coding agent API traffic through MuninnDB.
 LLM completion traffic is captured and stored as memories.
 
 Flags must come before the agent name. Everything after it is passed
-through to the agent unmodified. Use -- to separate if needed.
+through to the agent unmodified. Use -- to separate if needed. The
+commands below are the exception: their flags may follow the name
+(msc list --json works as well as msc --json list).
 
 Agents:
 `, version)
@@ -265,15 +416,16 @@ Agents:
 	}
 
 	fmt.Fprintf(w, `
-Commands:
+Commands (each accepts the flags below, and 'msc help <command>' for its own help):
   list           List supported agents (use --json for machine output)
   status         Check MuninnDB connectivity
   ca             Print the TLS-MITM CA cert path + fingerprint (for trusting it elsewhere)
   version        Show version information (use --json for machine output)
   completion     Generate shell completions (bash, zsh, fish)
+  help [topic]   Show this help, or the help for one command or agent
 
 Flags:
-  -h, --help             Show this help
+  -h, --help             Show this help (per command: msc list --help)
   -v, --version          Show version
   -d, --debug            Enable debug logging (verbose structured output)
   -q, --quiet            Suppress msc's own output
@@ -315,8 +467,18 @@ Examples:
   msc --quiet aider --model x   Suppress msc output, pass args to aider
   msc --json list               Machine-readable agent list
   msc status                    Check if MuninnDB is reachable
+  msc help status               Help for one command
+  msc help claude               How msc wraps one agent
   msc -- claude --weird-flag    Use -- to pass flags starting with -
   msc completion zsh > ~/.zsh_functions/_msc  Save zsh completions
+
+Exit codes:
+  0        success
+  1        MuninnDB unreachable, or another runtime failure
+  2        usage error: unknown command or flag, bad flag value
+  127      the agent binary is not in PATH
+  128+N    the agent was killed by signal N (130 = SIGINT, 143 = SIGTERM)
+  other    the agent's own exit code, when it exited on its own
 
 Environment (flags take precedence):
   MUNINN_MCP_URL   MuninnDB MCP endpoint

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+
+	"github.com/maci0/muninn-sidecar/internal/agents"
 )
 
 // silence redirects stdout+stderr to /dev/null for the duration of fn, so the
@@ -134,4 +138,111 @@ func TestUsageAndVersionWriters(t *testing.T) {
 			t.Errorf("printVersion json rc = %d, want 0", rc)
 		}
 	})
+}
+
+// captureStdout returns everything fn writes to stdout, so a test can assert
+// on the help text a command actually prints.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	os.Stdout = old
+	w.Close()
+	out := <-done
+	r.Close()
+	return out
+}
+
+// runArgsCapture runs run() with stdout piped, so a test can read the help text
+// a command prints. Only for commands whose entire output is the help text
+// under test; runArgs silences stdout and would swallow it.
+func runArgsCapture(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	oldArgs := os.Args
+	os.Args = append([]string{"msc"}, args...)
+	defer func() { os.Args = oldArgs }()
+	var code int
+	out := captureStdout(t, func() { code = run() })
+	return code, out
+}
+
+// globalUsagePrefix starts the top-level usage, which no per-command help
+// repeats. Its absence is how a test tells the two apart.
+const globalUsagePrefix = "msc - muninn sidecar"
+
+func TestCommandHelp(t *testing.T) {
+	for _, cmd := range []string{"list", "status", "ca", "version", "completion", "help"} {
+		for _, args := range [][]string{{cmd, "--help"}, {"help", cmd}} {
+			code, out := runArgsCapture(t, args...)
+			if code != 0 {
+				t.Errorf("msc %v: exit %d, want 0", args, code)
+			}
+			if !strings.HasPrefix(out, "Usage: msc "+cmd) {
+				t.Errorf("msc %v printed the wrong help, got:\n%s", args, firstLine(out))
+			}
+			if strings.HasPrefix(out, globalUsagePrefix) {
+				t.Errorf("msc %v fell back to the global usage", args)
+			}
+		}
+	}
+	// The global usage is still what a bare --help and a bare 'help' print.
+	for _, args := range [][]string{{"--help"}, {"help"}} {
+		code, out := runArgsCapture(t, args...)
+		if code != 0 {
+			t.Errorf("msc %v: exit %d, want 0", args, code)
+		}
+		if !strings.HasPrefix(out, globalUsagePrefix) {
+			t.Errorf("msc %v should print the global usage, got:\n%s", args, firstLine(out))
+		}
+	}
+}
+
+func TestHelpUnknownTopic(t *testing.T) {
+	// A misspelled topic must fail rather than silently print the global
+	// help and exit 0, which reads as "that worked".
+	if code := runArgs(t, "help", "statuss"); code != exitUsage {
+		t.Errorf("unknown help topic: exit %d, want %d", code, exitUsage)
+	}
+	if code := runArgs(t, "help", "list", "status"); code != exitUsage {
+		t.Errorf("two help topics: exit %d, want %d", code, exitUsage)
+	}
+}
+
+func TestHelpAgent(t *testing.T) {
+	code, out := runArgsCapture(t, "help", "claude")
+	if code != 0 {
+		t.Errorf("help for an agent: exit %d, want 0", code)
+	}
+	a := agents.Registry["claude"]
+	if !strings.Contains(out, a.EnvKey) || !strings.Contains(out, a.DefaultURL) {
+		t.Errorf("agent help should name %s and %s, got:\n%s", a.EnvKey, a.DefaultURL, out)
+	}
+}
+
+// TestRunAgentNotFound pins the exit code for an agent binary that is not
+// installed: 127, the shell's "command not found", so a script can tell a
+// mistyped agent name apart from an agent that ran and failed.
+func TestRunAgentNotFound(t *testing.T) {
+	// An empty PATH makes every agent's binary unresolvable.
+	t.Setenv("PATH", t.TempDir())
+	if got := runArgs(t, "--force", "claude"); got != exitNotFound {
+		t.Errorf("missing agent binary: exit %d, want %d", got, exitNotFound)
+	}
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }

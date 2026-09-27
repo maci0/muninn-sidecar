@@ -12,6 +12,12 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   (contiguous and grouped) and NANP forms are now scrubbed, with NPA/NXX
   leading-digit and grouping constraints that keep version strings, ISO dates,
   and IPv4 addresses intact.
+- **Per-command help.** `msc list --help` (and `status`, `ca`, `version`,
+  `completion`, `help`) printed the global usage, which documents the agent
+  wrapper and cannot say what a single command accepts. Each command now has
+  its own usage, arguments, examples, and exit codes, reachable as
+  `msc <command> --help` or `msc help <command>`; `msc help <agent>` prints
+  that agent's base-URL override, default upstream, and launch line.
 
 ### Fixed
 
@@ -31,6 +37,16 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 - **`--debug` logs the effective configuration.** A captured session log now
   names the endpoint, vault, injection budget/gate/recall mode, redaction, and
   MITM state. The bearer token is reported as set/unset, never by value.
+- **`msc help <typo>` no longer looks like it worked.** It ignored the topic,
+  printed the global usage, and exited `0`, so a mistyped topic in a script
+  passed silently. An unknown topic now reports itself, suggests the nearest
+  one, and exits `2`; more than one topic is a usage error too.
+- **A missing agent binary exits `127`, not `1`.** `msc <agent>` for an agent
+  that is not installed reported "not found in PATH" and exited `1`, the same
+  code it used for a general runtime failure. It now uses the shell's
+  "command not found" code, so a script can tell a mistyped agent name apart
+  from an agent that ran and failed. The exit-code table is documented in
+  `msc --help` and the README.
 - **Builds are reproducible.** `make build` passed no `-trimpath`, so the
   checkout path was embedded in every binary, and the stamped build date came
   from the wall clock, so no two builds of one commit matched. Builds now use
