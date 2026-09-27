@@ -5,9 +5,11 @@ package inject
 
 import "math"
 
-// charPerToken is the character-to-token approximation used throughout the inject
-// package. 4 chars ≈ 1 token is a standard heuristic for English prose; it is
+// charPerToken is the bytes-to-token approximation used throughout the inject
+// package. 4 bytes ≈ 1 token is a standard heuristic for English prose; it is
 // intentionally imprecise since injection stays well within model context limits.
+// The unit is bytes, not characters (tokenizers charge by encoded length, so a
+// CJK or emoji memory costs more than its character count suggests).
 const charPerToken = 4
 
 // memory represents a recalled memory from MuninnDB.
@@ -26,10 +28,10 @@ type memory struct {
 	Score       float64 `json:"score"`
 	VectorScore float64 `json:"vector_score"`
 	// CreatedAt is the memory's creation timestamp (RFC3339 UTC, e.g.
-	// "2026-05-30T14:32:02Z"). Because it is zero-padded UTC, lexical string
-	// comparison is chronological — used to prefer the fresher of two
-	// near-duplicate memories so an updated fact wins over the stale one it
-	// supersedes (anti-staleness; see selectForInjection).
+	// "2026-05-30T14:32:02Z"). Compared as an instant, not lexically, to prefer
+	// the fresher of two near-duplicate memories so an updated fact wins over
+	// the stale one it supersedes (anti-staleness; see supersedes and
+	// createdAtInstant, which explains why lexical order is not enough).
 	CreatedAt string `json:"created_at"`
 	// State is the MuninnDB lifecycle state (planning|active|paused|blocked|
 	// completed|cancelled|archived, or "" if unset). Trust is the reliability

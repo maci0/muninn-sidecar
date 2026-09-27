@@ -28,7 +28,7 @@ type Config struct {
 	Token         string        // Bearer token for auth
 	Vault         string        // vault to recall from (default: "sidecar")
 	Budget        int           // max approximate tokens to inject (default: 2048)
-	Threshold     float64       // recall floor sent to MuninnDB, on its *composite* score (default: 0.05). Must stay below the gate's calibration floor (calibMinThreshold) so this server-side pre-filter never drops a memory the client-side cosine gate would accept — see New().
+	Threshold     float64       // recall floor sent to MuninnDB, on its *composite* score (default: 0.05). Keep it below the gate's calibration floor (calibMinThreshold) so this server-side pre-filter never drops a memory the client-side cosine gate would accept; New() warns but does not clamp a value above it (see New()).
 	MinScore      float64       // injection threshold: a memory is injected only if its effective score >= MinScore; a turn where nothing clears it injects nothing (default: 0.6)
 	RecallMode    string        // MuninnDB recall mode: semantic|recent|balanced|deep (default: "semantic")
 	QuerySimReuse float64       // reuse window (skip recall) when query word-set Jaccard vs last query >= this; 1.0 = exact-match only (default)

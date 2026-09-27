@@ -50,8 +50,8 @@ paragraph-level chunking; the `store` package should keep exchange chunks coarse
 
 ## B — Gate threshold shape
 
-**Method:** cross-validated method study (`msc-eval -compare`, synthetic cosine
-distributions) comparing gate variants. **Held-out F1:**
+**Method:** cross-validated method study (`msc-eval -compare -study-seed 20240529`,
+synthetic cosine distributions) comparing gate variants. **Held-out F1:**
 
 | method | F1 | note |
 |---|---|---|
@@ -72,7 +72,13 @@ Scope note: the synthetic cosine distributions are calibrated to msc-bench
 observations (`eval_study.go` `genScenarios`), so the study ranks methods under
 that generative model; it does not certify absolute F1 on real traffic.
 Seed-to-seed variance is now reported by `msc-eval -compare`, which runs a fixed
-multi-seed set by default (`-study-seed` pins a single seed).
+multi-seed set by default (`-study-seed` pins a single seed). The table above is
+the pinned single seed, the one `TestMethodStudy` guards. The ranking is
+unchanged on the 5-seed default, at lower means: `absolute` 0.975 ±0.006,
+`absolute+capN` 0.975 ±0.007 (ties within noise, reported as the winner),
+`absolute+sepgate` / `absolute+zgate` 0.975, `absfloor+relative` 0.951,
+`absfloor+margin` 0.944, `absfloor+gapcut` 0.925, `relative-only` 0.843,
+`fixed-topk` 0.729.
 
 **Decision:** keep the single absolute `vector_score ≥ MinScore` gate; cap-N and
 margin variants give no benefit. (Threshold value 0.6 justified in
@@ -89,7 +95,8 @@ reduces to plain `absolute` at its degenerate param (sep=0 / z=0), so CV can onl
 reveal upside.
 
 **Result:** both tie `absolute` bit-for-bit (F1 0.983, 99% gate, 1% wasted, 1.98
-inj) — cross-validation tunes the shape knob to **off**. The signal is confounded
+inj; still 0.975 on the 5-seed default) — cross-validation tunes the shape knob to
+**off**. The signal is confounded
 by the generative reality the synthetic set models faithfully: (1) when several
 relevant memories are recalled, top1−top2 is *small* (the good case looks like the
 bunched-noise case), and (2) a tight noise-only cluster has *low* variance, which

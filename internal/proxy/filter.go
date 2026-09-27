@@ -38,8 +38,10 @@ func injectedBlockStart(s string) int {
 // Parses and serializes JSON at most once, and hands the parsed document back so
 // the caller can read the fields it also needs (model, last user message) without
 // walking a body that can reach tens of MiB a second time. The document is nil
-// whenever the returned bytes are not the result of re-serializing it, so a
-// caller that reads fields from it always reads what will be stored.
+// only when the returned bytes were not produced from it: a body that does not
+// parse, a JSON null, and a document that failed to re-serialize all return nil
+// even though bytes come back. When something was filtered, the returned bytes
+// are the re-serialized document.
 func cleanRequest(body []byte, patterns []string) (map[string]any, json.RawMessage) {
 	if len(body) == 0 {
 		return nil, json.RawMessage("null")
@@ -80,7 +82,9 @@ func cleanRequest(body []byte, patterns []string) (map[string]any, json.RawMessa
 
 // cleanResponse removes muninn tool calls from a response body. As with
 // cleanRequest, the parsed document is returned for the caller's own field
-// extraction, and is nil whenever the returned bytes were not produced from it.
+// extraction, and is nil only when the body did not parse or failed to
+// re-serialize. A body with nothing to filter is returned untouched, and the
+// document still describes exactly those bytes.
 // The body is decoded even when there is nothing to filter, because the caller
 // reads the usage counters and the assistant text out of that same document.
 func cleanResponse(body json.RawMessage, patterns []string) (map[string]any, json.RawMessage) {

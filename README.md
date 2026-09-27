@@ -187,9 +187,13 @@ turning msc into a transparent HTTPS proxy:
    the machine**, and is trusted only by the agent msc launches — never installed
    into the system trust store.
 2. The child is launched with `HTTP(S)_PROXY` / `ALL_PROXY` (upper and lower case)
-   pointing at msc, and `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` /
-   `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` pointing at the CA cert so the minted
-   leaf certs verify.
+   pointing at msc, and `NODE_EXTRA_CA_CERTS` / `DENO_CERT` pointing at the CA
+   cert so the minted leaf certs verify. `SSL_CERT_FILE` /
+   `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` *replace* the child's root store
+   rather than extend it, so they point at a combined system-roots + msc-CA
+   bundle (`ca-bundle.pem`, written beside the CA cert) where one can be built;
+   on a host with no readable system bundle, Windows in particular, they are
+   left unset rather than replaced by msc's CA alone.
 3. The agent opens an HTTPS `CONNECT` tunnel through msc. msc replies `200`,
    completes the TLS handshake with a per-host leaf cert it mints on the fly, then
    runs the decrypted request through the **same recall/inject + capture pipeline**

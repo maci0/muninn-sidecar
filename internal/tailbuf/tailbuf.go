@@ -5,9 +5,9 @@
 // answerer) shells out to or reads from a process or endpoint that may print
 // far more than the few tokens the caller needs. A plain bytes.Buffer grows
 // with it, so one chatty run costs the caller its heap. This keeps the last
-// limit bytes instead: model and agent CLIs print their reasoning and banners
-// before the answer, so the answer is in the tail, and a truncated capture
-// still parses.
+// limit bytes instead (a few fewer when the cut would split a rune): model and
+// agent CLIs print their reasoning and banners before the answer, so the answer
+// is in the tail, and a truncated capture still parses.
 package tailbuf
 
 import "unicode/utf8"

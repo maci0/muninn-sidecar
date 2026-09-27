@@ -212,8 +212,9 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 // buildRespBody returns the response body for storage. When assistant text
 // or tool actions were captured from the SSE stream, it builds a synthetic
 // Anthropic-format response that ExtractAssistantMessage already understands.
-// Usage metadata is merged from the last usage-bearing SSE event. Falls back
-// to raw lastData when no meaningful content was captured, or a minimal
+// Usage metadata is merged from the last usage-bearing SSE event. With nothing
+// captured it falls back to the last data line, verbatim when it is JSON and
+// JSON-encoded as a string when it is not, and to a minimal
 // {"_stream":true,"_bytes":N} marker if the stream produced no data lines.
 func (sc *streamCapture) buildRespBody() json.RawMessage {
 	if sc.textAccum.Len() > 0 || len(sc.toolNames) > 0 {

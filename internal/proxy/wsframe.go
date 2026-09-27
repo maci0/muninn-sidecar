@@ -130,9 +130,13 @@ func (w *wsInflater) inflate(payload []byte) ([]byte, error) {
 }
 
 // wsMessageAssembler reassembles fragmented frames into complete text messages
-// for one direction, inflating permessage-deflate when negotiated. It ignores
-// binary, control, and oversized messages. Completed messages are returned by
-// add.
+// for one direction, inflating permessage-deflate when negotiated. It drops
+// binary, control, and oversized messages from the captured stream, but every
+// compressed message still passes through the inflater whether or not it is
+// captured, since skipping one desyncs the shared sliding window. An oversized
+// compressed message and an inflate error both abort the direction with an
+// error rather than silently continuing on a stale window. Completed messages
+// are returned by add.
 type wsMessageAssembler struct {
 	deflate bool // permessage-deflate negotiated for this connection
 	infl    wsInflater

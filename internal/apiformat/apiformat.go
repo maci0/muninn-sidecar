@@ -1,6 +1,8 @@
 // Package apiformat provides shared format detection, message extraction,
-// and text truncation for LLM API request/response bodies. Used by both
-// the inject and store packages to avoid duplicating format-specific logic.
+// and text truncation for LLM API request/response bodies. Used by the inject,
+// store, proxy, and grounding packages, plus the bench and QA tools, so that
+// the constants that must agree across them (the context-block delimiters the
+// proxy strips before storing, which the injector writes) stay in one place.
 package apiformat
 
 import (

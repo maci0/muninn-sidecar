@@ -22,17 +22,20 @@ const dupTokenOverlap = 0.8
 
 // selectForInjection is the full inject decision for a turn. It expects input
 // pre-sorted by effective score (descending), as mergeMemories returns, and
-// applies two filters plus a fitness check:
+// applies two filters plus a fitness check, in the order listed here (the
+// loop tests them in the same order):
 //
-//  0. Fitness: a memory MuninnDB marks dead or untrusted is dropped whatever it
-//     scored (injectable, in memory.go).
-//
-//  1. Absolute threshold (minScore): keep only memories whose effective score is
+//  0. Absolute threshold (minScore): keep only memories whose effective score is
 //     at least minScore. Because this drops every candidate when none is
 //     confident enough, it decides *when* to inject (an empty result suppresses
 //     the turn) and *what* to inject in one step. The empirical method study
 //     (eval_study.go) found this single-threshold rule matches a separate
 //     relative cutoff + gate while being simpler and wasting less budget.
+//     Because the input is sorted descending, a below-threshold memory ends the
+//     scan, so a low-scoring memory is never fitness-checked or dup-checked.
+//
+//  1. Fitness: a memory MuninnDB marks dead or untrusted is dropped whatever it
+//     scored (injectable, in memory.go).
 //
 //  2. Near-duplicate removal: a memory is dropped if it duplicates an
 //     already-kept memory — either by identical normalized concept or by high

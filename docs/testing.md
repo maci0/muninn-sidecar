@@ -7,11 +7,13 @@ process-level paths are covered by a re-exec test rather than in-package ones).
 ## Coverage
 
 - High statement coverage across every package: internal **~85–100%**
-  (`querysplit`/`reqid` 100%, `redact` 99%, `inject`/`clirun` 96%, `stats` 96%,
-  `config` 95%, `grounding` 95%, `proxy` 92%, `agents` 91%, `apiformat` 90%,
-  `mcpclient` 90%, `tailbuf` 90%, `mitm` 87%, `clock` 85%), cmd **76–90%**
-  (`msc` 76% — its `main()` paths are covered by a re-exec test, not by
-  in-package tests — and `msc-qa`/`msc-bench` 90%/90%).
+  (`querysplit`/`reqid`/`strhash` 100%, `store` 99%, `redact` 97%, `stats` 96%,
+  `inject` 96%, `clirun` 96%, `config` 96%, `grounding` 95%, `proxy` 92%,
+  `agents` 91%, `apiformat` 90%, `mcpclient` 89%, `mitm`/`clock` 86%,
+  `tailbuf` 86%), cmd **82–90%**
+  (`msc` 83% — its `main()` paths are covered by a re-exec test, not by
+  in-package tests — and `msc-bench`/`msc-qa`/`msc-eval` 90%/89%/86%).
+  Measured with `go test -count=1 -cover ./internal/... ./cmd/...`.
 - `make cover` — race-enabled coverage with a per-function breakdown.
 - The `main()` wrappers are exercised via a re-exec test (`TestMainHelp`)
   that runs `main()` inside the instrumented test binary, so even those count.

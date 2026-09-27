@@ -173,11 +173,6 @@ const maxErrorRunes = 300
 // the cap, so an over-long rejection cannot escape the scrub by being over-long;
 // the cap may then cut a marker redaction inserted, which costs the line some
 // context, never secrecy.
-//
-// Redact first and cap second: a server message long enough to be capped is
-// usually long because it quotes the offending memory, so truncating before the
-// scrub would return the first maxErrorRunes of exactly the text that must not
-// be logged.
 func scrubServerText(s string) string {
 	s = redact.Secrets(strings.TrimSpace(s))
 	r := []rune(s)

@@ -223,8 +223,9 @@ type ModelCount struct {
 	Count int64
 }
 
-// Summary returns a human-readable session summary. Returns empty string
-// if no exchanges were captured or dropped and no injections happened.
+// Summary returns a human-readable session summary. Returns empty string only
+// when nothing at all happened: no requests, no captures or drops, no
+// injections, no upgraded connections, and no upstream or proxy errors.
 func (s *Stats) Summary() string {
 	requests := s.Requests.Load()
 	captured := s.Captured.Load()

@@ -171,7 +171,7 @@ func withinBudget(memories []memory, budget int) []memory {
 // greedily including memories within the token budget (memories are expected
 // to be pre-sorted by score). The first memory is always included even if it
 // alone exceeds the budget. Returns the formatted block, estimated token count
-// (4 chars ≈ 1 token), and how many gated memories the budget dropped (so a
+// (4 bytes ≈ 1 token, see charPerToken), and how many gated memories the budget dropped (so a
 // caller can surface silent truncation on large-memory vaults).
 func formatContextBlock(memories []memory, budget int) (string, int, int) {
 	kept := withinBudget(memories, budget)

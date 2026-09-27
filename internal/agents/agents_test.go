@@ -664,3 +664,27 @@ func TestNoSystemCABundleLeavesTrustStoreAlone(t *testing.T) {
 		t.Errorf("additive CA variables must still point at the CA: %v", overrides)
 	}
 }
+
+// HasSystemCABundle decides whether ExecMITM gets a combined bundle path, and
+// `msc --dry-run` uses it to preview the same environment without writing one.
+// A disagreement would make the preview advertise trust-replacing variables the
+// real launch never sets, so the predicate must agree with what
+// writeCombinedCABundle actually produces on this host.
+func TestHasSystemCABundleAgreesWithTheWrittenBundle(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca-cert.pem")
+	if err := os.WriteFile(caPath, []byte("FAKE MSC CA\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bundlePath, err := writeCombinedCABundle(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := HasSystemCABundle(); got != (bundlePath != "") {
+		t.Errorf("HasSystemCABundle() = %v, but writeCombinedCABundle returned %q", got, bundlePath)
+	}
+	if bundlePath != "" && bundlePath != CABundlePath(caPath) {
+		t.Errorf("bundle path = %q, want %q", bundlePath, CABundlePath(caPath))
+	}
+}

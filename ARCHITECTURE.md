@@ -196,7 +196,7 @@ The greedy token-budget packer then runs over the survivors. Note the interactio
 
 ### Choosing the Method
 
-The threshold and the single-knob shape were not hand-picked; they won a cross-validated bake-off (`internal/inject/eval_study.go`, `eval_cv.go`). Nine candidate when+what strategies were compared on 600 synthetic scenarios drawn from *overlapping* relevant/noise score distributions (so no threshold separates them cleanly), using 5-fold cross-validation: each method's hyperparameters are tuned on training folds and scored on a held-out test fold, so the numbers reflect generalization, not memorization. Held-out macro-F1 (which rewards correct suppression *and* correct selection), from `go run ./cmd/msc-eval -compare`:
+The threshold and the single-knob shape were not hand-picked; they won a cross-validated bake-off (`internal/inject/eval_study.go`, `eval_cv.go`). Nine candidate when+what strategies were compared on 600 synthetic scenarios drawn from *overlapping* relevant/noise score distributions (so no threshold separates them cleanly), using 5-fold cross-validation: each method's hyperparameters are tuned on training folds and scored on a held-out test fold, so the numbers reflect generalization, not memorization. Held-out macro-F1 (which rewards correct suppression *and* correct selection), from `go run ./cmd/msc-eval -compare -study-seed 20240529` (the single seed `TestMethodStudy` pins; `-compare` without a seed runs a 5-seed set and reports slightly lower means, shown below):
 
 | method | F1 (held-out) | gate acc | wasted | note |
 |---|---|---|---|---|
@@ -208,7 +208,7 @@ The threshold and the single-knob shape were not hand-picked; they won a cross-v
 | relative-only (no suppression) | 0.838 | 86% | 19% | can't decide *when* |
 | fixed top-k above recall floor | 0.716 | 86% | 32% | legacy baseline |
 
-Two conclusions: methods that make an explicit *when* decision beat those that always inject (gate accuracy 99% vs 86%, much less wasted budget), so a suppression decision is necessary; and the single absolute threshold matches every more complex variant while being simpler and wasting less, so it wins on Occam. The tuned absolute threshold lands at ~0.56; `TestMethodStudy` guards that "absolute" stays the winner and its tuned threshold stays within ±0.05 of the production default (0.6).
+Two conclusions: methods that make an explicit *when* decision beat those that always inject (gate accuracy 99% vs 86%, much less wasted budget), so a suppression decision is necessary; and the single absolute threshold matches every more complex variant while being simpler and wasting less, so it wins on Occam. The ranking survives the 5-seed default: mean held-out F1 `absolute` 0.975 ±0.006, `absolute+capN` 0.975 ±0.007 (reported as the winner, tied within noise), `absfloor+relative` 0.951, `absfloor+margin` 0.944, `absfloor+gapcut` 0.925, `relative-only` 0.843, `fixed-topk` 0.729. The tuned absolute threshold lands at ~0.56; `TestMethodStudy` guards that "absolute" stays within 0.02 F1 of the winner and its tuned threshold stays within ±0.05 of the production default (0.6).
 
 The dataset is synthetic but principled; its score distributions are calibrated to the embedding cosines observed on a real instance (below).
 
@@ -298,7 +298,7 @@ Both the `store` and `inject` packages communicate with MuninnDB via JSON-RPC 2.
 - **Store worker** — the flush ticker, the dedup ring's expiry, the retry backoff, and the drain deadline all come from `store.NewWithClock`'s clock, so flush cycles and retry budgets advance on simulated time instead of holding a run for the ~6s of real backoff they represent (`TestFlushesRunOnTheInjectedClock`, `TestRetryBackoffRunsOnTheInjectedClock`, `TestDedupRingExpiresOnTheInjectedClock`).
 - **Injector** — `inject.Config.Clock` ages the intent cache, so a continuation's window reuse and its expiry are both scriptable without waiting out the TTL.
 
-Ordering that reaches stored or injected output is pinned the same way. The session memory window is a Go map, so `sortByScore` (`internal/inject/window.go`) sorts by effective score and breaks ties on memory ID; without it, equally scored memories would swap places between the near-duplicate filter, the token budget, and the injected block on every run. `stats.Models` applies the same tiebreak so the session summary's model line is stable.
+Ordering that reaches stored or injected output is pinned the same way. The session memory window is a Go map, so `byScoreThenID` (`internal/inject/window.go`) sorts by effective score and breaks ties on memory ID; without it, equally scored memories would swap places between the near-duplicate filter, the token budget, and the injected block on every run. `stats.Models` applies the same tiebreak so the session summary's model line is stable.
 
 Randomized evaluation arms (`internal/inject/eval_study.go`, `eval_window.go`) take their seed as a parameter and build a dedicated `rand.Rand` from it, so a reported F1 or decay curve is reproducible from the seed it was printed with. Cryptographic randomness (`internal/mitm/ca.go`: CA keys, nonces, serial numbers) stays on `crypto/rand` and is deliberately not seeded.
 

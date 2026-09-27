@@ -90,7 +90,7 @@ type Proxy struct {
 	store          Storer                 // async MuninnDB writer
 	capturePaths   []string               // path substrings to capture; empty = capture all
 	excludePaths   []string               // path substrings to exclude from capture (checked first)
-	filterPatterns []string               // tool name patterns to strip from stored bodies; empty non-nil = no filtering
+	filterPatterns []string               // tool name patterns to strip from stored bodies (always defaultFilterPatterns)
 	injector       *inject.Injector       // optional memory injector (nil = disabled)
 	server         *http.Server           // underlying HTTP server
 	reverseProxy   *httputil.ReverseProxy // stdlib reverse proxy with our hooks

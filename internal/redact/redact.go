@@ -4,10 +4,11 @@
 // numbers, the caller's home-directory path) from text,
 // replacing them with a [REDACTED] marker, and drops a URL password for
 // display. It is
-// shared by the store (scrub before persisting a captured exchange) and the
+// shared by the store (scrub before persisting a captured exchange), the
 // injector (scrub recalled memory content before it is injected into an outgoing
 // request — defense in depth against secrets/PII stored by other clients or
-// before redaction existed).
+// before redaction existed), the grounding judge, and the MCP client (scrub
+// server error text before it reaches a log line or a user-facing error).
 //
 // Patterns are deliberately conservative — anchored to distinctive provider
 // prefixes/structures, sensitive key names, or the unambiguous email grammar —
@@ -15,10 +16,13 @@
 // or personal data into an agent, but it stops the obvious leaks before captured
 // conversations persist in long-term memory and resurface on recall.
 //
-// Every call goes through Secrets, which is also where the home-directory
-// rewrite lives. Home redaction needs the process's own home directory, so
-// threading it through each call site would be one more thing a future caller
-// can forget; a forgotten call site is an unredacted leak, not a cosmetic gap.
+// Every text-scrubbing call goes through Secrets, which is also where the
+// home-directory rewrite lives. Home redaction needs the process's own home
+// directory, so threading it through each call site would be one more thing a
+// future caller can forget; a forgotten call site is an unredacted leak, not a
+// cosmetic gap. URL is the exception: it redacts credentials with
+// u.Redacted() and never touches a home path, so a URL needs no package-level
+// state.
 package redact
 
 import (
