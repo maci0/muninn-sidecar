@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -21,6 +22,30 @@ func TestMainHelp(t *testing.T) {
 	cmd.Env = append(os.Environ(), "MSC_RUN_MAIN=1")
 	if err := cmd.Run(); err != nil {
 		t.Errorf("main(-h) should exit 0, got %v", err)
+	}
+}
+
+// TestMainInvalidMCPURL re-runs main() with a MuninnDB URL that cannot be
+// dialed. It must fail fast with the usage exit code and name the bad value,
+// rather than reaching the health check and failing with a transport error.
+func TestMainInvalidMCPURL(t *testing.T) {
+	if os.Getenv("MSC_RUN_MAIN") == "1" {
+		os.Args = []string{"msc", "--mcp-url", "127.0.0.1:8750/mcp", "--dry-run", "claude"}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMainInvalidMCPURL$")
+	cmd.Env = append(os.Environ(), "MSC_RUN_MAIN=1")
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected a non-zero exit, got err=%v out=%s", err, out)
+	}
+	if got := exitErr.ExitCode(); got != exitUsage {
+		t.Errorf("exit code %d, want %d (out=%s)", got, exitUsage, out)
+	}
+	if !strings.Contains(string(out), "127.0.0.1:8750/mcp") {
+		t.Errorf("error should name the offending URL, got: %s", out)
 	}
 }
 

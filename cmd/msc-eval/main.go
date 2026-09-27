@@ -26,10 +26,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/inject"
 )
 
@@ -65,6 +65,9 @@ func run() error {
 		return fmt.Errorf("-study-n must be > 0 and 2 <= -study-folds <= -study-n")
 	}
 	if *live {
+		if err := config.ValidateMCPURL(*mcpURL); err != nil {
+			return err
+		}
 		return runLive(*liveFile, *mcpURL, resolveToken(*token), *vault, *minScore, *budget, *settle, *timeout, *asJSON)
 	}
 	return runOffline(*file, *minScore, *budget, *sweep, *compare, *asJSON, studyOpts{seed: *studySeed, n: *studyN, folds: *studyFolds})
@@ -280,29 +283,8 @@ func trunc(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-// --- minimal MuninnDB config resolution (mirrors cmd/msc defaults) ---
+// --- MuninnDB config resolution (shared with the other msc binaries) ---
 
-func defaultMCPURL() string {
-	if u := os.Getenv("MUNINN_MCP_URL"); u != "" {
-		return u
-	}
-	return "http://127.0.0.1:8750/mcp"
-}
+func defaultMCPURL() string { return config.MCPURL("") }
 
-func resolveToken(flagVal string) string {
-	if flagVal != "" {
-		return flagVal
-	}
-	if t := os.Getenv("MUNINN_TOKEN"); t != "" {
-		return t
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".muninn", "mcp.token"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
+func resolveToken(flagVal string) string { return config.Token(flagVal) }

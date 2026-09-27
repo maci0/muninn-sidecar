@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
+	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/mitm"
@@ -172,16 +173,21 @@ func run() int {
 	// Resolve MuninnDB connection (flags > env > defaults).
 	mcpURL, token, vault := resolveConfig(o)
 
+	// Reject an undialable endpoint before anything else happens, so a typo in
+	// --mcp-url or MUNINN_MCP_URL names itself instead of surfacing as a
+	// transport error from the health check (or worse, silent capture loss).
+	if err := config.ValidateMCPURL(mcpURL); err != nil {
+		logerr("%v", err)
+		return exitUsage
+	}
+
 	// Warn when a bearer token would be transmitted in plaintext over a
 	// non-loopback HTTP connection. Localhost is exempt because the traffic
 	// never leaves the machine.
 	if token != "" {
-		if u, err := url.Parse(mcpURL); err == nil && u.Scheme == "http" {
-			h := u.Hostname()
-			if h != "127.0.0.1" && h != "localhost" && h != "::1" {
-				slog.Warn("bearer token will be sent over unencrypted HTTP; use HTTPS for remote MuninnDB endpoints",
-					"mcp_url", mcpURL)
-			}
+		if u, err := url.Parse(mcpURL); err == nil && u.Scheme == "http" && !config.IsLoopbackHost(u.Hostname()) {
+			slog.Warn("bearer token will be sent over unencrypted HTTP; use HTTPS for remote MuninnDB endpoints",
+				"mcp_url", mcpURL)
 		}
 	}
 
@@ -256,14 +262,18 @@ func run() int {
 			gto = 10 * time.Second
 		}
 		groundKey := os.Getenv("OPENAI_API_KEY")
-		// Warn when the grounding API key would be sent as a bearer token over an
-		// unencrypted, non-loopback HTTP endpoint (mirrors the MuninnDB-token check
-		// above). The CLI backend (--ground-cmd) takes precedence and sends no key.
+		// Warn before OPENAI_API_KEY is sent to a grounding endpoint that is not
+		// OpenAI itself: over plaintext HTTP, or to any third-party host, the key
+		// leaves the machine in a form the user may not have intended. The CLI
+		// backend (--ground-cmd) takes precedence and sends no key.
 		if groundKey != "" && o.groundCmd == "" && o.groundURL != "" {
-			if u, err := url.Parse(o.groundURL); err == nil && u.Scheme == "http" {
-				h := u.Hostname()
-				if h != "127.0.0.1" && h != "localhost" && h != "::1" {
+			if u, err := url.Parse(o.groundURL); err == nil {
+				switch {
+				case u.Scheme == "http" && !config.IsLoopbackHost(u.Hostname()):
 					slog.Warn("OPENAI_API_KEY will be sent over unencrypted HTTP to the grounding endpoint; use HTTPS",
+						"ground_url", o.groundURL)
+				case !config.IsOpenAIHost(u.Hostname()):
+					slog.Warn("OPENAI_API_KEY will be sent to a grounding endpoint that is not api.openai.com; set the key for that endpoint explicitly to confirm",
 						"ground_url", o.groundURL)
 				}
 			}

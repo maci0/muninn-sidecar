@@ -2,14 +2,12 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/agents"
+	"github.com/maci0/muninn-sidecar/internal/config"
 )
 
 // opts holds the parsed command-line options. Flags are parsed before the
@@ -302,67 +300,12 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 	return remaining, action, nil
 }
 
-// resolveConfig resolves MuninnDB connection parameters from flags, env, and defaults.
+// resolveConfig resolves MuninnDB connection parameters from flags, env, and
+// defaults, in that order of precedence.
 func resolveConfig(o *opts) (mcpURL, token, vault string) {
-	mcpURL = o.mcpURL
-	if mcpURL == "" {
-		mcpURL = defaultMCPURL()
-	}
-	token = o.token
-	if token == "" {
-		token = defaultToken()
-	}
-	vault = o.vault
-	if vault == "" {
-		if v := os.Getenv("MSC_VAULT"); v != "" {
-			vault = v
-		} else {
-			// Default to the name of the current working directory.
-			cwd, err := os.Getwd()
-			if err == nil {
-				if base := filepath.Base(cwd); base != "." && base != "/" {
-					vault = base
-				}
-			}
-			if vault == "" {
-				vault = "sidecar"
-			}
-		}
-	}
-	return
+	return config.MCPURL(o.mcpURL), config.Token(o.token), config.Vault(o.vault)
 }
 
-// defaultMCPURL returns the MuninnDB MCP endpoint from MUNINN_MCP_URL,
-// falling back to the standard local address.
-func defaultMCPURL() string {
-	if u := os.Getenv("MUNINN_MCP_URL"); u != "" {
-		return u
-	}
-	return "http://127.0.0.1:8750/mcp"
-}
+func defaultMCPURL() string { return config.MCPURL("") }
 
-// defaultToken reads the MuninnDB bearer token from MUNINN_TOKEN or the
-// well-known file at ~/.muninn/mcp.token (the same file MuninnDB writes
-// on first start).
-func defaultToken() string {
-	if t := os.Getenv("MUNINN_TOKEN"); t != "" {
-		return t
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	tokenPath := filepath.Join(home, ".muninn", "mcp.token")
-	data, err := os.ReadFile(tokenPath)
-	if err != nil {
-		return ""
-	}
-	// Warn if the token file is readable by group or other users.
-	if info, err := os.Stat(tokenPath); err == nil {
-		if info.Mode().Perm()&0o077 != 0 {
-			slog.Warn("token file has overly permissive permissions",
-				"path", tokenPath, "fix", "chmod 600 "+tokenPath, "mode", info.Mode().Perm())
-		}
-	}
-	return strings.TrimSpace(string(data))
-}
+func defaultToken() string { return config.Token("") }

@@ -81,6 +81,7 @@ cmd/msc-qa/              Downstream answer-quality eval across models (none/inje
   score.go               SQuAD EM/token-F1 scoring
 internal/
   agents/agents.go        Agent registry (claude, codex, grok, qwen, agy, ...)
+  config/config.go        MuninnDB connection resolution (flag > env > default) + URL validation
   apiformat/apiformat.go  Format detection & message extraction (Anthropic/OpenAI/Gemini)
   inject/
     inject.go             Config, Injector, and the Enrich request path
@@ -246,7 +247,7 @@ Both the `store` and `inject` packages communicate with MuninnDB via JSON-RPC 2.
 
 ## Configuration
 
-Msc uses a flag-first, env-fallback, sensible-defaults approach:
+Msc uses a flag-first, env-fallback, sensible-defaults approach. Every setting below resolves through `internal/config`, the single place the MuninnDB endpoint, the token, and the vault name are derived — `msc`, `msc-eval`, `msc-bench`, and `msc-qa` share it rather than each re-implementing the precedence, so a default or env var name cannot drift between them. The resolved endpoint is validated at startup (scheme must be `http`/`https`, host required), so a typo in `--mcp-url` or `MUNINN_MCP_URL` fails immediately with the offending value named, instead of surfacing as a transport error from the health check. `msc --dry-run` prints the resolved configuration (never the token) to verify it.
 
 | Setting | Flag | Environment | Default |
 |---|---|---|---|
@@ -261,6 +262,7 @@ Msc uses a flag-first, env-fallback, sensible-defaults approach:
 | Recall mode (`RecallMode`) | `--recall-mode` | — | semantic (best retrieval; real-MuninnDB benchmark) |
 | Answer-grounding rerank (`Grounder`) | `--ground-url` / `--ground-cmd` | — | Off (opt-in precision step; see docs/experiments §B4) |
 | Grounding model / breadth | `--ground-model` / `--ground-topk` | — | qwen2.5:7b-instruct / top-3 |
+| Grounding API key | — | `OPENAI_API_KEY` | None; warned about when the endpoint is neither loopback nor `api.openai.com` |
 | Grounding in-flight timeout | `--ground-timeout` | — | 10s (slow judge fails open to the cosine gate) |
 | Recall timeout | — | — | 200ms per MCP call |
 | Debug logging | `--debug` | — | Off (WARN level) |

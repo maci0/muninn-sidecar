@@ -214,7 +214,9 @@ SSE streaming responses are handled incrementally — chunks flow through to the
 | `OPENAI_API_KEY` | Bearer token for the answer-grounding judge when `--ground-url` targets an OpenAI-compatible endpoint that requires auth (optional; unneeded for unauthenticated local endpoints like ollama) |
 | `MSC_WS_DEBUG` | When set, log the envelope `type` and size of every decoded WebSocket message under `--mitm` (not the content) — to map a new agent's WebSocket protocol for capture |
 
-Command-line flags take precedence over environment variables.
+Command-line flags take precedence over environment variables, which take precedence over defaults. `MUNINN_MCP_URL` is validated at startup: a value without an `http`/`https` scheme or without a host is rejected before anything is launched, naming the offending value instead of failing later inside the connectivity check. All four binaries (`msc`, `msc-eval`, `msc-bench`, `msc-qa`) resolve these variables through the same `internal/config` package, so a default or env var name cannot drift between them.
+
+To inspect the resolved configuration without launching anything, run `msc --dry-run <agent>` (add `--json` for machine output); it prints the upstream, the env vars the child will receive, the vault, the MuninnDB endpoint and its reachability, and the injection settings. Secrets are never printed: the token is resolved but not echoed.
 
 ### Flags
 

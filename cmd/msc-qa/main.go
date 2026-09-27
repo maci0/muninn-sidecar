@@ -28,15 +28,16 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
 )
@@ -105,6 +106,9 @@ func run() error {
 		answerHintF = flag.String("answer-hint", "", "constrain answers to a fixed label set (e.g. \"SUPPORTS, REFUTES\") for classification regimes like FEVER; empty = extractive span")
 	)
 	flag.Parse()
+	if err := config.ValidateMCPURL(*mcpURL); err != nil {
+		return err
+	}
 	switch *dataset {
 	case "squad", "hotpot", "generic":
 	default:
@@ -115,6 +119,14 @@ func run() error {
 	}
 	if *modelKey == "" {
 		*modelKey = os.Getenv("OPENAI_API_KEY")
+		// The env fallback is an OpenAI key, but -model-url may point anywhere.
+		// Say so before it is sent to a third-party endpoint.
+		if *modelKey != "" && *modelURL != "" {
+			if u, err := url.Parse(*modelURL); err == nil && u.Hostname() != "" &&
+				!config.IsOpenAIHost(u.Hostname()) && !config.IsLoopbackHost(u.Hostname()) {
+				fmt.Fprintf(os.Stderr, "warning: sending OPENAI_API_KEY to non-OpenAI model endpoint %s; pass -model-key to override\n", u.Hostname())
+			}
+		}
 	}
 	answerHint = *answerHintF
 
@@ -910,27 +922,6 @@ func loadDataset(dataset, path string, n int, seed int64) ([]qaItem, error) {
 	return qs, nil
 }
 
-func envOr(k, d string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return d
-}
+func envOr(key, def string) string { return config.EnvOr(key, def) }
 
-func resolveToken(flagVal string) string {
-	if flagVal != "" {
-		return flagVal
-	}
-	if t := os.Getenv("MUNINN_TOKEN"); t != "" {
-		return t
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".muninn", "mcp.token"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
+func resolveToken(flagVal string) string { return config.Token(flagVal) }

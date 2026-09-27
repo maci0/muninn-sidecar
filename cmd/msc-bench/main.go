@@ -26,11 +26,11 @@ import (
 	"hash/fnv"
 	"math"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/inject"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
@@ -83,6 +83,9 @@ func run() error {
 		asJSON     = flag.Bool("json", false, "emit machine-readable JSON")
 	)
 	flag.Parse()
+	if err := config.ValidateMCPURL(*mcpURL); err != nil {
+		return err
+	}
 	switch *corpus {
 	case "homogeneous", "diverse", "facts", "squad", "hotpot", "agentmem":
 	default:
@@ -855,27 +858,6 @@ func safeDiv(a, b float64) float64 {
 	return a / b
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
+func envOr(key, def string) string { return config.EnvOr(key, def) }
 
-func resolveToken(flagVal string) string {
-	if flagVal != "" {
-		return flagVal
-	}
-	if t := os.Getenv("MUNINN_TOKEN"); t != "" {
-		return t
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".muninn", "mcp.token"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
+func resolveToken(flagVal string) string { return config.Token(flagVal) }
