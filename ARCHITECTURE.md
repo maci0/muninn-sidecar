@@ -70,6 +70,7 @@ cmd/msc/                 CLI entry point, flag parsing, agent lifecycle
   main.go                Entry point, agent launch, signal handling
   flags.go               Flag parsing, config resolution
   commands.go            list, status, ca, version, usage
+  dryrun.go              --dry-run preview (text and JSON)
   completion.go          Shell completion scripts (bash, zsh, fish)
   signal_unix.go         /proc-based signal forwarding to the child agent
   signal_other.go        Direct child signalling where /proc is unavailable
@@ -77,15 +78,24 @@ cmd/msc/                 CLI entry point, flag parsing, agent lifecycle
 cmd/msc-eval/            Injection-quality evaluation CLI (offline + live)
   main.go                Scenario loading, report tables, MinScore sweep, method study
 cmd/msc-bench/           Real-MuninnDB retrieval + when-to-inject benchmark
-  main.go                Seed labeled corpus, probe, sweep score vs vector_score, article-level retrieval
+  main.go                Flags and the seed → probe → report wiring
+  probe.go               Corpus seeding, MCP recall, query construction, probe loop
+  rank.go                Gold-concept ranking (exact and article-level)
+  analysis.go            Retrieval and gate metrics, held-out threshold split
+  report.go              Report tables, grounded-gate line, -dump-qa
   dataset.go             Shared item/probe records, word banks, namespace check, default corpus
   facts.go               Distinct-subject corpus + unrelated absent probes
   squad.go hotpot.go     SQuAD (plain + same-article hard negatives) and HotpotQA corpora
   agentmem.go            Agent-memory fact corpus + NL→code probes
   ground.go rewrite.go   Grounded-rerank and LLM query-rewrite experiment arms
 cmd/msc-qa/              Downstream answer-quality eval across models (none/injected/distractor arms)
-  main.go                Dataset loading, model/CLI readers, arms
+  main.go                Flags and the arm loop
+  dataset.go             SQuAD / HotpotQA / flat QA loaders and sampling
+  recall.go              Gated MuninnDB recall and injected-context formatting
+  models.go              OpenAI-compatible and CLI reader backends
   score.go               SQuAD EM/token-F1 scoring
+  stats.go               Per-arm aggregation and paired bootstrap CIs
+  report.go              -md results blocks, run provenance, dataset digest
 internal/
   agents/agents.go        Agent registry (claude, codex, grok, qwen, agy, ...)
   config/config.go        MuninnDB connection resolution (flag > env > default) + URL validation
