@@ -81,13 +81,21 @@ func parseMCPTextContent(body []byte) string {
 // the same treatment here: neutralize the block markers (a guide containing
 // "</global-guide>" would close its own block and promote the rest to
 // top-level system prompt) and state what the text is.
+//
+// The text is also capped (maxGuideRunes). It arrives as a single free-form
+// string from the memory backend and is injected outside the per-memory token
+// budget, so nothing downstream bounds it: a bloated or hostile guide would
+// otherwise spend unbounded tokens on the system prompt of every session. The
+// cap matches the bound the where_left_off fallback applies to its own
+// free-form text below.
 func parseGuide(body []byte) string {
 	text := strings.TrimSpace(parseMCPTextContent(body))
 	if text == "" {
 		return ""
 	}
 	return apiformat.GlobalGuideOpen + "\n" + apiformat.ContextNotice + "\n" +
-		apiformat.NeutralizeMarkers(text) + "\n" + apiformat.GlobalGuideClose
+		apiformat.NeutralizeMarkers(apiformat.TruncateText(text, maxGuideRunes)) + "\n" +
+		apiformat.GlobalGuideClose
 }
 
 // parseWhereLeftOff extracts a summary from the where_left_off JSON-RPC response.

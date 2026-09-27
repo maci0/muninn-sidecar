@@ -118,6 +118,7 @@ internal/
     stream.go             SSE/ndjson stream capture and synthetic response building
     context.go            Request-scoped capture metadata via context.Value
   stats/stats.go          Session statistics (atomic counters)
+  tailbuf/tailbuf.go      Fixed-size tail writer for unbounded model/agent CLI output
   store/muninn.go         Async exchange delivery with batching, dedup, retry
 ```
 
@@ -253,7 +254,9 @@ Recalled memory is written by whichever client produced the past session, and ca
 1. **Block markers are neutralized.** `apiformat.NeutralizeMarkers` rewrites any `<retrieved-context>`, `<session-context>`, or `<global-guide>` tag in recalled text to `&lt;…`, in any casing or spacing. Without it a memory carrying the block's own closing tag would end the data section and have the rest of its text read as top-level system prompt. Applied to memory concepts and content, the guide, and the `where_left_off` entries, with the same regex shared through `apiformat.CountBlockTags` so the token budget accounts for the escaped form.
 2. **The block states what it carries.** Every injected block opens with `apiformat.ContextNotice`, telling the model the entries are reference notes from past sessions and that instructions inside them are to be ignored. The same notice opens the guide and session-context blocks.
 
-`grounding.Prompt`, the other point where recalled text reaches a model, fences each passage in `<passage id="N">` tags, flattens its newlines so it cannot forge a passage boundary or a verdict line, escapes the fence tags, and states that the question and passages are data to grade rather than orders.
+`grounding.Prompt`, the other point where recalled text reaches a model, fences each passage in `<passage id="N">` tags, flattens its newlines so it cannot forge a passage boundary or a verdict line, escapes the fence tags, and states that the question and passages are data to grade rather than orders. The bench's query rewriter fences its question the same way (`cmd/msc-bench/rewrite.go`), since benchmark corpora are third-party text; its sub-queries, which come back as model output and are re-sent to MuninnDB as embedding context, are length-capped before use.
+
+Model and agent CLIs invoked as judges (grounding, bench rewrite, `msc-qa`) print reasoning and banners of unbounded length, so their stdout is captured into `tailbuf.Buffer`, a fixed-size tail writer: the verdicts and answers arrive last, and a chatty run cannot grow the caller's heap.
 
 ### SSE Stream Capture
 

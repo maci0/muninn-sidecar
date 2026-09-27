@@ -43,6 +43,7 @@ import (
 	"github.com/maci0/muninn-sidecar/internal/config"
 	"github.com/maci0/muninn-sidecar/internal/grounding"
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
+	"github.com/maci0/muninn-sidecar/internal/tailbuf"
 )
 
 func newReq(ctx context.Context, url, key string, body []byte) (*http.Request, error) {
@@ -843,8 +844,11 @@ func (c *cliClient) answer(ctx context.Context, question, contextBlock string) (
 	prompt := buildCLIPrompt(question, contextBlock)
 	cmd := exec.CommandContext(cctx, c.argv[0], c.argv[1:]...)
 	cmd.Stdin = strings.NewReader(prompt)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+	// Nothing bounds what a CLI agent prints, and the answer is on its last
+	// non-empty line, so capture into a capped tail buffer: a chatty run must not
+	// grow this process's heap without limit.
+	stdout := tailbuf.New(maxModelResponse)
+	cmd.Stdout = stdout
 	if err := cmd.Run(); err != nil {
 		// A non-zero exit can still leave a usable answer on stdout (some agents
 		// exit non-zero on warnings); prefer any captured line over the error.

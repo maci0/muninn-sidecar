@@ -1847,6 +1847,27 @@ func TestParseGuide(t *testing.T) {
 		}
 	})
 
+	t.Run("oversized guide text is capped", func(t *testing.T) {
+		resp, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"result": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": strings.Repeat("x", maxGuideRunes*3)},
+				},
+			},
+			"id": 1,
+		})
+		result := parseGuide(resp)
+		// "x" appears nowhere in the markers or the notice, so its count is the
+		// guide body alone.
+		if n := strings.Count(result, "x"); n > maxGuideRunes {
+			t.Errorf("guide body kept %d chars, want at most %d", n, maxGuideRunes)
+		}
+		if !strings.Contains(result, apiformat.GlobalGuideClose) {
+			t.Error("truncating the guide must leave the block well-formed")
+		}
+	})
+
 	t.Run("invalid JSON returns empty string", func(t *testing.T) {
 		if got := parseGuide([]byte("not json")); got != "" {
 			t.Errorf("expected empty string for invalid JSON, got %q", got)

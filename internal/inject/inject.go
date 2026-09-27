@@ -85,6 +85,13 @@ const (
 // limit on the first request. 20 entries (~1k tokens) is ample session bootstrap.
 const maxWhereLeftOffEntries = 20
 
+// maxGuideRunes caps the free-form guide text MuninnDB returns for a session
+// start. The guide is one opaque string prepended outside the per-memory token
+// budget, so it is the one injected block whose size the backend alone
+// decides; 2000 runes (~500 tokens) matches the bound on where_left_off's
+// free-form fallback and leaves the budget for recalled memories.
+const maxGuideRunes = 2000
+
 // intentCacheTTL bounds how long a recall result (or a recall miss) may stand in
 // for a fresh query. The sidecar writes memories into the same vault
 // continuously, including ones that answer a question that recalled nothing
@@ -250,9 +257,10 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 			sb.WriteString(guide)
 		}
 		// where_left_off is bounded at the source by entry count (parseWhereLeftOff,
-		// maxWhereLeftOffEntries) and the guide is naturally bounded, so the
-		// assembled session context is well-formed and bounded without truncating
-		// the string (which would cut the closing marker).
+		// maxWhereLeftOffEntries) and the guide by length (parseGuide,
+		// maxGuideRunes), so the assembled session context is well-formed and
+		// bounded without truncating the string (which would cut the closing
+		// marker).
 		//
 		// Defense in depth: scrub secrets/PII before injecting, the same as the
 		// per-memory recall block (formatContextBlock). where_left_off and guide are

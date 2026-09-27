@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/redact"
+	"github.com/maci0/muninn-sidecar/internal/tailbuf"
 )
 
 // maxGroundResponse caps the grading model's response body. Verdicts are a few
@@ -272,7 +273,7 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	// much they print, so capture into a capped buffer: a runaway judge would
 	// otherwise grow the sidecar's heap unbounded on the request path. Verdict
 	// lines come last, so a truncated buffer keeps its tail, where they are.
-	stdout := &tailBuffer{limit: maxGroundResponse}
+	stdout := tailbuf.New(maxGroundResponse)
 	cmd.Stdout = stdout
 	if err := cmd.Run(); err != nil && stdout.Len() == 0 {
 		// Fail-open with a trace: a misconfigured argv or a judge that timed out
@@ -286,27 +287,6 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	// verdict after it — turning the grounding step into a silent no-op.
 	return ParseMask(stdout.String(), len(passages))
 }
-
-// tailBuffer accumulates the tail of a stream that may outgrow any fixed budget.
-// Writes past the limit drop the oldest bytes: the judge prints its verdicts last,
-// so keeping the tail preserves what ParseMask needs. It is not safe for
-// concurrent use; exec.Cmd writes to it from a single goroutine.
-type tailBuffer struct {
-	buf   []byte
-	limit int
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.limit {
-		t.buf = append(t.buf[:0], t.buf[len(t.buf)-t.limit:]...)
-	}
-	return len(p), nil
-}
-
-func (t *tailBuffer) String() string { return string(t.buf) }
-
-func (t *tailBuffer) Len() int { return len(t.buf) }
 
 // New builds the grounder selected by its arguments, or nil if none is set. A
 // CLI command takes precedence over an HTTP URL when both are given.
