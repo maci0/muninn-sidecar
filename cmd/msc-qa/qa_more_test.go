@@ -113,17 +113,15 @@ func TestReproManifest(t *testing.T) {
 	}
 }
 
-func TestAppendMD(t *testing.T) {
+func TestWriteMDBlock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "m.md")
 	var a [3]armAgg
 	a[0].add(1, 0.2, false)
 	a[1].add(1, 0.8, true)
 	a[2].add(0, 0.1, false)
-	if err := appendMD(path, "modelX", 10, a); err != nil {
-		t.Fatalf("appendMD: %v", err)
-	}
-	if err := appendMD(path, "modelY", 10, a); err != nil {
-		t.Fatalf("appendMD: %v", err)
+	rows := []string{mdRow("modelX", 10, a), mdRow("modelY", 10, a)}
+	if err := writeMDBlock(path, "m1", rows); err != nil {
+		t.Fatalf("writeMDBlock: %v", err)
 	}
 	data, _ := os.ReadFile(path)
 	if n := countSub(string(data), "model"); n < 2 {
@@ -133,15 +131,58 @@ func TestAppendMD(t *testing.T) {
 		t.Errorf("rows should carry CIs and no unreliable marker: %s", data)
 	}
 	a[1].fail() // 1/2 calls failed in one arm: >10%
-	if err := appendMD(path, "modelZ", 10, a); err != nil {
-		t.Fatalf("appendMD: %v", err)
+	rows = append(rows, mdRow("modelZ", 10, a))
+	if err := writeMDBlock(path, "m1", rows); err != nil {
+		t.Fatalf("writeMDBlock: %v", err)
 	}
 	data, _ = os.ReadFile(path)
 	if !strings.Contains(string(data), "unreliable") {
 		t.Errorf("row with >10%% failed calls must be flagged: %s", data)
 	}
-	if err := appendMD(filepath.Join(t.TempDir(), "no", "such", "dir", "m.md"), "modelX", 10, a); err == nil {
-		t.Error("appendMD into a missing directory should error")
+	if err := writeMDBlock(filepath.Join(t.TempDir(), "no", "such", "dir", "m.md"), "m1", rows); err == nil {
+		t.Error("writeMDBlock into a missing directory should error")
+	}
+}
+
+// Rerunning the same configuration must land on the same file, not a second
+// copy of the run. A different configuration keeps its own block.
+func TestWriteMDBlockIsConvergent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.md")
+	rows := []string{mdRow("modelX", 10, [3]armAgg{}), mdRow("modelY", 10, [3]armAgg{})}
+
+	if err := writeMDBlock(path, "manifest-A", rows); err != nil {
+		t.Fatalf("writeMDBlock: %v", err)
+	}
+
+	if err := writeMDBlock(path, "manifest-B", rows); err != nil {
+		t.Fatalf("writeMDBlock: %v", err)
+	}
+	if err := writeMDBlock(path, "manifest-A", rows); err != nil {
+		t.Fatalf("writeMDBlock: %v", err)
+	}
+	// Updating A must leave B's block intact.
+	updated := append([]string(nil), rows...)
+	updated = append(updated, mdRow("modelZ", 10, [3]armAgg{}))
+	if err := writeMDBlock(path, "manifest-A", updated); err != nil {
+		t.Fatalf("writeMDBlock: %v", err)
+	}
+	before, _ := os.ReadFile(path)
+	if err := writeMDBlock(path, "manifest-A", updated); err != nil {
+		t.Fatalf("writeMDBlock: %v", err)
+	}
+	second, _ := os.ReadFile(path)
+
+	if string(before) != string(second) {
+		t.Errorf("rerun changed the file\nbefore:\n%s\nafter:\n%s", before, second)
+	}
+	if n := countSub(string(second), "<!-- msc-qa repro: manifest-A -->"); n != 1 {
+		t.Errorf("expected exactly 1 block for manifest-A, got %d:\n%s", n, second)
+	}
+	if n := countSub(string(second), "<!-- msc-qa repro: manifest-B -->"); n != 1 {
+		t.Errorf("expected exactly 1 block for manifest-B, got %d:\n%s", n, second)
+	}
+	if n := countSub(string(second), "| modelX |"); n != 2 {
+		t.Errorf("expected 1 modelX row per block (2 blocks), got %d:\n%s", n, second)
 	}
 }
 

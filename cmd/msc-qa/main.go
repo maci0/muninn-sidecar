@@ -248,11 +248,10 @@ func run() error {
 		fmt.Printf("BUILD-ONLY (no -model-url / -model-cmd): answer-coverage %d/%d. Supply a reader to score arms.\n", coverage, len(questions))
 		return nil
 	}
-	if *mdFile != "" {
-		if err := appendMDLine(*mdFile, "<!-- "+manifest+" -->\n"); err != nil {
-			return fmt.Errorf("write -md manifest: %w", err)
-		}
-	}
+	// Results rows are buffered and written once at the end (see writeMDBlock):
+	// a run that dies mid-way leaves the file untouched instead of a truncated
+	// block, and a rerun replaces its own block instead of duplicating it.
+	var mdRows []string
 
 	// Arms are dynamic: the grounded arm appears only when a grounder is set.
 	armNames := []string{"none", "injected", "distractor"}
@@ -304,9 +303,12 @@ func run() error {
 			fmt.Printf("    Δgrounded F1 = %+.2f (vs none), %+.2f (vs injected)\n", agg[3].f1()-agg[0].f1(), agg[3].f1()-agg[1].f1())
 		}
 		if *mdFile != "" {
-			if err := appendMD(*mdFile, r.label(), len(questions), [3]armAgg{agg[0], agg[1], agg[2]}); err != nil {
-				return fmt.Errorf("append -md row: %w", err)
-			}
+			mdRows = append(mdRows, mdRow(r.label(), len(questions), [3]armAgg{agg[0], agg[1], agg[2]}))
+		}
+	}
+	if *mdFile != "" {
+		if err := writeMDBlock(*mdFile, manifest, mdRows); err != nil {
+			return fmt.Errorf("write -md block: %w", err)
 		}
 	}
 	return nil
@@ -329,28 +331,81 @@ func trunc(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-func appendMD(path, model string, n int, agg [3]armAgg) error {
+// mdRow formats one results row for a model.
+func mdRow(model string, n int, agg [3]armAgg) string {
 	note := ""
 	if unreliable(agg[:]) {
 		note = " <!-- unreliable: an arm lost >10% of calls -->"
 	}
-	row := fmt.Sprintf("| %s | %d | %.2f/%.2f | %.2f/%.2f | %.2f/%.2f | %s | %s |%s\n",
+	return fmt.Sprintf("| %s | %d | %.2f/%.2f | %.2f/%.2f | %.2f/%.2f | %s | %s |%s\n",
 		model, n, agg[0].em(), agg[0].f1(), agg[1].em(), agg[1].f1(), agg[2].em(), agg[2].f1(),
 		deltaCI(&agg[0], &agg[1]), deltaCI(&agg[0], &agg[2]), note)
-	return appendMDLine(path, row)
 }
 
-// appendMDLine appends one raw line to the markdown results file.
-func appendMDLine(path, line string) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+// mdManifestPrefix opens the provenance comment that starts each run's block
+// in a -md results file.
+const mdManifestPrefix = "<!-- msc-qa repro:"
+
+// writeMDBlock records one run's results in the -md file. The file is a stream
+// of blocks, each opened by its manifest comment. A rerun with the same
+// configuration derives the same manifest, so its block is replaced in place
+// rather than appended: the file converges to one row per configuration no
+// matter how many times the run is repeated. A new configuration appends a new
+// block, keeping the history of distinct runs.
+func writeMDBlock(path, manifest string, rows []string) error {
+	marker := mdManifestPrefix + " " + manifest + " -->"
+	var b strings.Builder
+	b.WriteString(marker + "\n")
+	for _, r := range rows {
+		b.WriteString(r)
+	}
+	block := b.String()
+
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if _, err := f.WriteString(line); err != nil {
-		f.Close()
-		return err
+	out := replaceMDBlock(string(existing), marker, block)
+	return os.WriteFile(path, []byte(out), 0o644)
+}
+
+// replaceMDBlock swaps the block opened by marker for block, dropping whatever
+// followed that block up to the next manifest comment (or end of file). When
+// marker is absent, the block is appended. Returns the full new file contents.
+func replaceMDBlock(content, marker, block string) string {
+	lines := strings.SplitAfter(content, "\n")
+	start := -1
+	for i, l := range lines {
+		if strings.TrimRight(l, "\n") == marker {
+			start = i
+			break
+		}
 	}
-	return f.Close()
+	if start < 0 {
+		if content != "" && !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		return content + block
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], mdManifestPrefix) {
+			end = i
+			break
+		}
+	}
+	// Keep any trailing blank line that separated this block from the next so
+	// the file does not gain blank lines on each rerun.
+	tail := ""
+	if end < len(lines) && strings.TrimSpace(lines[end-1]) == "" {
+		tail = lines[end-1]
+	}
+	var b strings.Builder
+	b.WriteString(strings.Join(lines[:start], ""))
+	b.WriteString(block)
+	b.WriteString(tail)
+	b.WriteString(strings.Join(lines[end:], ""))
+	return b.String()
 }
 
 // fileSHA256 returns the hex SHA-256 of a file's contents.

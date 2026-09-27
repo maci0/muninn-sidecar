@@ -29,6 +29,16 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 - **No hardcoded `/tmp`.** `msc-bench`/`msc-qa` `-squad-file` and
   `scripts/fetch_hf_datasets.py` resolve their default dataset path through
   `os.TempDir()` / `tempfile.gettempdir()`.
+- **A retried memory write is one write.** A MuninnDB flush that fails after the
+  server committed it was retried under a fresh JSON-RPC id with no dedup
+  token, so the memory was stored twice. Every attempt of a flush now reuses one
+  request id, and each memory carries a content-addressed `dedup_key`
+  (SHA-256 of vault + concept + content).
+- **`msc-qa -md` converges on rerun.** Results were appended blindly, so a
+  repeated run with identical flags added a second copy of the same rows. Each
+  run's block is now keyed by its repro manifest and replaced in place; a
+  different configuration still gets its own block. Rows are also written once
+  at the end, so a run that dies mid-way leaves no truncated block.
 - **Upgrades survive capture.** 101 Switching Protocols responses are no longer
   consumed by capture on the plain proxy path; WebSocket upgrades pass through
   intact.

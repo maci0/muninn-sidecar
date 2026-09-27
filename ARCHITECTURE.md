@@ -221,6 +221,8 @@ Storing to MuninnDB is entirely async — the proxy never blocks on a MuninnDB c
 
 The dedup ring buffer (`[8]map[uint64]struct{}`) prevents the same concept from being stored multiple times within a short window. In tool-use chains, the agent often sends the same user message multiple times with different tool results — the dedup ring catches these. Each ring slot holds a set of FNV-1a concept hashes; the ring advances one slot per flush cycle (~2s), so hashes expire after ~16 seconds.
 
+A transient MuninnDB failure is retried up to 3 times with 2s/4s backoff, and a 5xx or a dropped connection can arrive *after* the server already committed the write. A retry therefore carries the same JSON-RPC request id (reserved once per flush, via `mcpclient.NextRequestID` + `CallWithID`) and each memory carries a `dedup_key`: the hex SHA-256 of `vault`, `concept`, and `content`. Both are functions of the memory itself, so every attempt of a flush — and a replay from a later run — presents the server with one identity for one memory. A per-attempt id or a per-attempt key would instead make the retry look like a new write and store the memory twice.
+
 ### Anti-Recursion Filtering
 
 Without filtering, each stored exchange would embed the full conversation history — including previously injected memories and MuninnDB tool calls. On the next recall cycle, these would be recalled and re-injected, compounding infinitely. The filter pipeline prevents this by:

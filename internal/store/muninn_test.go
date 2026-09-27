@@ -1069,3 +1069,97 @@ func TestStoreHealthCheck(t *testing.T) {
 		t.Error("expected error on 503 health")
 	}
 }
+
+// A retry of a remember must be recognisable as the same write: same JSON-RPC
+// request id, same per-memory dedup_key. A 500 can arrive after the server
+// already committed, so a per-attempt id would store the memory twice.
+func TestRetryReusesRequestIDAndDedupKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping retry test in short mode (needs ~2s for backoff)")
+	}
+
+	type call struct {
+		id      int64
+		dedup   string
+		concept string
+	}
+	var mu sync.Mutex
+	var got []call
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var env struct {
+			ID     int64 `json:"id"`
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		if json.Unmarshal(body, &env) != nil {
+			w.WriteHeader(400)
+			return
+		}
+		mu.Lock()
+		got = append(got, call{
+			id:      env.ID,
+			dedup:   env.Params.Arguments["dedup_key"].(string),
+			concept: env.Params.Arguments["concept"].(string),
+		})
+		n := len(got)
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(500) // ambiguous failure: the server may have committed
+			return
+		}
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL, "", "idempotency-test", &stats.Stats{})
+	s.Store(&CapturedExchange{
+		Agent:    "test",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"write me once"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"stored"}]}`),
+	})
+	s.Drain()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) < 2 {
+		t.Fatalf("expected the first attempt plus a retry, got %d attempt(s)", len(got))
+	}
+	first := got[0]
+	if first.dedup == "" {
+		t.Fatal("first attempt carried no dedup_key")
+	}
+	for i, c := range got[1:] {
+		if c.id != first.id {
+			t.Errorf("attempt %d used request id %d, want %d (a fresh id makes a retry look like a new write)", i+2, c.id, first.id)
+		}
+		if c.dedup != first.dedup {
+			t.Errorf("attempt %d used dedup_key %q, want %q", i+2, c.dedup, first.dedup)
+		}
+		if c.concept != first.concept {
+			t.Errorf("attempt %d used concept %q, want %q", i+2, c.concept, first.concept)
+		}
+	}
+}
+
+// Two flushes of the same memory derive the same dedup key, so a redelivered
+// exchange collapses onto the stored one instead of adding a second.
+func TestDedupKeyIsContentAddressed(t *testing.T) {
+	a := dedupKey("v", "concept", "content")
+	if a != dedupKey("v", "concept", "content") {
+		t.Fatal("dedupKey is not stable across calls for identical input")
+	}
+	if a == dedupKey("v", "concept", "other content") {
+		t.Fatal("different content produced the same dedup key")
+	}
+	if a == dedupKey("other", "concept", "content") {
+		t.Fatal("different vault produced the same dedup key")
+	}
+	if a == dedupKey("v", "other concept", "content") {
+		t.Fatal("different concept produced the same dedup key")
+	}
+}

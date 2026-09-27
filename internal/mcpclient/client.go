@@ -23,6 +23,12 @@ const maxResponseSize = 10 << 20 // 10 MiB
 // requestID is a process-wide atomic counter for unique JSON-RPC request IDs.
 var requestID atomic.Int64
 
+// NextRequestID reserves a fresh JSON-RPC request ID. A caller that will retry
+// an operation must reserve the ID once and pass it to every attempt via
+// CallWithID, so a retry is recognisable as the same logical operation rather
+// than as a new one. Request IDs minted here are unique for the process.
+func NextRequestID() int64 { return requestID.Add(1) }
+
 // Client sends JSON-RPC 2.0 tools/call requests to a MuninnDB MCP endpoint.
 type Client struct {
 	url        string
@@ -119,7 +125,19 @@ func (e *RPCError) Error() string { return fmt.Sprintf("rpc error %d: %s", e.Cod
 // Call sends a JSON-RPC 2.0 tools/call request and returns the raw response body.
 // Returns a *ServerError for 5xx, *ClientError for 4xx, or *RPCError for a
 // JSON-RPC protocol-level error (HTTP 200 with an "error" field in the body).
+//
+// Call mints a fresh request ID per invocation, so calling it in a retry loop
+// gives every attempt a distinct ID. A retried write should reserve one ID via
+// NextRequestID and use CallWithID for every attempt instead.
 func (c *Client) Call(ctx context.Context, toolName string, args map[string]any) ([]byte, error) {
+	return c.CallWithID(ctx, NextRequestID(), toolName, args)
+}
+
+// CallWithID is Call with a caller-supplied JSON-RPC request ID. Retries of one
+// logical operation must reuse the same ID: it is the only field of the request
+// that stays constant across attempts, so a server that collapses repeated
+// writes can recognise the retry as the same operation rather than a new one.
+func (c *Client) CallWithID(ctx context.Context, id int64, toolName string, args map[string]any) ([]byte, error) {
 	payload := map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "tools/call",
@@ -127,7 +145,7 @@ func (c *Client) Call(ctx context.Context, toolName string, args map[string]any)
 			"name":      toolName,
 			"arguments": args,
 		},
-		"id": requestID.Add(1),
+		"id": id,
 	}
 
 	body, err := json.Marshal(payload)
