@@ -22,7 +22,7 @@ type Stats struct {
 	// stopped calling look identical without it.
 	Requests    atomic.Int64 // requests accepted by the proxy (status endpoint excluded)
 	Captured    atomic.Int64 // total exchanges entering Store() (includes those later dropped, deduped, skipped, or failed to flush)
-	Dropped     atomic.Int64 // exchanges dropped (queue full)
+	Dropped     atomic.Int64 // exchanges dropped (queue full, byte budget exhausted, or after drain)
 	Deduped     atomic.Int64 // exchanges skipped (duplicate concept)
 	Skipped     atomic.Int64 // exchanges skipped (empty content or noise patterns)
 	Flushed     atomic.Int64 // exchanges delivered to MuninnDB

@@ -1,6 +1,6 @@
-// This file contains the injection threshold: its default, the Otsu-based
-// calibration that retunes it from an observed recall-score sample, and the
-// rolling online calibration that tracks drift between requests.
+// This file holds the calibration that retunes the injection threshold from an
+// observed recall-score sample, plus the clamp bounds on the calibrated range.
+// The threshold's default lives in inject.go.
 package inject
 
 import (

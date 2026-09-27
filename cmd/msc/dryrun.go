@@ -64,7 +64,7 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 			InjectRecall    string            `json:"inject_recall_mode,omitempty"`
 			InjectCalibrate string            `json:"inject_calibration,omitempty"`
 			MITM            bool              `json:"mitm"`
-			MITMHosts       []string          `json:"mitm_hosts,omitempty"` // scope (+ upstream); empty when intercepting all
+			MITMHosts       []string          `json:"mitm_hosts,omitempty"` // scope (+ upstream); empty when intercepting all, ["*"] when --mitm-host "*" forces it
 			MITMCACert      string            `json:"mitm_ca_cert,omitempty"`
 		}
 		info := dryRunInfo{

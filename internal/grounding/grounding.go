@@ -65,9 +65,9 @@ const groundIdleConnTimeout = 90 * time.Second
 
 // DefaultModel is the judge model assumed when the operator names none. It is
 // a local instruct model, because the judge is meant to be the cheap in-flight
-// step: the 7b point is where docs/model-eval.md measures real answer-bearing
-// grading, below it the judge accepts nearly every passage and only costs a
-// call.
+// step: the 7b point is where docs/experiments.md section B3 measures real
+// answer-bearing grading, below it the judge accepts nearly every passage and
+// only costs a call.
 const DefaultModel = "qwen2.5:7b-instruct"
 
 // DefaultTimeout bounds one in-flight grading call. The judge runs inside a

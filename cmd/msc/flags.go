@@ -12,7 +12,8 @@ import (
 
 // opts holds the parsed command-line options. Flags are parsed before the
 // first positional argument (the agent name); everything after the agent
-// name is passed through to the child process unmodified.
+// name is passed through to the child process unmodified, except after a
+// reserved subcommand, where flags may follow the name.
 type opts struct {
 	vault           string
 	mcpURL          string

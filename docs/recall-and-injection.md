@@ -298,7 +298,7 @@ go run ./cmd/msc-bench -seed -probe -corpus squad -vault msc-bench -mode semanti
 ```
 
 The selection logic gates on `vector_score`; if your MuninnDB build renames or
-omits that field, update `normalizeRelevance` in `internal/inject/inject.go`.
+omits that field, update `normalizeRelevance` in `internal/inject/memory.go`.
 
 ## Observability
 
@@ -320,7 +320,7 @@ appear only when those paths fire.
 ## Fuzzing the parsing surfaces
 
 Every in-flight parser that ingests untrusted agent/model bytes has a Go fuzz
-target (65 of them, mostly in `fuzz_test.go` files, plus a few in the packages'
+target (67 of them, mostly in `fuzz_test.go` files, plus a few in the packages'
 main test files), since the proxy must never panic on malformed traffic:
 
 - `apiformat`: `FuzzExtractUserMessage`, `FuzzExtractAssistantMessage`,

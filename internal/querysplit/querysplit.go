@@ -16,8 +16,9 @@ import (
 // the one the words it was filtering are made of: a single CJK character is
 // three bytes and so cleared a floor written to reject stray ASCII initials,
 // while the two-character entity the floor is meant to admit and reject
-// correctly was measured on the wrong axis. A byte floor is also 64× more
-// permissive for Cyrillic, Greek and Devanagari than for Latin.
+// correctly was measured on the wrong axis. A byte floor is also 2-3x more
+// permissive for Cyrillic, Greek and Devanagari than for Latin, since those
+// scripts cost 2-3 bytes per character.
 const minEntityRunes = 2
 
 // trailingPunct is the set of trailing punctuation trimmed off an entity span.

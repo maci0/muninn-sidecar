@@ -51,7 +51,8 @@ func entryBytes(m memory) int {
 }
 
 // contextOverheadBytes is the fixed cost of the block wrapper: the markers, the
-// two separating newlines, and the data-not-instructions notice. Shared by the
+// two separating newlines, and the data-not-instructions notice, plus one byte
+// of slack so the estimator can never under-count the wrapper. Shared by the
 // budget estimator and the formatter so the token count the injector reports
 // matches the bytes it actually writes.
 const contextOverheadBytes = len(apiformat.ContextPrefix) + len(apiformat.ContextNotice) +

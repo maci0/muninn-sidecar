@@ -100,8 +100,8 @@ const (
 // maxWhereLeftOffEntries caps how many previous-session items the one-shot
 // session-context block lists. Each entry is already capped at
 // maxWhereLeftOffLabelRunes; bounding the count keeps this server-controlled,
-// budget-exempt block from growing without limit on the first request.
-// 20 entries (~1k tokens) is ample session bootstrap.
+// budget-exempt block from growing without limit on the first request. The
+// recall call asks for 5, so this is defense in depth, not a routine limit.
 const maxWhereLeftOffEntries = 20
 
 // maxWhereLeftOffLabelRunes caps one previous-session item's concept (or, when

@@ -69,7 +69,7 @@ flowchart LR
 cmd/msc/                 CLI entry point, flag parsing, agent lifecycle
   main.go                Entry point, agent launch, signal handling
   flags.go               Flag parsing, config resolution
-  commands.go            list, status, ca, version, usage
+  commands.go            help, list, status, ca, version, usage
   dryrun.go              --dry-run preview (text and JSON)
   completion.go          Shell completion scripts (bash, zsh, fish)
   signal_unix.go         /proc-based signal forwarding to the child agent
@@ -110,7 +110,7 @@ internal/
     memory.go             Memory record, relevance normalization, decay arithmetic
     window.go             Session memory window (merge + decay + snapshot)
     select.go             Selection policy: cosine gate, dedup, contradiction resolution
-    calibrate.go          Injection threshold: default, Otsu calibration, online drift tracking
+    calibrate.go          Injection threshold: clamp bounds, Otsu calibration, online drift tracking
     mcp.go                MuninnDB MCP calls and JSON-RPC response parsing
     format.go             Context block formatting, budget packing, per-format injection
     eval.go               Offline selection-quality harness (precision/recall/F1, nDCG, gate, sweep)
@@ -138,8 +138,11 @@ internal/
     context.go            Request-scoped capture metadata via context.Value
     clock.go              The proxy's only source of wall-clock time (SystemClock by default)
     deadline.go           Per-response write-idle bound, replacing http.Server.WriteTimeout
+    access.go             Per-turn access log line and the uncapturable-response counter
   reqid/reqid.go          Per-request correlation ID, minted at ingress and carried to the store worker
+  report/trunc.go         Shared rune-safe truncation for the report binaries' table columns
   stats/stats.go          Session statistics (atomic counters)
+  strhash/strhash.go      Allocation-free FNV-1a, used to key per-model stats without formatting the name
   tailbuf/tailbuf.go      Fixed-size tail writer for unbounded model/agent CLI output
   store/muninn.go         Async exchange delivery with batching, dedup, retry
 ```
@@ -243,7 +246,7 @@ Selection is a heuristic, so it ships with an evaluation harness (`internal/inje
 - **Offline layer** (deterministic, CI-gated): a labeled corpus (`internal/inject/testdata/scenarios.json`) gives each candidate a simulated recall score and a gold relevance label, plus a `should_inject` gate label per scenario. `RunScenario` feeds candidates through the real `selectForInjection` + `withinBudget` pipeline and scores the outcome: **precision/recall/F1** (did we inject the useful memories and skip noise?), **gate accuracy** (was the inject-vs-suppress decision right?), **nDCG** (are injected memories ordered by true relevance?), and **budget efficiency**. `TestCorpusRegression` fails CI if aggregate quality drops below floors.
 - **MinScore sweep**: `SweepMinScore` (`msc-eval -sweep`) charts gate accuracy, precision/recall, and wasted budget across thresholds on the corpus. It plateaus at perfect over [0.52, 0.60], consistent with the 0.6 production default on `vector_score` (see above); `TestMinScoreThresholdImproves` guards it.
 - **Method study**: `RunMethodStudy` (`msc-eval -compare`) runs the cross-validated comparison above.
-- **Live layer** (`internal/inject/eval_live.go`, opt-in): seeds a throwaway MuninnDB vault and exercises the full recall + selection path, reporting how many expected concepts were injected. This covers recall quality (embedding search) on top of selection quality. It has side effects and needs a running server, so it runs only via `msc-eval -live`, never in the normal test suite — and is the way to re-tune `MinScore` against real score distributions.
+- **Live layer** (`internal/inject/eval_live.go`, opt-in): seeds a throwaway MuninnDB vault and exercises the full recall + selection path, reporting how many expected concepts were injected. This covers recall quality (embedding search) on top of selection quality. It has side effects and needs a running server, so it runs only via `msc-eval -live -live-file <scenarios.json>`, never in the normal test suite — and is the way to re-tune `MinScore` against real score distributions.
 
 Run `make eval` for the offline report + sweep, `go run ./cmd/msc-eval -compare` for the method study, or `go run ./cmd/msc-eval -json` for machine-readable output.
 
@@ -259,7 +262,7 @@ The dedup ring buffer (`[8]map[uint64]struct{}`) prevents the same concept from 
 
 The ring records what the vault actually holds, not what the worker merely prepared. A hash enters the ring only once the flush carrying it has succeeded, and a repeat inside the undelivered batch is collapsed against a per-batch pending set instead. Marking a concept at format time would make the ring a record of *attempts*: a flush that fails permanently (a 4xx, or a retry budget spent against an unreachable server) would leave a mark for a memory that was never written, and the user's re-ask of the same question inside the window would be deduped away and lost. The ring window is also rolled *before* each flush rather than after, so a delivered memory occupies a full ~16s window instead of being cleared by the same tick that stored it.
 
-A transient MuninnDB failure is retried up to 3 times with 2s/4s backoff, and a 5xx or a dropped connection can arrive *after* the server already committed the write. A retry therefore carries the same JSON-RPC request id (reserved once per flush, via `mcpclient.NextRequestID` + `CallWithID`) and each memory carries a `dedup_key`: the hex SHA-256 of `vault`, `concept`, and `content` (`mcpclient.DedupKey`). Both are functions of the memory itself, so every attempt of a flush — and a replay from a later run — presents the server with one identity for one memory. A per-attempt id or a per-attempt key would instead make the retry look like a new write and store the memory twice.
+A transient MuninnDB failure gets up to 3 attempts total (1 initial plus 2 retries) with 2s/4s backoff, and a 5xx or a dropped connection can arrive *after* the server already committed the write. A retry therefore carries the same JSON-RPC request id (reserved once per flush, via `mcpclient.NextRequestID` + `CallWithID`) and each memory carries a `dedup_key`: the hex SHA-256 of `vault`, `concept`, and `content` (`mcpclient.DedupKey`). Both are functions of the memory itself, so every attempt of a flush — and a replay from a later run — presents the server with one identity for one memory. A per-attempt id or a per-attempt key would instead make the retry look like a new write and store the memory twice.
 
 Every other write to MuninnDB derives its key the same way, so a rerun is a no-op on the server rather than a second copy. `msc-bench -seed` re-run adds no second copy of the corpus, and `msc-eval -live` re-run re-seeds the same vault idempotently; without the key both would grow their vault on every run, and the benchmark would end up measuring the duplicates it seeded itself.
 

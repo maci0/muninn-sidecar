@@ -65,8 +65,9 @@ const leafValidity = 24 * time.Hour
 const certBackdate = time.Hour
 
 // maxCacheEntries caps the per-host leaf cache so a long-running transparent
-// proxy that sees many hosts can't grow it without bound. Eviction is
-// approximate (drops an arbitrary entry), which is fine for a size guard.
+// proxy that sees many hosts can't grow it without bound. Full, the cache evicts
+// the lexicographically smallest host (see LeafFor), so a replayed run reaches
+// the same cache state.
 const maxCacheEntries = 1024
 
 // maxHostLen rejects hosts longer than the DNS name limit (RFC 1035, 253

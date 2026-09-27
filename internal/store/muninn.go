@@ -373,8 +373,9 @@ func (s *MuninnStore) reserve(n int64) bool {
 func (s *MuninnStore) release(n int64) { s.queuedBytes.Add(-n) }
 
 // Drain signals the background worker to stop accepting new exchanges, then
-// blocks until all pending exchanges are flushed to MuninnDB and the worker
-// exits. Call this during graceful shutdown to avoid losing in-flight captures.
+// blocks until the worker has flushed what it can and exited. Queued exchanges
+// MuninnDB has not accepted within drainTimeout are abandoned, so captures can
+// be lost at shutdown; call this during graceful shutdown to minimize that.
 // Safe to call multiple times.
 func (s *MuninnStore) Drain() {
 	s.drainOnce.Do(func() {

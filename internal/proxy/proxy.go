@@ -452,8 +452,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // serveStatus answers StatusPath with the session's operational state: what
 // the sidecar is proxying, how long it has been up, and the capture/injection
 // counters, so an operator can tell a working sidecar from a silently failing
-// one without reading logs. Non-GET methods fall through to the proxy, so a
-// captured agent API path is never shadowed.
+// one without reading logs. Methods other than GET and HEAD fall through to the
+// proxy, so a captured agent API path is never shadowed.
 //
 // The response separates liveness ("status" is "ok" whenever the handler runs,
 // so the process can be restarted correctly) from health ("degraded", with the
@@ -855,14 +855,15 @@ func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
 }
 
 // buildExchange constructs a CapturedExchange from capture context and
-// response data. This is the single construction site for exchanges, used by
-// both the non-streaming and streaming paths. The bodies are handed over as
+// response data. It is the construction site for the two HTTP paths
+// (non-streaming and streaming); the MITM WebSocket tap builds its exchange
+// directly in wscapture.go. The bodies are handed over as
 // captured: stripping injected context and muninn tool traffic, and deriving
 // model/usage, all parse bodies that reach tens of MiB, so they run on the
 // store's worker goroutine (see prepareExchange) rather than here.
 //
-// DurationMs is measured here, at the one point every exchange passes through,
-// so both paths time the same interval: arrival to the last response byte. The
+// DurationMs is measured here for both HTTP paths, so each times the same
+// interval: arrival to the last response byte. The
 // streaming path reaches this after the last delta, so its sample covers the
 // whole stream rather than just the first byte.
 func buildExchange(clock Clock, ctx *captureCtx, statusCode int, respBody json.RawMessage) *store.CapturedExchange {

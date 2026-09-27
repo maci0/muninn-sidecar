@@ -154,8 +154,9 @@ func parseWhereLeftOff(body []byte) string {
 }
 
 // recall calls MuninnDB's muninn_recall tool via JSON-RPC. Returns at most 10
-// memories above the configured relevance threshold. 10 gives the budget
-// formatter enough candidates to fill the token budget without fetching
+// memories above the server-side recall floor (inj.threshold), not the
+// injection gate, which the client applies in selectForInjection. 10 gives the
+// budget formatter enough candidates to fill the token budget without fetching
 // more than will ever be injected.
 func (inj *Injector) recall(ctx context.Context, query string) ([]memory, error) {
 	args := map[string]any{

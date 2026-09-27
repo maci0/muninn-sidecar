@@ -14,8 +14,9 @@ func signalPID(pid int, sig syscall.Signal) error {
 	return fmt.Errorf("cannot signal pid %d: no process table on this platform", pid)
 }
 
-// signalPIDGroup has no portable equivalent here; callers fall back to
-// signalPID, which is all this platform can do anyway.
+// signalPIDGroup has no portable equivalent here. Without a /proc walk the
+// caller never finds a pgrp to group-signal, so delivery goes through
+// signalChildHandle instead.
 func signalPIDGroup(pgrp int, sig syscall.Signal) error {
 	return fmt.Errorf("cannot signal process group %d on this platform", pgrp)
 }

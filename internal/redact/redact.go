@@ -474,9 +474,9 @@ func URL(raw string) string {
 	return u.Redacted()
 }
 
-// Secrets replaces well-known credential formats in s with Marker, and the
-// caller's home-directory prefix with HomeMarker. Returns s unchanged when it
-// contains no recognized secret.
+// Secrets replaces secret formats, email addresses, and personal-data key=value
+// assignments in s with Marker, and the caller's home-directory prefix with
+// HomeMarker. Returns s unchanged when it contains nothing to redact.
 func Secrets(s string) string {
 	if s == "" {
 		return s

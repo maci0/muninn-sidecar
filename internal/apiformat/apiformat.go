@@ -54,8 +54,10 @@ const (
 // multi-byte argument mid-character in the middle of a summary line.
 const maxToolArgRunes = 100
 
-// ContextNotice opens the body of every retrieved-context block. The block
-// carries text that originated outside this process — memories recalled from a
+// ContextNotice opens the body of every injected context block: the
+// retrieved-context block, and the session-context and global-guide blocks
+// (internal/inject/mcp.go). The block carries text that originated outside
+// this process — memories recalled from a
 // shared vault, written by whichever client (or captured web page, or pasted
 // tool result) produced them — and it is injected as system-level text, so
 // without this line a memory that reads like an instruction is
@@ -314,7 +316,8 @@ func unwrapCloudCodeResponse(doc map[string]any) map[string]any {
 }
 
 // ExtractAssistantMessage pulls the assistant's response text and tool action
-// summary from a response body, handling Anthropic, OpenAI, and Gemini formats.
+// summary from a response body, handling Anthropic, OpenAI, OpenAI Responses,
+// Gemini, and Gemini Cloud Code formats.
 // When the response contains tool_use blocks (common in coding agent sessions),
 // a compact summary like "[Read /src/foo.go] [Edit /src/bar.go]" is included
 // so the stored memory captures what the assistant was doing, not just text.

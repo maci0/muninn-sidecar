@@ -66,10 +66,10 @@ type childProc struct {
 }
 
 // childProcs returns this process's direct children by walking /proc. The
-// agents package owns child process construction and does not expose the
-// handle, so signal forwarding discovers the agent via the kernel. Returns
-// nil on platforms without /proc (forwarding is then a no-op and only
-// terminal-generated signals reach the child).
+// agents package publishes the running child, but signal forwarding prefers the
+// kernel view because only /proc reports the child's process group. Returns nil
+// on platforms without /proc, where the caller falls back to the published
+// handle.
 func childProcs() []childProc {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {

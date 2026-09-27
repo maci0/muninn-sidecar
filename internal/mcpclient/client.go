@@ -226,7 +226,8 @@ func (e *RPCError) Error() string { return fmt.Sprintf("rpc error %d: %s", e.Cod
 // gives every attempt a distinct ID. A retried write should reserve one ID via
 // NextRequestID and use CallWithID for every attempt instead.
 //
-// 5xx is returned as a plain wrapped error, which callers treat as retryable.
+// 5xx is returned as a *ServerError, the type callers match on to decide a
+// failure is retryable.
 func (c *Client) Call(ctx context.Context, toolName string, args map[string]any) ([]byte, error) {
 	return c.CallWithID(ctx, NextRequestID(), toolName, args)
 }
