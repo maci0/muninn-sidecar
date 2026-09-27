@@ -25,7 +25,6 @@ minor bump is safe.
   vector, which every other user on the machine can read through `ps`, and in
   shell history. `msc` and the three tool binaries now name the environment
   variable that keeps the secret out of both.
-
 - **One clock for the whole sidecar.** `internal/clock` holds the project's only
   time source: `Clock` (now, elapsed, `After`, `NewTicker`, `AfterFunc`),
   `SystemClock` for production, and `Fake`, a manually advanced clock. The
@@ -717,6 +716,54 @@ minor bump is safe.
 
 - **`msc-bench` and `msc-qa` build again.** Both used `filepath.Join` without
   importing `path/filepath`, so the two commands failed to compile.
+
+- **Breaking: the `dedup_key` every memory is written under has changed.**
+  `DedupKey` framed vault, concept, and content with NUL separators, and a NUL
+  is a legal character in captured conversation text: the concept `"a\0b"` with
+  content `"c"` and the concept `"a"` with content `"b\0c"` framed to the same
+  bytes and hashed to one key, so the second memory was dropped as a duplicate
+  of the first. Each field is now length-prefixed, which frames any input
+  unambiguously. The key changes for every memory, so a vault seeded before
+  this reads its existing memories as new and writes them again the next time
+  the same question comes round: the duplicates are inert, the store simply
+  re-learns them.
+- **A percent-encoded MCP path no longer sends the health check somewhere
+  else.** `healthURLFrom` appended to the decoded path, so an endpoint at
+  `/rpc%2Fv1` was probed at `/rpc/v1/health`, a path the server does not serve,
+  and the startup health check failed against a working server. The append
+  happens on the escaped path with `RawPath` kept alongside `Path`, so a
+  percent-encoded separator survives.
+- **Two long model names no longer count as one.** The 64-byte display clip ran
+  before the model was inserted into the tally, so the clipped string was also
+  its identity: two distinct names sharing their first 64 bytes counted as a
+  single model, and the summary printed a name that was neither of them. The
+  tally is keyed on a hash of the full name now, and only the stored name is
+  clipped.
+- **The entity-span floor is counted in characters, and a case difference no
+  longer doubles the recall.** The floor that decides which capitalized runs are
+  worth a second recall was three bytes, a different unit from the words it
+  filtered: a single CJK character cleared a floor written to reject stray
+  ASCII initials, while a two-character Cyrillic or Devanagari name did not. It
+  is two characters now. The sub-query dedup set is keyed on the lowercased span
+  as well, matching the lowercased concept index it is recalled against, so
+  "Paris" and "paris" are one sub-query rather than two.
+- **A stray passage number no longer makes a single verdict unread.** The judge
+  reply was read as one bare yes or no whenever no `n: yes`/`n: no` matched a
+  passage in range, so a reply numbering a passage past the top-K (`7: no`)
+  alongside a real in-range verdict was graded on the stray number's answer and
+  the real hit was dropped. Any numbered shape now claims the reply.
+- **The MITM leaf cache evicts the same host on every run.** The cache is
+  bounded, but the victim was whichever host the map range visited first, and Go
+  randomizes map iteration order, so a replayed run re-minted leaves for a
+  different set of hosts and reached a different cache state. The victim is now
+  the lexicographically smallest host.
+- **The grading prompt is bounded.** A recalled memory was fenced and scrubbed
+  but never capped, so one bloated memory filled the judge's whole context and
+  buried the question, and a top-K of long ones multiplied out from there. Each
+  passage and the question are capped at 4000 characters and the assembled
+  prompt at 256 KiB; passages past the budget are dropped whole, and an id left
+  ungraded reads as keep, the same direction a judge outage degrades.
+
 ### Security
 
 - **The grounding judge can no longer be told what to grade by the question.**
@@ -732,6 +779,14 @@ minor bump is safe.
   single-prompt CLI reader concatenated the question into the instruction with
   no fence at all. Both are now handled exactly as the injection path handles
   them, so the eval measures the path the sidecar actually takes.
+- **The model name is scrubbed and capped before it becomes a memory tag.**
+  Every field that reaches a memory is scrubbed under the redaction toggle, and
+  the model name was the one exception: it is copied verbatim from the request
+  body onto every memory the exchange writes, so a client-supplied string
+  carrying an identifier or a secret was persisted to long-term memory and
+  re-injected on every later recall of it. It is scrubbed like the rest and
+  capped at 64 characters, matching the cap the session tally applies, so the
+  two views of a run cannot disagree about which model was in use.
 
 ### Validated
 
