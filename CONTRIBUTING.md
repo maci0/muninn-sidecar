@@ -141,3 +141,29 @@ agent's connection (see `internal/proxy/mitm.go`).
 - **No AI attribution** in commit messages or trailers.
 - Update `CHANGELOG.md` under `[Unreleased]` for user-visible changes; versions
   follow SemVer and tag from `main`.
+
+An entry belongs under `[Unreleased]` when the change lands, not when the release
+is cut: a shipped feature (the observability work, `request_id` logging,
+`--log-json`, `/__msc/health`) accumulated commit after commit with no entry at
+all. Group by impact, `Added` / `Fixed` / `Changed`, and write what a user sees
+change, not which function changed.
+
+## Release
+
+The project is pre-1.0, so a minor bump may carry breaking CLI or output
+changes; say so in the entry rather than assuming SemVer protects the reader.
+One commit does all four steps, so the tag, the version, and the notes cannot
+drift apart:
+
+1. Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD` in `CHANGELOG.md`,
+   leaving an empty `## [Unreleased]` above it.
+2. Add `[X.Y.Z]: .../releases/tag/vX.Y.Z` to the link list at the bottom.
+3. Tag that commit `vX.Y.Z` on `main`. The tag is the release, and a release
+   published without matching notes cannot be corrected afterwards.
+
+There is nothing to bump in the source: `make build` and `make install` pass
+`git describe` to `-X main.version`, so the tag is the only place the number
+lives. The `version` default in `cmd/msc/main.go` stays `dev`, which is what a
+`go build` of a tree past the tag reports. Do not hand-edit it to the new
+version: that is how a post-tag commit ends up reporting a release whose
+feature set it does not have.

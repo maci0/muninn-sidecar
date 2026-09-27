@@ -42,8 +42,14 @@ import (
 // Build-time variables, set via -ldflags:
 //
 //	go build -ldflags "-X main.version=1.0.0 -X main.commit=abc1234 -X main.date=2026-03-10T12:34:56Z"
+//
+// The defaults describe a build that carries no stamp: claiming a released
+// version here would make a `go build` or `go install` of a tree past the tag
+// report the last release's number for a binary that does not contain it. A
+// release build gets the real values from `make build` (which passes
+// `git describe` through -X) or from the -ldflags line above.
 var (
-	version = "0.4.4"
+	version = "dev"
 	commit  = "dev"
 	date    = "unknown"
 )

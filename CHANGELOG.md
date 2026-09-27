@@ -7,6 +7,31 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Added
 
+- **The session is observable.** `--debug` output and the end-of-session summary
+  were the only view of a session, and neither said which turn a line belonged to
+  or which dependency had failed. Four things ship together:
+  - Every request mints a `request_id` (`req-1`, `req-2`, …) carried in the
+    request context, never in a header, so the forwarded request stays
+    byte-identical to what the agent sent. Every log line on the request path
+    carries it, so one agent turn can be picked out of an interleaved session.
+  - Upstream 4xx/5xx responses are logged at warn with status, method, path,
+    agent, and `duration_ms`, and counted as upstream errors. Failures msc
+    causes itself (dial/TLS/transport error, the agent getting a 502) are logged
+    at error and counted separately as proxy errors, so the summary distinguishes
+    "the provider refused" from "the sidecar could not reach it". A client that
+    cancels mid-flight is debug-level noise and counts as neither.
+  - Response time is sampled once per completed exchange (full body for a
+    non-streaming response, last byte for a stream) and reported as mean and max
+    in the summary.
+  - The proxy answers `GET /__msc/health` on its own port
+    (`proxy.StatusPath`) with the agent, upstream, uptime, and a
+    `stats.Snapshot` as JSON. It is a liveness endpoint and does not probe
+    MuninnDB, so a MuninnDB outage shows up as climbing `save_errors` rather than
+    as a failing probe.
+- **`--log-json` emits JSON logs.** Text on stderr by default; `--log-json`
+  writes the same lines as JSON objects, so a log pipeline can key on `level`,
+  `msg`, and `request_id` without parsing a message string. The default level is
+  unchanged (WARN), so a healthy session stays quiet.
 - **Phone numbers are redacted.** Phone numbers passed every existing pattern
   and so persisted in long-term memory and were re-injected on recall. E.164
   (contiguous and grouped) and NANP forms are now scrubbed, with NPA/NXX
@@ -76,6 +101,32 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   `-trimpath -buildvcs=false` and derive the date from `SOURCE_DATE_EPOCH`
   (defaulting to the commit timestamp). A new `Reproducible build` CI job
   builds twice from two directories and compares hashes.
+- **ndjson streams are captured.** Stream capture only read SSE lines, so a
+  server that streams bare JSON events (an ndjson body, no `data: ` prefix) was
+  forwarded but never captured. A line starting with `{` is now treated as an
+  event payload; SSE control lines (`event:`, `id:`, `retry:`, `:`) still carry
+  none and are skipped.
+- **WebSocket assistant text is bounded.** The per-turn assistant text
+  accumulated from decoded WebSocket deltas had no cap, so one long turn grew
+  without limit. Deltas are now clamped to `wsMaxRespText` as they arrive (the
+  clamp never lands mid-rune), so the turn is stored truncated rather than
+  buffered whole.
+- **`--dry-run` shows what the child actually gets.** The preview built its own
+  env map instead of calling the same helpers `Exec`/`ExecMITM` use, so it could
+  disagree with the launch: flag-based agents (`qwen`) showed only env overrides
+  and no argv, and under `--mitm` it advertised `SSL_CERT_FILE` pointing at the
+  CA alone, which would break every other TLS connection from that shell. The
+  preview is now built from the launch helpers. `--dry-run --json` gains
+  `proxy_args`, `inject_min_score`, `inject_recall_mode`, and
+  `inject_calibration`, and its `env` values are the real ones. `msc ca` points
+  at the combined system+msc bundle for the same reason.
+- **`--inject-min-score nan` is rejected.** The range test was
+  `f <= 0 || f > 1`, which `NaN` passes, so a NaN threshold reached the injector.
+  The test is now a positive check, `--inject-min-score must be in (0,1]`.
+- **A full MuninnDB queue no longer floods the log.** Every dropped exchange
+  logged a warn line, so a sustained MuninnDB outage produced one line per agent
+  turn and buried everything else. The first drop and every 100th after it are
+  logged with a running total; `Stats.Dropped` carries the exact count.
 - **The session window has a stable order.** The window is built from a map, so
   memories with equal effective scores were emitted in a different order on
   every run. Ties now break on ID, so the injected block is replayable.
@@ -173,6 +224,31 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Changed
 
+- **A typo in the MuninnDB URL fails at startup.** `--mcp-url` and
+  `MUNINN_MCP_URL` are validated before anything else runs, so a missing scheme,
+  a non-HTTP scheme, or a missing host names itself instead of surfacing later as
+  a transport error from the health check or as silent capture loss. All four
+  binaries (`msc`, `msc-eval`, `msc-bench`, `msc-qa`) now resolve the endpoint,
+  token, and vault from one package, so the default, the env var names, and the
+  token-file path have a single definition.
+- **The grounding key is checked against the host, not just the scheme.**
+  `OPENAI_API_KEY` was warned about only over plaintext HTTP. It is now also
+  warned about when `--ground-url` points at a host that is not api.openai.com,
+  since the key then leaves the machine in a form the user may not have intended.
+- **Capture no longer cleans bodies on the request path.** Body normalization ran
+  between receiving a response and forwarding it, so its cost was paid by the
+  agent's turn. It now runs on the store worker, after the bytes are forwarded.
+- **Redaction is gated, and 13x faster.** Almost every pattern starts with a
+  character class or word boundary rather than a literal, so the regexp engine
+  fell back to a full scan per pattern. Each rule now carries a necessary
+  condition (a literal or case-folded substring, a numeric-looking run, a
+  sensitive key stem) checked before the regex runs; every condition is required
+  by its pattern, so which spans get redacted is unchanged. A 4 KiB turn went
+  from ~2.3ms to ~0.17ms.
+- **CI lints the Python, shell, and YAML sources.** A `Lint` job runs `ruff`
+  (plus `ruff format --check` on `scripts/`), `shellcheck` on `test-live.sh`,
+  and `yamllint` on the repository's YAML, each with a pinned version, so the
+  non-Go sources are held to the same bar as the Go tree.
 - **Dev loop matches CI.** `make lint` and `make vuln` no longer swallow a
   linter's real failure behind a "not installed, skipping" message; a missing
   tool now fails with the `go install` line to run. `make check` reproduces the
@@ -458,6 +534,7 @@ and injecting relevant recalled context — with zero agent configuration.
   race-clean; CI builds all binaries, runs `go vet`/staticcheck/race tests, and a
   short fuzz campaign on every push.
 
+[unreleased]: https://github.com/maci0/muninn-sidecar/compare/v0.4.4...HEAD
 [0.4.4]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.4
 [0.4.3]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.3
 [0.4.2]: https://github.com/maci0/muninn-sidecar/releases/tag/v0.4.2
