@@ -27,6 +27,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -82,10 +83,15 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 		// otherwise fall through to regenerate (corrupt, or stale on disk).
 		if err == nil && time.Now().Before(ca.cert.NotAfter.Add(-caRenewBefore)) {
 			// The CA key can decrypt every intercepted TLS session, so flag it if
-			// permissions were loosened on disk after we wrote it 0600.
-			if info, statErr := os.Stat(keyPath); statErr == nil && info.Mode().Perm()&0o077 != 0 {
-				slog.Warn("mitm CA key has overly permissive permissions",
-					"path", keyPath, "fix", "chmod 600 "+keyPath, "mode", info.Mode().Perm())
+			// permissions were loosened on disk after we wrote it 0600. Not on
+			// Windows: Go reports 0666 for every writable file there, so the
+			// check would fire on every run and the chmod it suggests only
+			// toggles the read-only attribute.
+			if runtime.GOOS != "windows" {
+				if info, statErr := os.Stat(keyPath); statErr == nil && info.Mode().Perm()&0o077 != 0 {
+					slog.Warn("mitm CA key has overly permissive permissions",
+						"path", keyPath, "fix", "chmod 600 "+keyPath, "mode", info.Mode().Perm())
+				}
 			}
 			return ca, nil
 		}

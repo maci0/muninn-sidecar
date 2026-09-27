@@ -604,3 +604,42 @@ func FuzzSplitQueryQA(f *testing.F) {
 		}
 	})
 }
+
+// A report edited on Windows (or checked out with core.autocrlf) has CRLF
+// endings. The manifest marker must still match on a rerun, or every run
+// appends another block and the file grows without bound.
+func TestWriteMDBlockCRLF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.md")
+	rows := []string{mdRow("modelX", 10, [3]armAgg{}), mdRow("modelY", 10, [3]armAgg{})}
+
+	first := replaceMDBlock("", mdManifestPrefix+" manifest-A -->",
+		mdManifestPrefix+" manifest-A -->\n"+strings.Join(rows, ""))
+	if err := os.WriteFile(path, []byte(strings.ReplaceAll(first, "\n", "\r\n")), 0o644); err != nil {
+		t.Fatalf("seed CRLF file: %v", err)
+	}
+	for i := range 3 {
+		if err := writeMDBlock(path, "manifest-A", rows); err != nil {
+			t.Fatalf("writeMDBlock run %d: %v", i, err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if n := countSub(string(data), mdManifestPrefix); n != 1 {
+		t.Errorf("CRLF reruns appended blocks: %d manifest comments in %q", n, data)
+	}
+	if n := countSub(string(data), "modelY"); n != 1 {
+		t.Errorf("CRLF reruns duplicated rows: %d in %q", n, data)
+	}
+	// The whole file keeps one line ending; a lone LF would be a mix.
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	for i, l := range lines[:len(lines)-1] {
+		if strings.HasSuffix(l, "\r") {
+			t.Errorf("line %d still carries a stray CR: %q", i, l)
+		}
+	}
+	if !strings.Contains(string(data), "\r\n") {
+		t.Errorf("CRLF file lost its endings: %q", data)
+	}
+}

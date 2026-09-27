@@ -56,6 +56,25 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **Windows stopped getting Unix-only behavior.** A run from a drive root named
+  the vault `\` instead of falling back to `sidecar`; the token file and MITM CA
+  key warned about "overly permissive permissions" on every run, because Go
+  reports 0666 for any writable file there and the suggested `chmod` only
+  toggles the read-only attribute; `msc ca` printed POSIX `export` lines with
+  an unquoted `%AppData%` path that cannot be pasted into cmd or PowerShell;
+  and `--mitm` pointed `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE`
+  at msc's CA alone, replacing the child's entire trust store, because Windows
+  keeps its roots in the OS certificate store and has no system PEM bundle to
+  combine with. Those variables are now left unset when no combined bundle
+  exists, the additive `NODE_EXTRA_CA_CERTS`/`DENO_CERT` still carry the CA,
+  and `msc ca` says where Windows keeps its roots instead of naming a bundle
+  that is never written.
+- **`msc-qa -md` grew a new results block on every run against a CRLF file.**
+  The manifest marker was compared with the line's CR still attached, so a
+  report edited on Windows (or checked out with `core.autocrlf`) never matched
+  its own marker and each rerun appended another copy. Markers now match with
+  either line ending, and the block is written with the endings the file
+  already uses.
 - **Bad endpoint config fails at startup.** `--ground-url` (and the eval
   binaries' `-ground-url`, `-model-url`, `-rewrite-url`) accepted any string, so
   a typo failed per request as a transport error or silently left the grounder

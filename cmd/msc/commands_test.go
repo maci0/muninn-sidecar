@@ -246,3 +246,29 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// `msc ca` prints trust instructions to paste into a shell. On Windows that
+// shell is cmd or PowerShell, where `export` does not exist, and the cert path
+// under %AppData% usually contains a space, so the value has to be quoted.
+func TestCATrustHintsPerPlatform(t *testing.T) {
+	winPath := `C:\Users\a b\AppData\Roaming\muninn-sidecar\mitm\ca-cert.pem`
+	win := strings.Join(caTrustHints("windows", winPath), "\n")
+	if strings.Contains(win, "export ") {
+		t.Errorf("windows hints must not print a POSIX export line: %s", win)
+	}
+	if !strings.Contains(win, `$env:NODE_EXTRA_CA_CERTS = "`+winPath+`"`) {
+		t.Errorf("windows hints must set the variable with the path quoted: %s", win)
+	}
+	if strings.Contains(win, "ca-bundle.pem") {
+		t.Errorf("windows has no system PEM bundle to combine, so naming one misleads: %s", win)
+	}
+
+	unixPath := "/home/u/.config/muninn-sidecar/mitm/ca-cert.pem"
+	unix := strings.Join(caTrustHints("darwin", unixPath), "\n")
+	if !strings.Contains(unix, "export NODE_EXTRA_CA_CERTS="+unixPath) {
+		t.Errorf("posix hints must keep the export line: %s", unix)
+	}
+	if !strings.Contains(unix, agents.CABundlePath(unixPath)) {
+		t.Errorf("posix hints must name the combined bundle: %s", unix)
+	}
+}

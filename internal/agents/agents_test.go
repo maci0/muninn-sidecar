@@ -601,3 +601,39 @@ func TestBaseURLSourceReportsTheFlagForArgsRouted(t *testing.T) {
 		t.Errorf("agy base URL source = %q", got)
 	}
 }
+
+// With no system PEM bundle there is nothing to prepend msc's CA to, so no
+// bundle is written and the env vars that REPLACE the child's trust store stay
+// unset. Pointing them at msc's CA alone would break TLS to every other host
+// the agent reaches; this is the path Windows takes.
+func TestNoSystemCABundleLeavesTrustStoreAlone(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca-cert.pem")
+	if err := os.WriteFile(caPath, []byte("FAKE MSC CA\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The system-roots probe is a separate step so this covers the no-bundle
+	// branch on any host, installed bundles and all.
+	bundlePath, err := writeCABundle(caPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundlePath != "" {
+		t.Errorf("no system roots should yield no bundle path, got %q", bundlePath)
+	}
+	if _, err := os.Stat(CABundlePath(caPath)); !os.IsNotExist(err) {
+		t.Errorf("no bundle file should be written, stat err = %v", err)
+	}
+
+	a := Agent{Command: "claude", EnvKey: "ANTHROPIC_BASE_URL"}
+	overrides := a.MITMOverrides("http://127.0.0.1:9", "https://up", caPath, bundlePath)
+	for _, k := range []string{"SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"} {
+		if _, ok := overrides[k]; ok {
+			t.Errorf("%s replaces the trust store and must be unset with no combined bundle", k)
+		}
+	}
+	// The additive variables still carry the CA, so the child trusts msc.
+	if overrides["NODE_EXTRA_CA_CERTS"] != caPath || overrides["DENO_CERT"] != caPath {
+		t.Errorf("additive CA variables must still point at the CA: %v", overrides)
+	}
+}

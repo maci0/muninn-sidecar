@@ -330,9 +330,12 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 
 // MITMOverrides is the child-environment override set for TLS-MITM mode, shared
 // by BuildMITMEnv (which applies it) and `msc --dry-run` (which previews it, so
-// the two cannot drift).
+// the two cannot drift). An empty caBundlePath means no combined system-roots
+// bundle exists (Windows keeps its roots in the OS certificate store), so the
+// variables that would replace the child's trust store are left out entirely
+// rather than set to msc's CA alone.
 func (a Agent) MITMOverrides(proxyURL, upstream, caCertPath, caBundlePath string) map[string]string {
-	return map[string]string{
+	overrides := map[string]string{
 		"HTTPS_PROXY":         proxyURL,
 		"https_proxy":         proxyURL,
 		"HTTP_PROXY":          proxyURL,
@@ -341,12 +344,15 @@ func (a Agent) MITMOverrides(proxyURL, upstream, caCertPath, caBundlePath string
 		"all_proxy":           proxyURL,
 		"NODE_USE_ENV_PROXY":  "1",
 		"NODE_EXTRA_CA_CERTS": caCertPath,
-		"SSL_CERT_FILE":       caBundlePath,
-		"REQUESTS_CA_BUNDLE":  caBundlePath,
-		"CURL_CA_BUNDLE":      caBundlePath,
 		"DENO_CERT":           caCertPath,
 		a.sentinelKey():       upstream,
 	}
+	if caBundlePath != "" {
+		overrides["SSL_CERT_FILE"] = caBundlePath
+		overrides["REQUESTS_CA_BUNDLE"] = caBundlePath
+		overrides["CURL_CA_BUNDLE"] = caBundlePath
+	}
+	return overrides
 }
 
 // CABundlePath is where writeCombinedCABundle puts the system-roots+CA bundle.
@@ -383,7 +389,9 @@ func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath, caBundlePath string)
 	// SSL_CERT_FILE, REQUESTS_CA_BUNDLE, and CURL_CA_BUNDLE REPLACE the default
 	// root store, so they get the combined bundle: with --mitm-host scoping,
 	// out-of-scope hosts are blind-tunneled and present real Web-PKI certs the
-	// child must still be able to verify.
+	// child must still be able to verify. An empty caBundlePath means no system
+	// bundle was found to combine with, so they stay unset rather than replacing
+	// the child's roots with msc's CA alone.
 	replace := a.MITMOverrides(proxyURL, upstream, caCertPath, caBundlePath)
 
 	return applyOverrides(env, replace)
@@ -434,16 +442,30 @@ func systemRootsPEM() []byte {
 	return nil
 }
 
+// HasSystemCABundle reports whether a system PEM root bundle was found to
+// combine msc's CA with. False on Windows, which keeps its trusted roots in the
+// OS certificate store rather than a PEM file, and on a system with no bundle
+// installed at all. Callers that only need to know whether a combined bundle
+// can exist (the dry-run preview) use this instead of writing one.
+func HasSystemCABundle() bool { return systemRootsPEM() != nil }
+
 // writeCombinedCABundle writes the system root CAs followed by msc's CA into
 // ca-bundle.pem beside caCertPath and returns the bundle's path. The bundle is
 // for env vars that REPLACE the default trust store (SSL_CERT_FILE,
 // REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE): pointing them at msc's CA alone would
-// break TLS to every host msc blind-tunnels under --mitm-host scoping. If no
-// system bundle is found, the CA path is returned unchanged.
+// break TLS to every host msc blind-tunnels under --mitm-host scoping. With no
+// system bundle to combine (Windows), there is nothing to write, so the empty
+// path is returned and callers leave those variables unset.
 func writeCombinedCABundle(caCertPath string) (string, error) {
-	roots := systemRootsPEM()
+	return writeCABundle(caCertPath, systemRootsPEM())
+}
+
+// writeCABundle is writeCombinedCABundle with the system roots already probed,
+// so the no-roots branch is reachable without depending on what the host has
+// installed.
+func writeCABundle(caCertPath string, roots []byte) (string, error) {
 	if roots == nil {
-		return caCertPath, nil
+		return "", nil
 	}
 	ca, err := os.ReadFile(caCertPath)
 	if err != nil {

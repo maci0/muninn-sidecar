@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -102,11 +103,16 @@ func Token(flagVal string) string {
 	if err != nil {
 		return ""
 	}
-	// Warn if the token file is readable by group or other users.
-	if info, err := os.Stat(path); err == nil {
-		if info.Mode().Perm()&0o077 != 0 {
-			slog.Warn("token file has overly permissive permissions",
-				"path", path, "fix", "chmod 600 "+path, "mode", info.Mode().Perm())
+	// Warn if the token file is readable by group or other users. Only where
+	// those bits mean something: Windows has no group/other distinction, and Go
+	// reports 0666 for every writable file there, so the check (and the chmod
+	// it suggests, which only toggles the read-only attribute) is noise.
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err == nil {
+			if info.Mode().Perm()&0o077 != 0 {
+				slog.Warn("token file has overly permissive permissions",
+					"path", path, "fix", "chmod 600 "+path, "mode", info.Mode().Perm())
+			}
 		}
 	}
 	return strings.TrimSpace(string(data))
@@ -123,9 +129,23 @@ func Vault(flagVal string) string {
 		return v
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		if base := filepath.Base(cwd); base != "." && base != "/" {
-			return base
+		if name := dirName(cwd); name != "" {
+			return name
 		}
 	}
 	return DefaultVault
+}
+
+// dirName is the last element of a directory path, or "" when the path names
+// no directory: a filesystem root ("/", "C:\", "\\host\share") or a relative
+// step like "." Both separators count on every OS, so a Windows path handed to
+// a Unix build (and the reverse) is still read as a path rather than a name.
+// filepath.Base is not enough on its own: it returns "\" for "C:\", and only
+// the platform that produced the path knows which separator is native.
+func dirName(dir string) string {
+	trimmed := strings.TrimRight(dir, `/\`)
+	if !strings.ContainsAny(trimmed, `/\`) {
+		return ""
+	}
+	return trimmed[strings.LastIndexAny(trimmed, `/\`)+1:]
 }

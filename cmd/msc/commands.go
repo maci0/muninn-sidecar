@@ -102,15 +102,37 @@ func cmdCA(o *opts) int {
 	fmt.Printf("SHA-256:             %s\n", fingerprint)
 	fmt.Println("\nmsc trusts this CA in agents it launches with --mitm automatically.")
 	fmt.Println("To trust it elsewhere (browser, system store, or a custom HTTPS client):")
-	fmt.Printf("  export NODE_EXTRA_CA_CERTS=%s   # Node (adds to the default roots)\n", certPath)
-	// SSL_CERT_FILE/REQUESTS_CA_BUNDLE/CURL_CA_BUNDLE REPLACE the root store,
-	// so they need the system roots plus this CA (the bundle msc builds at
-	// launch under --mitm). Pointing them at the CA alone breaks every other
-	// TLS connection from that shell.
-	fmt.Printf("  # OpenSSL/Python/Go/curl/Deno: SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE and\n")
-	fmt.Printf("  # DENO_CERT replace the default roots, so they need a bundle of the system roots plus\n")
-	fmt.Printf("  # this CA. msc builds that at %s when it launches an agent with --mitm.\n", agents.CABundlePath(certPath))
+	for _, line := range caTrustHints(runtime.GOOS, certPath) {
+		fmt.Println(line)
+	}
 	return 0
+}
+
+// caTrustHints returns the lines telling the user how to trust the CA outside
+// an msc-launched agent. goos is a parameter so both shells are covered by
+// tests on the one platform they run on: `export` is not a cmd or PowerShell
+// command, and the cert path lives under %AppData%, which routinely contains a
+// space and so needs quoting there.
+func caTrustHints(goos, certPath string) []string {
+	nodeCA := "export NODE_EXTRA_CA_CERTS=" + certPath
+	if goos == "windows" {
+		nodeCA = `$env:NODE_EXTRA_CA_CERTS = "` + certPath + `"`
+	}
+	hints := []string{
+		"  " + nodeCA + "   # Node (adds to the default roots)",
+		"  # OpenSSL/Python/Go/curl/Deno: SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE and",
+		"  # DENO_CERT replace the default roots, so they need a bundle of the system roots plus",
+		"  # this CA. msc builds that at " + agents.CABundlePath(certPath) + " when it launches an agent with --mitm.",
+	}
+	if goos == "windows" {
+		// Windows keeps its roots in the OS certificate store, not in a PEM
+		// file, so there is no system bundle for msc to prepend this CA to and
+		// no combined bundle to point those variables at.
+		hints[1] = "  # Windows keeps its trusted roots in the OS certificate store, not in a PEM file, so"
+		hints[2] = "  # there is no system bundle for msc to prepend this CA to. Set NODE_EXTRA_CA_CERTS"
+		hints[3] = "  # above, or import the certificate into the store (certmgr.msc, Trusted Root CAs)."
+	}
+	return hints
 }
 
 // cmdList prints supported agents to stdout.

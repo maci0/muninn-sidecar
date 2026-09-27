@@ -139,3 +139,31 @@ func TestHostClassification(t *testing.T) {
 		}
 	}
 }
+
+// A root directory has no name to derive a vault from, and on Windows the root
+// is "C:\" rather than "/", so both shapes must fall back to DefaultVault
+// instead of naming the vault "\" or "C:".
+func TestVaultDirName(t *testing.T) {
+	named := map[string]string{
+		"/home/u/project":      "project",
+		"/home/u/project/":     "project",
+		"/project":             "project",
+		`C:\Users\u\project`:   "project",
+		`C:\Users\u\project\`:  "project",
+		`\\host\share\project`: "project",
+		`/home/u/my project`:   "my project",
+		"/home/u/.hidden":      ".hidden",
+		"/home/u/UPPER":        "UPPER",
+	}
+	for dir, want := range named {
+		if got := dirName(dir); got != want {
+			t.Errorf("dirName(%q) = %q, want %q", dir, got, want)
+		}
+	}
+	roots := []string{"/", `C:\`, "C:/", "", ".", "..", "C:"}
+	for _, dir := range roots {
+		if got := dirName(dir); got != "" {
+			t.Errorf("dirName(%q) = %q, want no name", dir, got)
+		}
+	}
+}

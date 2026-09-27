@@ -67,10 +67,13 @@ differ by platform and are handled rather than assumed:
   skip a Ctrl+C the terminal already delivered. Without `/proc` (macOS, Windows)
   it signals the agent process handle directly; SIGINT is still left to the
   kernel, since the agent shares msc's process group either way.
-- **MITM trust.** `SSL_CERT_FILE` and friends need a file to point at, so the
-  combined CA bundle is built from the system bundle msc can find
-  (`/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
-  `/etc/ssl/ca-bundle.pem`, `/etc/ssl/cert.pem`, or `$SSL_CERT_FILE`).
+- **MITM trust.** `SSL_CERT_FILE` and friends need a file to point at, so on
+  Linux and macOS the combined CA bundle is built from the system bundle msc
+  can find (`/etc/ssl/certs/ca-certificates.crt`,
+  `/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`,
+  `/etc/ssl/cert.pem`, or `$SSL_CERT_FILE`). Windows keeps its roots in the OS
+  certificate store rather than a PEM file, so there is nothing to combine
+  with; `msc ca` says so instead of naming a bundle that is never written.
 
 ## Usage
 
