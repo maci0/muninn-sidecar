@@ -12,6 +12,14 @@
 // config dir, and never leaves the machine. Trust is scoped — only the child
 // agent process is told to trust it (via NODE_EXTRA_CA_CERTS / SSL_CERT_FILE),
 // not the system trust store. MITM is off by default and strictly opt-in.
+//
+// Every source of *time* this package's output depends on is injected: validity
+// windows, leaf-cache expiry, and CA rotation all read a clock.Clock.
+// Production passes the zero Options and gets the host clock; a test or
+// simulator passes its own, so a run's certificate dates are a function of the
+// script rather than of the machine. Key and serial entropy stays on
+// crypto/rand: Go's ECDSA key generation reseeds its DRBG from process-global
+// state, so no injected reader makes key material reproducible anyway.
 package mitm
 
 import (
@@ -30,6 +38,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/maci0/muninn-sidecar/internal/clock"
 )
 
 // caValidityYears is how many calendar years the generated CA is valid.
@@ -71,13 +81,42 @@ type CA struct {
 	key     *ecdsa.PrivateKey
 	certPEM []byte // PEM of the CA cert, for trust installation
 
+	clock clock.Clock
+
 	mu    sync.Mutex
 	cache map[string]*tls.Certificate // host → minted leaf
+}
+
+// Options are the sources a CA's output depends on, injected so a run's
+// certificates are a function of the script rather than of the machine. The
+// zero value is production: the host clock and crypto/rand.
+type Options struct {
+	// Clock dates every validity window and decides when a cached leaf expires
+	// or a stored CA is stale. Nil means clock.SystemClock.
+	Clock clock.Clock
+}
+
+// resolve fills the zero value with the production clock. Idempotent, and
+// called by every constructor rather than only the exported one, so no path can
+// reach a clock read with a nil source.
+func (o Options) resolve() Options {
+	if o.Clock == nil {
+		o.Clock = clock.SystemClock{}
+	}
+	return o
 }
 
 // LoadOrCreateCA loads the CA key/cert from dir, generating and persisting a new
 // one (0600 key, 0644 cert) if absent. dir is created if needed.
 func LoadOrCreateCA(dir string) (*CA, error) {
+	return LoadOrCreateCAWith(dir, Options{})
+}
+
+// LoadOrCreateCAWith is LoadOrCreateCA with the clock and entropy sources named
+// explicitly. Callers that replay a run (tests, simulation) pass their own; the
+// shipped command line does not and gets the zero Options.
+func LoadOrCreateCAWith(dir string, opts Options) (*CA, error) {
+	opts = opts.resolve()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mitm: create ca dir: %w", err)
 	}
@@ -87,10 +126,10 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 	certPEM, certErr := os.ReadFile(certPath)
 	keyPEM, keyErr := os.ReadFile(keyPath)
 	if certErr == nil && keyErr == nil {
-		ca, err := parseCA(certPEM, keyPEM)
+		ca, err := parseCA(certPEM, keyPEM, opts)
 		// Reuse only a parseable CA that isn't expired or about to expire;
 		// otherwise fall through to regenerate (corrupt, or stale on disk).
-		if err == nil && time.Now().Before(ca.cert.NotAfter.Add(-caRenewBefore)) {
+		if err == nil && opts.Clock.Now().Before(ca.cert.NotAfter.Add(-caRenewBefore)) {
 			// The CA key can decrypt every intercepted TLS session, so flag it if
 			// permissions were loosened on disk after we wrote it 0600. Not on
 			// Windows: Go reports 0666 for every writable file there, so the
@@ -121,7 +160,7 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 		}
 	}
 
-	ca, err := generateCA()
+	ca, err := generateCA(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +193,8 @@ func persistCA(ca *CA, certPath, keyPath string) error {
 }
 
 // generateCA creates a fresh self-signed CA in memory (not persisted).
-func generateCA() (*CA, error) {
+func generateCA(opts Options) (*CA, error) {
+	opts = opts.resolve()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("mitm: generate ca key: %w", err)
@@ -166,7 +206,7 @@ func generateCA() (*CA, error) {
 	// One clock read for the whole validity window: NotBefore and NotAfter
 	// derived from separate reads can disagree on which side of a clock
 	// adjustment the certificate was minted.
-	now := time.Now()
+	now := opts.Clock.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "muninn-sidecar local CA", Organization: []string{"muninn-sidecar"}},
@@ -189,11 +229,13 @@ func generateCA() (*CA, error) {
 		cert:    cert,
 		key:     key,
 		certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		clock:   opts.Clock,
 		cache:   make(map[string]*tls.Certificate),
 	}, nil
 }
 
-func parseCA(certPEM, keyPEM []byte) (*CA, error) {
+func parseCA(certPEM, keyPEM []byte, opts Options) (*CA, error) {
+	opts = opts.resolve()
 	cb, _ := pem.Decode(certPEM)
 	if cb == nil || cb.Type != "CERTIFICATE" {
 		return nil, fmt.Errorf("mitm: bad ca cert pem")
@@ -216,7 +258,13 @@ func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 	if !key.PublicKey.Equal(cert.PublicKey) {
 		return nil, fmt.Errorf("mitm: ca key does not match ca cert")
 	}
-	return &CA{cert: cert, key: key, certPEM: certPEM, cache: make(map[string]*tls.Certificate)}, nil
+	return &CA{
+		cert:    cert,
+		key:     key,
+		certPEM: certPEM,
+		clock:   opts.Clock,
+		cache:   make(map[string]*tls.Certificate),
+	}, nil
 }
 
 func marshalKeyPEM(key *ecdsa.PrivateKey) ([]byte, error) {
@@ -246,7 +294,7 @@ func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
 	if len(host) > maxHostLen {
 		return nil, fmt.Errorf("mitm: host too long (%d > %d)", len(host), maxHostLen)
 	}
-	now := time.Now()
+	now := c.clock.Now()
 
 	c.mu.Lock()
 	if cached, ok := c.cache[host]; ok && cached.Leaf != nil && now.Before(cached.Leaf.NotAfter) {
@@ -283,7 +331,7 @@ func (c *CA) mintLeaf(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
+	now := c.clock.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: host},

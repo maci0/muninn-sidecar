@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/maci0/muninn-sidecar/internal/clock"
 )
 
 func TestLoadOrCreateCAPersistsAndReloads(t *testing.T) {
@@ -187,7 +189,7 @@ func TestParseCAMismatchedKeyRegenerates(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "ca-cert.pem"), ca.CertPEM(), 0o644)
 	os.WriteFile(filepath.Join(dir, "ca-key.pem"), keyOut, 0o600)
 
-	if _, err := parseCA(ca.CertPEM(), keyOut); err == nil {
+	if _, err := parseCA(ca.CertPEM(), keyOut, Options{}); err == nil {
 		t.Error("parseCA accepted a key that does not match the cert")
 	}
 	loaded, err := LoadOrCreateCA(dir)
@@ -288,7 +290,7 @@ func TestLeafForConcurrent(t *testing.T) {
 
 func mustGenCA(t *testing.T) *CA {
 	t.Helper()
-	ca, err := generateCA()
+	ca, err := generateCA(Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +343,7 @@ func FuzzNormalizeHost(f *testing.F) {
 // key/cert match check kills the proxy at startup instead of on one request.
 func FuzzParseCA(f *testing.F) {
 	caPEM := func() (certPEM, keyPEM []byte) {
-		ca, err := generateCA()
+		ca, err := generateCA(Options{})
 		if err != nil {
 			f.Fatal(err)
 		}
@@ -368,7 +370,7 @@ func FuzzParseCA(f *testing.F) {
 	f.Add(certPEM, []byte("-----BEGIN EC PRIVATE KEY-----\n-----END EC PRIVATE KEY-----\n"))
 	f.Add([]byte(""), []byte(""))
 	f.Fuzz(func(t *testing.T, certIn, keyIn []byte) {
-		ca, err := parseCA(certIn, keyIn)
+		ca, err := parseCA(certIn, keyIn, Options{})
 		if err != nil {
 			if ca != nil {
 				t.Fatalf("parseCA returned a CA alongside error %v", err)
@@ -426,4 +428,139 @@ func FuzzLeafFor(f *testing.F) {
 			t.Fatalf("leaf for %q has nil Leaf", host)
 		}
 	})
+}
+
+// scriptedOptions returns the clock a replaying run drives, parked at a fixed
+// instant. Same script, same certificate dates.
+func scriptedOptions() (*clock.Fake, Options) {
+	f := clock.NewFake()
+	return f, Options{Clock: f}
+}
+
+// Certificate dates must come from the injected clock, not the host's: a replay
+// from a failing run's script has to reach the same validity windows, or the
+// transcript that exposed an expiry bug is not reproducible.
+//
+// Key material and serials stay on crypto/rand and are deliberately not
+// compared. Go's ECDSA key generation reseeds its DRBG from process-global
+// state and draws a variable number of bytes, so no injected entropy source
+// would make either reproducible.
+func TestCertificateDatesComeFromInjectedClock(t *testing.T) {
+	clkA, optsA := scriptedOptions()
+	clkB, optsB := scriptedOptions()
+	clkA.Advance(90 * 24 * time.Hour)
+	clkB.Advance(90 * 24 * time.Hour)
+
+	caA, err := LoadOrCreateCAWith(t.TempDir(), optsA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caB, err := LoadOrCreateCAWith(t.TempDir(), optsB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !caA.cert.NotBefore.Equal(caB.cert.NotBefore) || !caA.cert.NotAfter.Equal(caB.cert.NotAfter) {
+		t.Errorf("same scripted clock produced CA validity %v..%v and %v..%v",
+			caA.cert.NotBefore, caA.cert.NotAfter, caB.cert.NotBefore, caB.cert.NotAfter)
+	}
+	if want := clkA.Now().Add(-certBackdate); !caA.cert.NotBefore.Equal(want) {
+		t.Errorf("CA NotBefore = %v, want the scripted now less the backdate (%v)",
+			caA.cert.NotBefore, want)
+	}
+
+	for _, host := range []string{"api.openai.com", "cli-chat-proxy.grok.com"} {
+		leafA, err := caA.LeafFor(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leafB, err := caB.LeafFor(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !leafA.Leaf.NotBefore.Equal(leafB.Leaf.NotBefore) || !leafA.Leaf.NotAfter.Equal(leafB.Leaf.NotAfter) {
+			t.Errorf("same scripted clock produced different leaf validity for %q", host)
+		}
+		if want := clkA.Now().Add(leafValidity); !leafA.Leaf.NotAfter.Equal(want) {
+			t.Errorf("leaf for %q NotAfter = %v, want the scripted now plus leafValidity (%v)",
+				host, leafA.Leaf.NotAfter, want)
+		}
+	}
+}
+
+// Leaf lifetime is a clock decision, so a simulator has to be able to cross it
+// without waiting a day: a session longer than leafValidity re-mints, and one
+// that is not does not.
+func TestLeafCacheFollowsInjectedClock(t *testing.T) {
+	clk, opts := scriptedOptions()
+	ca, err := LoadOrCreateCAWith(t.TempDir(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ca.LeafFor("api.openai.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Partway through the leaf's life the cached one is still served: same
+	// pointer, so no re-mint happened.
+	clk.Advance(leafValidity - time.Minute)
+	again, err := ca.LeafFor("api.openai.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != first {
+		t.Error("leaf re-minted before its validity elapsed")
+	}
+
+	// Past NotAfter the cached leaf is stale and a new one is minted.
+	clk.Advance(2 * time.Minute)
+	fresh, err := ca.LeafFor("api.openai.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh == first {
+		t.Error("expired leaf was served from the cache")
+	}
+	if !clk.Now().Before(fresh.Leaf.NotAfter) {
+		t.Errorf("re-minted leaf expires %v, not after the scripted now %v",
+			fresh.Leaf.NotAfter, clk.Now())
+	}
+}
+
+// CA rotation is likewise a clock decision: a stored CA inside the renew window
+// is replaced, one outside it is kept.
+func TestStoredCARotationFollowsInjectedClock(t *testing.T) {
+	dir := t.TempDir()
+	clk, opts := scriptedOptions()
+	ca, err := LoadOrCreateCAWith(dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A reload on the same clock finds the stored CA still good and returns it
+	// unchanged.
+	early, err := LoadOrCreateCAWith(dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(early.CertPEM()) != string(ca.CertPEM()) {
+		t.Error("stored CA inside its validity was regenerated")
+	}
+
+	// Step the clock into the renew window and reload: rotation must happen
+	// without the process being restarted. The jump is measured from the stored
+	// CA's own NotAfter, not from a span of days: the CA's life is ten calendar
+	// years, a different number of days depending on the leap days it spans.
+	clk.Advance(ca.cert.NotAfter.Add(-caRenewBefore + time.Hour).Sub(clk.Now()))
+	rotated, err := LoadOrCreateCAWith(dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rotated.CertPEM()) == string(ca.CertPEM()) {
+		t.Error("stale CA inside the renew window was reused")
+	}
+	if !rotated.cert.NotAfter.After(clk.Now()) {
+		t.Errorf("rotated CA expires %v, not after the scripted now %v",
+			rotated.cert.NotAfter, clk.Now())
+	}
 }
