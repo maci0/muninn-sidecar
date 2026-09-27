@@ -436,6 +436,14 @@ func systemRootsPEM() []byte {
 	return nil
 }
 
+// HasSystemCABundle reports whether a system root bundle exists to combine
+// with, which decides whether writeCombinedCABundle writes one and whether
+// MITMOverrides sets the trust-store-replacing variables. `msc --dry-run` uses
+// it to preview the same set the child will really get.
+func HasSystemCABundle() bool {
+	return systemRootsPEM() != nil
+}
+
 // writeCombinedCABundle writes the system root CAs followed by msc's CA into
 // ca-bundle.pem beside caCertPath and returns the bundle's path. The bundle is
 // for env vars that REPLACE the default trust store (SSL_CERT_FILE,
