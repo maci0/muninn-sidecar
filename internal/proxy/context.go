@@ -14,12 +14,11 @@ type ctxKey struct{}
 // buffered in ServeHTTP before the reverse proxy forwards it, since the
 // body stream can only be read once.
 type captureCtx struct {
-	start          time.Time // request arrival time (for duration calculation)
-	method         string    // HTTP method (GET, POST, etc.)
-	path           string    // original request path
-	reqBody        []byte    // buffered request body
-	agent          string    // agent name for MuninnDB tagging
-	filterPatterns []string  // tool name patterns to strip from stored bodies
+	start   time.Time // request arrival time (for duration calculation)
+	method  string    // HTTP method (GET, POST, etc.)
+	path    string    // original request path
+	reqBody []byte    // buffered request body, as sent by the agent
+	agent   string    // agent name for MuninnDB tagging
 }
 
 // withCapture attaches capture metadata to a request context.

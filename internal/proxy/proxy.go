@@ -167,6 +167,13 @@ func New(cfg Config) (*Proxy, error) {
 		IdleConnTimeout:     90 * time.Second,
 	}
 
+	// Hand the store its capture-side normalization so the heavy body parsing
+	// happens on the store's worker, not on the agent's request path. Installed
+	// here, before New returns, so it is in place before any capture is queued.
+	if s, ok := cfg.Store.(preparerSetter); ok {
+		s.SetPreparer(p.prepareExchange)
+	}
+
 	p.reverseProxy = &httputil.ReverseProxy{
 		// Rewrite instead of Director: Director silently appends
 		// X-Forwarded-For headers, which leaks the proxy's presence to
@@ -300,12 +307,11 @@ func (p *Proxy) instrument(w http.ResponseWriter, r *http.Request, start time.Ti
 	r.ContentLength = int64(len(forwardBody))
 
 	ctx := &captureCtx{
-		start:          start,
-		method:         r.Method,
-		path:           r.URL.Path,
-		reqBody:        reqBody, // original body for capture (not enriched)
-		agent:          p.agentName,
-		filterPatterns: p.filterPatterns,
+		start:   start,
+		method:  r.Method,
+		path:    r.URL.Path,
+		reqBody: reqBody, // original body for capture (not enriched)
+		agent:   p.agentName,
 	}
 	return r.WithContext(withCapture(r.Context(), ctx)), true
 }
@@ -460,7 +466,7 @@ func (p *Proxy) captureResponse(resp *http.Response) error {
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 
 	if p.store != nil {
-		ex := buildExchange(ctx, resp.StatusCode, sanitizeJSON(body))
+		ex := buildExchange(ctx, resp.StatusCode, body)
 		p.store.Store(ex)
 	}
 
@@ -500,20 +506,38 @@ func writeJSONError(w http.ResponseWriter, statusCode int, message string) {
 
 // buildExchange constructs a CapturedExchange from capture context and
 // response data. This is the single construction site for exchanges,
-// used by both the non-streaming and streaming paths.
+// used by both the non-streaming and streaming paths. The bodies are handed
+// over as captured: stripping injected context and muninn tool traffic, and
+// deriving model/usage, all parse bodies that reach tens of MiB, so they run
+// on the store's worker goroutine (see prepareExchange) rather than here.
 func buildExchange(ctx *captureCtx, statusCode int, respBody json.RawMessage) *store.CapturedExchange {
-	ex := &store.CapturedExchange{
+	return &store.CapturedExchange{
 		Timestamp:  ctx.start,
 		Agent:      ctx.agent,
 		Method:     ctx.method,
 		Path:       ctx.path,
-		ReqBody:    cleanRequest(ctx.reqBody, ctx.filterPatterns),
+		ReqBody:    ctx.reqBody,
 		StatusCode: statusCode,
-		RespBody:   cleanResponse(respBody, ctx.filterPatterns),
+		RespBody:   respBody,
 		DurationMs: time.Since(ctx.start).Milliseconds(),
 	}
+}
+
+// preparerSetter is the store capability that lets the proxy install its
+// capture-side normalization. Asserted rather than required of Storer so a
+// Storer that has no background worker (a test double, say) still works: it
+// receives the exchange as captured.
+type preparerSetter interface{ SetPreparer(store.Preparer) }
+
+// prepareExchange is the store.Preparer the proxy installs on stores that
+// accept one. It strips what must never reach long-term memory (injected
+// context markers, MuninnDB's own tool calls and results, their tool
+// definitions) from the request and response bodies, wraps a non-JSON payload
+// so it stays storable, and fills in the model name and token usage.
+func (p *Proxy) prepareExchange(ex *store.CapturedExchange) {
+	ex.ReqBody = cleanRequest(ex.ReqBody, p.filterPatterns)
+	ex.RespBody = cleanResponse(sanitizeJSON(ex.RespBody), p.filterPatterns)
 	extractModelAndTokens(ex)
-	return ex
 }
 
 // extractModelAndTokens pulls the model name and token usage from the

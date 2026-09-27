@@ -50,7 +50,9 @@ flowchart LR
 
 5. **Capture response**: For non-streaming responses, the body is read, captured, and re-wrapped. For SSE streams, a `streamCapture` wrapper tees data through while incrementally accumulating text deltas from content events (Anthropic, OpenAI, and Gemini delta formats).
 
-6. **Filter and store**: Before storage, the captured exchange is cleaned:
+6. **Enqueue**: The exchange is handed to the store as captured — the request body the agent sent, the response the upstream produced. No capture-side parsing happens on this path: stripping the bodies and deriving model/usage both walk JSON that can reach tens of MiB, and that cost belongs off the agent's turn (see [Async Delivery](#async-delivery-with-batching-and-dedup)).
+
+7. **Filter, format, deliver**: The store's worker prepares the exchange, then cleans it:
    - Injected context markers (`<retrieved-context>`, `<session-context>`, `<global-guide>`) are stripped from the request to prevent recursive reinforcement.
    - MuninnDB tool calls (`muninn_*`) and their results are filtered from both request and response bodies.
    - Tool definitions matching filter patterns are removed (they're large JSON schemas that add noise).
@@ -58,8 +60,8 @@ flowchart LR
    - Agent-internal noise content (e.g. Claude Code context continuations and summarization requests) is filtered by prefix matching.
    - Empty exchanges (no meaningful user or assistant text) are skipped.
    - Duplicate concepts are deduplicated via a ring buffer.
-
-7. **Async delivery**: The cleaned exchange is enqueued to a buffered channel (depth 256). A background worker batches up to 10 exchanges per flush, sending them to MuninnDB every 2 seconds via `muninn_remember` (single item) or `muninn_remember_batch` (multiple items).
+   - Model and token usage are extracted from the cleaned bodies and counted for the session summary.
+   - The formatted exchange is batched up to 10 per flush and sent to MuninnDB every 2 seconds via `muninn_remember` (single item) or `muninn_remember_batch` (multiple items).
 
 ## Package Structure
 
@@ -217,7 +219,9 @@ Run `make eval` for the offline report + sweep, `go run ./cmd/msc-eval -compare`
 
 ### Async Delivery with Batching and Dedup
 
-Storing to MuninnDB is entirely async — the proxy never blocks on a MuninnDB call. Exchanges flow through a buffered channel to a single worker goroutine that batches up to 10 per flush and sends them every 2 seconds. This amortizes MCP call overhead while keeping delivery latency bounded.
+Storing to MuninnDB is entirely async — the proxy never blocks on a MuninnDB call, and never parses a captured body either. Exchanges flow through a buffered channel (depth 256) to a single worker goroutine that batches up to 10 per flush and sends them every 2 seconds. This amortizes MCP call overhead while keeping delivery latency bounded.
+
+The worker is also where capture-side normalization runs. The proxy installs a `store.Preparer` (`Proxy.prepareExchange`) that strips muninn's own tool traffic and injected context from the bodies and derives the model name and token usage. Those steps walk the full conversation — for a coding agent, tens of MiB of JSON per turn — so running them inline in `captureResponse`/`streamCapture` would add that parse to the latency of the agent's own turn, and would pay it for exchanges the queue then drops. Off the path, the same work runs once, on one goroutine, behind the same bounded queue that provides back-pressure. Model and token counters are therefore read from the prepared exchange on the worker, and a dropped exchange contributes no usage.
 
 The dedup ring buffer (`[8]map[uint64]struct{}`) prevents the same concept from being stored multiple times within a short window. In tool-use chains, the agent often sends the same user message multiple times with different tool results — the dedup ring catches these. Each ring slot holds a set of FNV-1a concept hashes; the ring advances one slot per flush cycle (~2s), so hashes expire after ~16 seconds.
 

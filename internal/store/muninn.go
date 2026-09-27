@@ -49,6 +49,7 @@ type MuninnStore struct {
 	drainOnce sync.Once              // ensures Drain is idempotent
 	stats     *stats.Stats           // session statistics (nil-safe)
 	redact    atomic.Bool            // scrub secrets from captured content before storage
+	prepare   Preparer               // capture-side normalization, run on the worker (nil = bodies stored as captured)
 
 	// flushCtx governs MCP flush calls and their retries. It stays live for the
 	// whole session (so transient blips get full retries), and Drain arms a
@@ -64,7 +65,17 @@ type MuninnStore struct {
 // bounded to one budget instead of ~6s per queued batch (which could be minutes).
 const drainTimeout = 8 * time.Second
 
+// Preparer normalizes a captured exchange in place before it is formatted,
+// redacted, and stored: it strips the bodies of content that must never reach
+// memory (injected context, MuninnDB's own tool traffic) and fills in the
+// derived fields (Model, token counts) that the exchange is not born with.
+// It runs on the worker's goroutine, never on the caller's request path.
+type Preparer func(*CapturedExchange)
+
 // CapturedExchange holds one request->response pair captured by the proxy.
+// The bodies arrive as the agent sent and the upstream replied; the Model and
+// token-count fields are derived from them and filled in by the Preparer
+// (nil Preparer leaves them at zero).
 type CapturedExchange struct {
 	Timestamp  time.Time       `json:"timestamp"`
 	Agent      string          `json:"agent"`  // which coding agent (claude, codex, etc.)
@@ -111,17 +122,25 @@ func New(mcpURL, token, vault string, st *stats.Stats) *MuninnStore {
 // captures start flowing.
 func (s *MuninnStore) SetRedaction(enabled bool) { s.redact.Store(enabled) }
 
+// SetPreparer installs the capture-side normalization applied to each exchange
+// before it is formatted (see Preparer). The proxy installs one so the bodies it
+// hands over are raw: stripping injected context and muninn tool traffic, and
+// extracting model/usage, all parse bodies that reach tens of MiB, and that
+// work belongs on the worker's goroutine rather than in the agent's turn.
+// Call before captures start flowing.
+func (s *MuninnStore) SetPreparer(p Preparer) { s.prepare = p }
+
 // Store enqueues an exchange for async delivery. Non-blocking: if the queue
 // is full the exchange is dropped with a warning (we never block the proxy).
 // Safe to call after Drain() — late arrivals are dropped with a warning.
+//
+// The exchange is enqueued as captured: normalization (Preparer), redaction,
+// formatting, and the model/token counters all run later, on the worker's
+// goroutine, so this call does no JSON work on the agent's request path. An
+// exchange dropped here is therefore never counted toward token usage.
 func (s *MuninnStore) Store(ex *CapturedExchange) {
 	if s.stats != nil {
 		s.stats.Captured.Add(1)
-		s.stats.RecordModel(ex.Model)
-		s.stats.TokensIn.Add(int64(ex.TokensIn))
-		s.stats.TokensOut.Add(int64(ex.TokensOut))
-		s.stats.CacheWrite.Add(int64(ex.CacheWrite))
-		s.stats.CacheRead.Add(int64(ex.CacheRead))
 	}
 
 	// Recover from panic if queue has been closed by Drain(). This is
@@ -173,10 +192,12 @@ func (s *MuninnStore) HealthCheck() error {
 // while keeping latency bounded. It exits when the queue channel is closed
 // (via Drain), flushing any remaining items first.
 //
-// Each exchange is formatted and deduplicated before batching. The dedup
-// ring buffer (8 slots, advanced each flush cycle) prevents duplicate
+// The worker is the only place capture-side normalization runs: each exchange
+// passes through the Preparer, then formatting, redaction, and dedup, and the
+// per-model and token counters are recorded from the prepared exchange. The
+// dedup ring buffer (8 slots, advanced each flush cycle) prevents duplicate
 // concepts from being stored when the same user message generates multiple
-// API calls in a tool-use chain. This runs in a single goroutine, so no
+// API calls in a tool-use chain. All of this runs in a single goroutine, so no
 // locking is needed for the ring buffer.
 func (s *MuninnStore) worker() {
 	defer close(s.done)
@@ -196,7 +217,7 @@ func (s *MuninnStore) worker() {
 				}
 				return
 			}
-			if fm := s.formatAndDedup(ex, &dedupRing, &ringIdx); fm != nil {
+			if fm := s.prepareForStore(ex, &dedupRing, &ringIdx); fm != nil {
 				batch = append(batch, *fm)
 			}
 			if len(batch) >= maxBatchSize {
@@ -235,6 +256,23 @@ func isNoiseContent(msg string) bool {
 		}
 	}
 	return false
+}
+
+// prepareForStore runs the capture-side Preparer (when installed), records the
+// model and token usage it derived, then formats and deduplicates the
+// exchange. Returns nil if the exchange should be dropped.
+func (s *MuninnStore) prepareForStore(ex *CapturedExchange, ring *[dedupRingSize]map[uint64]struct{}, ringIdx *int) *formattedMemory {
+	if s.prepare != nil {
+		s.prepare(ex)
+	}
+	if s.stats != nil {
+		s.stats.RecordModel(ex.Model)
+		s.stats.TokensIn.Add(int64(ex.TokensIn))
+		s.stats.TokensOut.Add(int64(ex.TokensOut))
+		s.stats.CacheWrite.Add(int64(ex.CacheWrite))
+		s.stats.CacheRead.Add(int64(ex.CacheRead))
+	}
+	return s.formatAndDedup(ex, ring, ringIdx)
 }
 
 // formatAndDedup formats an exchange, strips system-reminders, skips empty

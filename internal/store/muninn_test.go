@@ -145,6 +145,97 @@ func TestSetRedactionDisables(t *testing.T) {
 	}
 }
 
+// A Preparer is the capture-side normalization the store runs on its worker
+// goroutine, so the proxy can hand over raw bodies instead of parsing tens of
+// MiB of JSON in the agent's turn. Its mutation must be what gets stored, and
+// the usage counters must be read from the prepared exchange.
+func TestPreparerRunsBeforeStorage(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		received []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		received = append(received, string(body))
+		mu.Unlock()
+		w.WriteHeader(200)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	st := &stats.Stats{}
+	s := New(srv.URL, "", "test", st)
+	s.SetPreparer(func(ex *CapturedExchange) {
+		ex.Model = "claude-3-opus"
+		ex.TokensIn = 7
+		ex.TokensOut = 3
+		ex.ReqBody = json.RawMessage(`{"messages":[{"role":"user","content":"cleaned by the preparer"}]}`)
+	})
+	s.Store(&CapturedExchange{
+		Agent:    "test",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"raw body"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
+	})
+	s.Drain()
+
+	mu.Lock()
+	all := strings.Join(received, " ")
+	mu.Unlock()
+	if !strings.Contains(all, "cleaned by the preparer") {
+		t.Errorf("stored payload did not reflect the preparer: %q", all)
+	}
+	if strings.Contains(all, "raw body") {
+		t.Errorf("preparer did not replace the raw body: %q", all)
+	}
+	if got := st.Models(); len(got) != 1 || got[0].Name != "claude-3-opus" {
+		t.Errorf("expected the preparer's model to be recorded, got %v", got)
+	}
+	if st.TokensIn.Load() != 7 || st.TokensOut.Load() != 3 {
+		t.Errorf("expected usage from the prepared exchange, got in=%d out=%d",
+			st.TokensIn.Load(), st.TokensOut.Load())
+	}
+}
+
+// A store with no Preparer keeps what it is handed: no normalization, and the
+// exchange's own fields are what the usage counters report.
+func TestNoPreparerStoresExchangeAsGiven(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		received []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		received = append(received, string(body))
+		mu.Unlock()
+		w.WriteHeader(200)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":{"id":"ok"},"id":1}`))
+	}))
+	defer srv.Close()
+
+	st := &stats.Stats{}
+	s := New(srv.URL, "", "test", st)
+	s.Store(&CapturedExchange{
+		Agent:    "test",
+		Path:     "/v1/messages",
+		ReqBody:  json.RawMessage(`{"messages":[{"role":"user","content":"untouched body"}]}`),
+		RespBody: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
+	})
+	s.Drain()
+
+	mu.Lock()
+	all := strings.Join(received, " ")
+	mu.Unlock()
+	if !strings.Contains(all, "untouched body") {
+		t.Errorf("expected the body as captured: %q", all)
+	}
+	if st.TokensIn.Load() != 0 {
+		t.Errorf("unexpected token count without a preparer: %d", st.TokensIn.Load())
+	}
+}
+
 func TestBatching(t *testing.T) {
 	var (
 		mu    sync.Mutex

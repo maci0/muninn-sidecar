@@ -720,8 +720,90 @@ func TestProxyInjectionStrippedFromCapture(t *testing.T) {
 	}
 }
 
-// --- Proxy edge-case tests ---
+// preparingStore is a Storer with a background worker, like the real store, so
+// the proxy installs its Preparer on it.
+type preparingStore struct {
+	mu        sync.Mutex
+	preparer  store.Preparer
+	prepared  []string
+	delivered []*store.CapturedExchange
+}
 
+func (s *preparingStore) SetPreparer(p store.Preparer) { s.preparer = p }
+
+func (s *preparingStore) Store(ex *store.CapturedExchange) {
+	s.mu.Lock()
+	s.prepared = append(s.prepared, string(ex.ReqBody)) // as handed over, before the worker touches it
+	s.mu.Unlock()
+	if s.preparer != nil {
+		s.preparer(ex)
+	}
+	s.mu.Lock()
+	s.delivered = append(s.delivered, ex)
+	s.mu.Unlock()
+}
+
+// The body-cleaning that has to happen before storage must NOT happen on the
+// request path: the proxy hands the store the body as the agent sent it, and
+// the store's worker does the stripping. A regression that moved the work back
+// inline would make the preparer see an already-clean body.
+func TestCaptureBodyIsCleanedByStoreNotProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"content":[{"type":"text","text":"Response"}]}`))
+	}))
+	defer upstream.Close()
+
+	st := &preparingStore{}
+	p, err := New(Config{
+		ListenAddr:   "127.0.0.1:0",
+		Upstream:     upstream.URL,
+		AgentName:    "claude",
+		Store:        st,
+		CapturePaths: []string{"/v1/messages"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqBody := `{"model":"claude-3-opus","messages":[
+		{"role":"user","content":"hello"},
+		{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"mcp__muninn__muninn_recall","input":{"context":["hello"]}}]},
+		{"role":"user","content":"thanks"}]}`
+	resp, err := http.Post("http://"+addr+"/v1/messages", "application/json", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(st.prepared) != 1 {
+		t.Fatalf("expected 1 captured exchange, got %d", len(st.prepared))
+	}
+	// Seen by the preparer: raw, still carrying the muninn tool call.
+	if !strings.Contains(st.prepared[0], "muninn_recall") {
+		t.Errorf("proxy cleaned the body on the request path; the store's worker owns that work: %q", st.prepared[0])
+	}
+	// Delivered: stripped, with the user's message intact and usage extracted.
+	got := string(st.delivered[0].ReqBody)
+	if strings.Contains(got, "muninn_recall") {
+		t.Errorf("delivered body still contains muninn tool calls: %q", got)
+	}
+	if !strings.Contains(got, "thanks") {
+		t.Errorf("delivered body lost the user's message: %q", got)
+	}
+	if st.delivered[0].Model != "claude-3-opus" {
+		t.Errorf("expected model extracted on the worker, got %q", st.delivered[0].Model)
+	}
+}
+
+// --- Proxy edge-case tests ---
 func TestProxyUpstreamError(t *testing.T) {
 	// Upstream returns 500 — proxy should forward the error to the client.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
