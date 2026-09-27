@@ -6,6 +6,7 @@ package inject
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -25,13 +26,41 @@ import (
 // entryChars keeps the "chars" in the names and in charPerToken from claiming
 // a precision the measurement does not have.
 func entryBytes(m memory) int {
-	return len(m.Concept) + len(m.Content) + 23
+	return neutralizedLen(m.Concept) + neutralizedLen(m.Content) + 23
 }
+
+// neutralizedLen is the byte length NeutralizeMarkers would produce for s:
+// each matched tag grows by 3 bytes ("<" becomes "&lt;"), and neutralization
+// never shrinks text. Counting matches without building the result keeps the
+// budget estimator allocation-free on the hot path.
+func neutralizedLen(s string) int {
+	if !strings.Contains(s, "<") {
+		return len(s)
+	}
+	return len(s) + 3*apiformat.CountBlockTags(s)
+}
+
+// contextOverheadBytes is the fixed cost of the block wrapper: the markers, the
+// two separating newlines, and the data-not-instructions notice. Shared by the
+// budget estimator and the formatter so the token count the injector reports
+// matches the bytes it actually writes.
+func contextOverheadBytes() int {
+	return len(apiformat.ContextPrefix) + len(apiformat.ContextNotice) +
+		len(apiformat.ContextSuffix) + 3
+}
+
+// minOversizedMemoryBytes is the floor for an over-budget memory's truncated
+// content. A budget below this would otherwise make the first memory
+// unprintable, and the point of keeping it is that something relevant still
+// reaches the agent.
+const minOversizedMemoryBytes = 200
 
 // withinBudget returns the longest score-ordered prefix of memories whose
 // combined context-block size fits the token budget. The first memory is always
 // included even if it alone exceeds the budget, matching formatContextBlock's
-// guarantee that something relevant is injected when anything qualifies.
+// guarantee that something relevant is injected when anything qualifies; in
+// that case its content is truncated to the budget rather than injected whole,
+// so one oversized memory cannot spend arbitrarily many tokens on every turn.
 // Memories are expected to be pre-sorted by score (descending).
 func withinBudget(memories []memory, budget int) []memory {
 	if len(memories) == 0 {
@@ -49,12 +78,24 @@ func withinBudget(memories []memory, budget int) []memory {
 	} else {
 		budgetBytes *= charPerToken
 	}
-	totalBytes := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
+	totalBytes := contextOverheadBytes()
 
 	kept := make([]memory, 0, len(memories))
 	for _, m := range memories {
 		entryLen := entryBytes(m)
-		if totalBytes+entryLen > budgetBytes && len(kept) > 0 {
+		if totalBytes+entryLen > budgetBytes {
+			if len(kept) > 0 {
+				break
+			}
+			// First memory and it alone blows the budget: keep it, clipped.
+			room := budgetBytes - totalBytes - neutralizedLen(m.Concept) - 23
+			if room < minOversizedMemoryBytes {
+				room = minOversizedMemoryBytes
+			}
+			m.Content = apiformat.TruncateText(m.Content, room)
+			kept = append(kept, m)
+			slog.Debug("inject: first memory exceeds the inject budget, truncating its content",
+				"id", m.ID, "budget", budget, "kept_bytes", len(m.Content))
 			break
 		}
 		kept = append(kept, m)
@@ -79,15 +120,23 @@ func formatContextBlock(memories []memory, budget int) (string, int, int) {
 	var sb strings.Builder
 	sb.WriteString(apiformat.ContextPrefix)
 	sb.WriteString("\n")
+	sb.WriteString(apiformat.ContextNotice)
+	sb.WriteString("\n")
 
-	totalBytes := len(apiformat.ContextPrefix) + len(apiformat.ContextSuffix) + 2 // newlines
+	totalBytes := contextOverheadBytes()
 	for _, m := range kept {
 		// Defense in depth: scrub secrets from recalled content before it is
 		// injected into the outgoing request. A memory stored by another client
 		// (or before write-side redaction existed) must not be re-transmitted to
 		// the provider in a session where it wasn't otherwise present.
-		concept := redact.Secrets(m.Concept)
-		content := redact.Secrets(m.Content)
+		//
+		// Neutralizing the block markers is the injection counterpart: memory
+		// content is attacker-influenced (any client that can write to the vault,
+		// and any captured turn whose text came from a web page or a tool result),
+		// and a memory carrying "</retrieved-context>" would close the block and
+		// have everything after it read as top-level system prompt.
+		concept := apiformat.NeutralizeMarkers(redact.Secrets(m.Concept))
+		content := apiformat.NeutralizeMarkers(redact.Secrets(m.Content))
 		sb.WriteByte('[')
 		sb.WriteString(concept)
 		sb.WriteString("] (relevance: ")

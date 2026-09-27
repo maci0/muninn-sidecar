@@ -71,12 +71,19 @@ func parseMCPTextContent(body []byte) string {
 }
 
 // parseGuide extracts the guide text from the JSON-RPC response.
+//
+// The guide is free-form text from the memory backend, and every other
+// injected block is prefixed with the data-not-instructions notice, so it gets
+// the same treatment here: neutralize the block markers (a guide containing
+// "</global-guide>" would close its own block and promote the rest to
+// top-level system prompt) and state what the text is.
 func parseGuide(body []byte) string {
 	text := strings.TrimSpace(parseMCPTextContent(body))
 	if text == "" {
 		return ""
 	}
-	return apiformat.GlobalGuideOpen + "\n" + text + "\n" + apiformat.GlobalGuideClose
+	return apiformat.GlobalGuideOpen + "\n" + apiformat.ContextNotice + "\n" +
+		apiformat.NeutralizeMarkers(text) + "\n" + apiformat.GlobalGuideClose
 }
 
 // parseWhereLeftOff extracts a summary from the where_left_off JSON-RPC response.
@@ -97,7 +104,8 @@ func parseWhereLeftOff(body []byte) string {
 		// If not JSON, use the raw text if it's meaningful.
 		text := strings.TrimSpace(raw)
 		if text != "" && text != "[]" && text != "null" {
-			return apiformat.SessionContextOpen + "\nPrevious session context:\n" + apiformat.TruncateText(text, 2000) + "\n" + apiformat.SessionContextClose
+			return apiformat.SessionContextOpen + "\n" + apiformat.ContextNotice + "\nPrevious session context:\n" +
+				apiformat.NeutralizeMarkers(apiformat.TruncateText(text, 2000)) + "\n" + apiformat.SessionContextClose
 		}
 		return ""
 	}
@@ -107,7 +115,7 @@ func parseWhereLeftOff(body []byte) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(apiformat.SessionContextOpen + "\nPrevious session context:\n")
+	sb.WriteString(apiformat.SessionContextOpen + "\n" + apiformat.ContextNotice + "\nPrevious session context:\n")
 	// Bound the number of entries: where_left_off is server-controlled and
 	// otherwise unbounded by count, and this block is prepended outside the
 	// per-memory budget packing. Capping entries (each already ≤200 runes) bounds
@@ -124,7 +132,7 @@ func parseWhereLeftOff(body []byte) string {
 		}
 		if label != "" {
 			sb.WriteString("- ")
-			sb.WriteString(apiformat.TruncateText(label, 200))
+			sb.WriteString(apiformat.NeutralizeMarkers(apiformat.TruncateText(label, 200)))
 			sb.WriteString("\n")
 			shown++
 		}

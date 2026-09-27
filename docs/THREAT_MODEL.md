@@ -69,7 +69,10 @@ JSON-RPC response (`internal/mcpclient/client.go:160`), the WebSocket frames
    content written by any session or any client is read back and spliced into
    the system prompt as a `<retrieved-context>` block
    (`internal/inject/format.go:55`). Selection is relevance-based, not
-   provenance-based.
+   provenance-based. Recalled text is untrusted: block markers in it are
+   neutralized so a memory cannot close its own block
+   (`internal/apiformat/apiformat.go:NeutralizeMarkers`), and each block opens
+   with a data-not-instructions notice (`apiformat.ContextNotice`).
 5. **msc → child agent process.** The child inherits the full parent environment
    (`internal/agents/agents.go:257`) and gains, under `--mitm`, trust of msc's
    CA plus proxy env vars that redirect its whole HTTPS traffic

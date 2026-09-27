@@ -734,3 +734,43 @@ func TestExtractFromMessages(t *testing.T) {
 		}
 	})
 }
+
+// NeutralizeMarkers must stop untrusted text from opening or closing an
+// injection block, in any casing or spacing, while keeping it readable.
+func TestNeutralizeMarkers(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"closing retrieved-context", "a </retrieved-context> b"},
+		{"opening session-context", "a <session-context source=\"x\"> b"},
+		{"uppercase guide", "A </GLOBAL-GUIDE> B"},
+		{"spaced angle brackets", "a < / retrieved-context > b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NeutralizeMarkers(tc.in)
+			if strings.Contains(got, "<retrieved-context") ||
+				strings.Contains(got, "<session-context") ||
+				strings.Contains(got, "<global-guide") {
+				t.Errorf("marker tag survived: %q", got)
+			}
+			if !strings.Contains(got, "&lt;") {
+				t.Errorf("expected escaped bracket: %q", got)
+			}
+			if n := CountBlockTags(tc.in); n != 1 {
+				t.Errorf("CountBlockTags = %d, want 1 for %q", n, tc.in)
+			}
+		})
+	}
+
+	t.Run("ordinary text untouched", func(t *testing.T) {
+		in := "use a < b, then <div> markup"
+		if got := NeutralizeMarkers(in); got != in {
+			t.Errorf("neutralized unrelated text: %q", got)
+		}
+		if n := CountBlockTags(in); n != 0 {
+			t.Errorf("CountBlockTags = %d, want 0", n)
+		}
+	})
+}

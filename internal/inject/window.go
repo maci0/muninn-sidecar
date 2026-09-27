@@ -5,21 +5,31 @@ package inject
 
 import (
 	"log/slog"
-	"sort"
+	"slices"
+	"strings"
 )
 
-// sortByScore orders memories by descending effective score, breaking ties on
-// ID. The tiebreak is required, not cosmetic: the window is a Go map, so
-// without it equal-scored memories are emitted, gated, and budget-truncated in
-// a different order on every request, and the same turn does not replay to the
-// same injected block.
-func sortByScore(mems []memory) {
-	sort.Slice(mems, func(i, j int) bool {
-		if mems[i].Score != mems[j].Score {
-			return mems[i].Score > mems[j].Score
-		}
-		return mems[i].ID < mems[j].ID
-	})
+// byScoreThenID orders the session window: highest effective score first, with
+// the memory ID as tiebreak. The window is a Go map, so its iteration order
+// changes every run; without the tiebreak, memories that tie on score would be
+// injected in a different order each time, making the emitted block
+// unreplayable and picking different memories when the budget truncates.
+func byScoreThenID(a, b memory) int {
+	if a.Score != b.Score {
+		return -cmpFloat(a.Score, b.Score)
+	}
+	return strings.Compare(a.ID, b.ID)
+}
+
+func cmpFloat(a, b float64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // snapshotWindow returns the current session window decayed at the current turn
@@ -45,7 +55,7 @@ func (inj *Injector) decayedWindowLocked(turn int) []memory {
 		out = append(out, m)
 	}
 	if len(out) > 1 {
-		sortByScore(out)
+		slices.SortFunc(out, byScoreThenID)
 	}
 	return out
 }
