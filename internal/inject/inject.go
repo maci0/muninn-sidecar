@@ -157,7 +157,9 @@ func New(cfg Config) *Injector {
 		slog.Warn("inject: recall floor exceeds the gate calibration floor; calibration below it cannot inject (server pre-filter caps it)",
 			"recall_floor", cfg.Threshold, "calib_floor", calibMinThreshold)
 	}
-	if cfg.MinScore <= 0 || cfg.MinScore > 1 {
+	// NaN fails both comparisons, so the test is written as a positive range
+	// check: a NaN gate would silently disable the threshold downstream.
+	if !(cfg.MinScore > 0 && cfg.MinScore <= 1) {
 		cfg.MinScore = defaultMinScore
 	}
 	if cfg.RecallMode == "" {

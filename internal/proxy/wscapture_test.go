@@ -58,6 +58,25 @@ func TestWSExchangeCapture(t *testing.T) {
 	}
 }
 
+func TestWSExchangeResponseTextCapped(t *testing.T) {
+	// A single oversized delta must not push the accumulated text past
+	// wsMaxRespText; the cap is the bound on what gets stored.
+	rec := &recordStore{}
+	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}, target: "chatgpt.com:443"}
+
+	ex.onClient("c->s", []byte(`{"type":"response.create","model":"gpt-5","input":[{"type":"message","role":"user","content":"q"}]}`))
+	ex.onServer("s->c", []byte(`{"type":"response.output_text.delta","delta":"`+strings.Repeat("@", wsMaxRespText*2)+`"}`))
+	ex.onServer("s->c", []byte(`{"type":"response.completed"}`))
+
+	got := rec.all()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 stored exchange, got %d", len(got))
+	}
+	if n := strings.Count(string(got[0].RespBody), "@"); n > wsMaxRespText {
+		t.Errorf("accumulated text %d bytes exceeds cap %d", n, wsMaxRespText)
+	}
+}
+
 func TestWSExchangeReasoningOnlySkipped(t *testing.T) {
 	rec := &recordStore{}
 	ex := &wsExchange{p: &Proxy{store: rec, agentName: "codex"}}

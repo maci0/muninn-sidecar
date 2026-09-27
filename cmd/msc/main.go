@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -166,7 +167,7 @@ func run() int {
 		return exitUsage
 	}
 
-	if o.asJSON && !o.quiet {
+	if o.asJSON && !o.quiet && !o.dryRun {
 		logf("-j/--json has no effect when running an agent (use with list, status, ca, version, or --dry-run)")
 	}
 
@@ -435,40 +436,49 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 		binary = "(not found in PATH)"
 	}
 
+	// The preview must list the same overrides the child really gets, so build
+	// them from the same helpers Exec/ExecMITM use.
+	envMap := agent.EnvOverrides("http://127.0.0.1:<port>", upstream)
+	var args []string
+	if o.mitm {
+		envMap = agent.MITMOverrides("http://127.0.0.1:<port>", upstream, caCertPath, agents.CABundlePath(caCertPath))
+	} else {
+		for _, pa := range agent.ProxyArgs {
+			args = append(args, strings.ReplaceAll(pa, "{proxy}", "http://127.0.0.1:<port>"))
+		}
+	}
+	keys := make([]string, 0, len(envMap))
+	for k := range envMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	if o.asJSON {
 		type dryRunInfo struct {
-			Agent        string            `json:"agent"`
-			Binary       string            `json:"binary"`
-			Upstream     string            `json:"upstream"`
-			Env          map[string]string `json:"env"`
-			Vault        string            `json:"vault"`
-			MuninnURL    string            `json:"muninn_url"`
-			MuninnStatus string            `json:"muninn_status"`
-			MuninnError  string            `json:"muninn_error,omitempty"`
-			Inject       bool              `json:"inject"`
-			InjectBudget int               `json:"inject_budget,omitempty"`
-			MITM         bool              `json:"mitm"`
-			MITMHosts    []string          `json:"mitm_hosts,omitempty"` // scope (+ upstream); empty when intercepting all
-			MITMCACert   string            `json:"mitm_ca_cert,omitempty"`
-		}
-		var envMap map[string]string
-		if o.mitm {
-			envMap = map[string]string{
-				"HTTPS_PROXY":         "http://127.0.0.1:<port>",
-				"NODE_EXTRA_CA_CERTS": caCertPath,
-				"SSL_CERT_FILE":       caCertPath,
-			}
-		} else {
-			envMap = map[string]string{agent.EnvKey: "http://127.0.0.1:<port>"}
-			for _, k := range agent.ExtraEnvKeys {
-				envMap[k] = "http://127.0.0.1:<port>"
-			}
+			Agent           string            `json:"agent"`
+			Binary          string            `json:"binary"`
+			Upstream        string            `json:"upstream"`
+			Env             map[string]string `json:"env"`
+			ProxyArgs       []string          `json:"proxy_args,omitempty"`
+			Vault           string            `json:"vault"`
+			MuninnURL       string            `json:"muninn_url"`
+			MuninnStatus    string            `json:"muninn_status"`
+			MuninnError     string            `json:"muninn_error,omitempty"`
+			Inject          bool              `json:"inject"`
+			InjectBudget    int               `json:"inject_budget,omitempty"`
+			InjectMinScore  float64           `json:"inject_min_score,omitempty"`
+			InjectRecall    string            `json:"inject_recall_mode,omitempty"`
+			InjectCalibrate string            `json:"inject_calibration,omitempty"`
+			MITM            bool              `json:"mitm"`
+			MITMHosts       []string          `json:"mitm_hosts,omitempty"` // scope (+ upstream); empty when intercepting all
+			MITMCACert      string            `json:"mitm_ca_cert,omitempty"`
 		}
 		info := dryRunInfo{
 			Agent:      cmd,
 			Binary:     binary,
 			Upstream:   upstream,
 			Env:        envMap,
+			ProxyArgs:  args,
 			Vault:      vault,
 			MuninnURL:  mcpURL,
 			Inject:     !o.noInject,
@@ -485,11 +495,14 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 			info.MuninnError = healthErr.Error()
 		}
 		if !o.noInject {
-			budget := o.injectBudget
-			if budget <= 0 {
-				budget = inject.DefaultBudget
+			info.InjectBudget = dryRunBudget(o)
+			info.InjectMinScore = dryRunMinScore(o)
+			info.InjectRecall = dryRunRecallMode(o)
+			if o.noAutoCalibrate {
+				info.InjectCalibrate = "fixed"
+			} else {
+				info.InjectCalibrate = "auto-calibrated"
 			}
-			info.InjectBudget = budget
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -511,14 +524,16 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 		}
 		fmt.Fprintf(os.Stdout, "Mode:     TLS-MITM (transparent HTTPS proxy)\n")
 		fmt.Fprintf(os.Stdout, "Intercept: %s\n", scope)
-		fmt.Fprintf(os.Stdout, "Env:      HTTPS_PROXY=http://127.0.0.1:<port>\n")
-		fmt.Fprintf(os.Stdout, "          NODE_EXTRA_CA_CERTS=%s\n", caCertPath)
-		fmt.Fprintf(os.Stdout, "          SSL_CERT_FILE=%s\n", caCertPath)
-	} else {
-		fmt.Fprintf(os.Stdout, "Env:      %s=http://127.0.0.1:<port>\n", agent.EnvKey)
-		for _, k := range agent.ExtraEnvKeys {
-			fmt.Fprintf(os.Stdout, "          %s=http://127.0.0.1:<port>\n", k)
+	} else if len(args) > 0 {
+		// An agent that ignores the env override is intercepted via argv.
+		fmt.Fprintf(os.Stdout, "Args:     %s\n", strings.Join(args, " "))
+	}
+	for i, k := range keys {
+		if i == 0 {
+			fmt.Fprintf(os.Stdout, "Env:      %s=%s\n", k, envMap[k])
+			continue
 		}
+		fmt.Fprintf(os.Stdout, "          %s=%s\n", k, envMap[k])
 	}
 	fmt.Fprintf(os.Stdout, "Vault:    %s\n", vault)
 	var muninnStatus string
@@ -531,25 +546,37 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	}
 	fmt.Fprintf(os.Stdout, "MuninnDB: %s %s\n", mcpURL, muninnStatus)
 	if !o.noInject {
-		budget := o.injectBudget
-		if budget <= 0 {
-			budget = inject.DefaultBudget
-		}
-		minScore := o.minScore
-		if minScore <= 0 {
-			minScore = inject.DefaultMinScore
-		}
-		mode := o.recallMode
-		if mode == "" {
-			mode = inject.DefaultRecallMode
-		}
 		calib := "auto-calibrated"
 		if o.noAutoCalibrate {
 			calib = "fixed"
 		}
-		fmt.Fprintf(os.Stdout, "Inject:   enabled (budget=%d tokens, min-score=%.2f %s, recall-mode=%s)\n", budget, minScore, calib, mode)
+		fmt.Fprintf(os.Stdout, "Inject:   enabled (budget=%d tokens, min-score=%.2f %s, recall-mode=%s)\n",
+			dryRunBudget(o), dryRunMinScore(o), calib, dryRunRecallMode(o))
 	} else {
 		fmt.Fprintln(os.Stdout, "Inject:   disabled")
 	}
 	return 0
+}
+
+// dry-run echoes the injection settings the way inject.New resolves them, so
+// the preview and the running proxy cannot disagree.
+func dryRunBudget(o *opts) int {
+	if o.injectBudget <= 0 {
+		return inject.DefaultBudget
+	}
+	return o.injectBudget
+}
+
+func dryRunMinScore(o *opts) float64 {
+	if !(o.minScore > 0 && o.minScore <= 1) {
+		return inject.DefaultMinScore
+	}
+	return o.minScore
+}
+
+func dryRunRecallMode(o *opts) string {
+	if o.recallMode == "" {
+		return inject.DefaultRecallMode
+	}
+	return o.recallMode
 }

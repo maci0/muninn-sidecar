@@ -254,12 +254,10 @@ func sentinelForEnv(k string) string {
 // invocations of the same agent can detect the real origin and avoid infinite
 // forwarding loops. The proxy listens on plain HTTP so TLS is not involved in
 // the agent→proxy hop.
-func (a Agent) BuildEnv(proxyURL, upstream string) []string {
-	env := os.Environ()
-
-	// Keys to replace in the inherited environment. ExtraEnvKeys are also
-	// set to the proxy URL so the agent routes through us regardless of
-	// which internal code path it takes (e.g. Gemini OAuth vs API key).
+// EnvOverrides is the child-environment override set for the plain
+// base-URL-override path, shared by BuildEnv and `msc --dry-run` so the preview
+// matches what the child actually receives.
+func (a Agent) EnvOverrides(proxyURL, upstream string) map[string]string {
 	replace := map[string]string{
 		a.EnvKey:        proxyURL,
 		a.sentinelKey(): upstream,
@@ -267,6 +265,16 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 	for _, k := range a.ExtraEnvKeys {
 		replace[k] = proxyURL
 	}
+	return replace
+}
+
+func (a Agent) BuildEnv(proxyURL, upstream string) []string {
+	env := os.Environ()
+
+	// Keys to replace in the inherited environment. ExtraEnvKeys are also
+	// set to the proxy URL so the agent routes through us regardless of
+	// which internal code path it takes (e.g. Gemini OAuth vs API key).
+	replace := a.EnvOverrides(proxyURL, upstream)
 
 	filtered := make([]string, 0, len(env)+len(replace))
 	for _, e := range env {
@@ -281,6 +289,32 @@ func (a Agent) BuildEnv(proxyURL, upstream string) []string {
 	}
 
 	return filtered
+}
+
+// MITMOverrides is the child-environment override set for TLS-MITM mode, shared
+// by BuildMITMEnv (which applies it) and `msc --dry-run` (which previews it, so
+// the two cannot drift).
+func (a Agent) MITMOverrides(proxyURL, upstream, caCertPath, caBundlePath string) map[string]string {
+	return map[string]string{
+		"HTTPS_PROXY":         proxyURL,
+		"https_proxy":         proxyURL,
+		"HTTP_PROXY":          proxyURL,
+		"http_proxy":          proxyURL,
+		"ALL_PROXY":           proxyURL,
+		"all_proxy":           proxyURL,
+		"NODE_USE_ENV_PROXY":  "1",
+		"NODE_EXTRA_CA_CERTS": caCertPath,
+		"SSL_CERT_FILE":       caBundlePath,
+		"REQUESTS_CA_BUNDLE":  caBundlePath,
+		"CURL_CA_BUNDLE":      caBundlePath,
+		"DENO_CERT":           caCertPath,
+		a.sentinelKey():       upstream,
+	}
+}
+
+// CABundlePath is where writeCombinedCABundle puts the system-roots+CA bundle.
+func CABundlePath(caCertPath string) string {
+	return filepath.Join(filepath.Dir(caCertPath), "ca-bundle.pem")
 }
 
 // BuildMITMEnv constructs the child environment for TLS-MITM mode. Instead of
@@ -313,21 +347,7 @@ func (a Agent) BuildMITMEnv(proxyURL, upstream, caCertPath, caBundlePath string)
 	// root store, so they get the combined bundle: with --mitm-host scoping,
 	// out-of-scope hosts are blind-tunneled and present real Web-PKI certs the
 	// child must still be able to verify.
-	replace := map[string]string{
-		"HTTPS_PROXY":         proxyURL,
-		"https_proxy":         proxyURL,
-		"HTTP_PROXY":          proxyURL,
-		"http_proxy":          proxyURL,
-		"ALL_PROXY":           proxyURL,
-		"all_proxy":           proxyURL,
-		"NODE_USE_ENV_PROXY":  "1",
-		"NODE_EXTRA_CA_CERTS": caCertPath,
-		"SSL_CERT_FILE":       caBundlePath,
-		"REQUESTS_CA_BUNDLE":  caBundlePath,
-		"CURL_CA_BUNDLE":      caBundlePath,
-		"DENO_CERT":           caCertPath,
-		a.sentinelKey():       upstream,
-	}
+	replace := a.MITMOverrides(proxyURL, upstream, caCertPath, caBundlePath)
 
 	filtered := make([]string, 0, len(env)+len(replace))
 	for _, e := range env {
@@ -409,7 +429,7 @@ func writeCombinedCABundle(caCertPath string) (string, error) {
 		bundle = append(bundle, '\n')
 	}
 	bundle = append(bundle, ca...)
-	bundlePath := filepath.Join(filepath.Dir(caCertPath), "ca-bundle.pem")
+	bundlePath := CABundlePath(caCertPath)
 	if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
 		return "", fmt.Errorf("write CA bundle: %w", err)
 	}

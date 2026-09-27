@@ -85,8 +85,20 @@ func (sc *streamCapture) finalize() {
 	})
 }
 
-// processChunk scans the chunk for complete "data: ..." lines, updating
-// lastData incrementally. Partial lines are carried in lineBuf.
+// isNDJSONLine reports whether a line carries a bare JSON event payload, the
+// shape an ndjson stream uses instead of an SSE "data: " line. SSE control
+// lines never start with '{', so the first byte separates the two formats.
+func isNDJSONLine(line []byte) bool {
+	i := 0
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	return i < len(line) && line[i] == '{'
+}
+
+// processChunk scans the chunk for complete event lines ("data: ..." for SSE,
+// bare JSON for ndjson), updating lastData incrementally. Partial lines are
+// carried in lineBuf.
 func (sc *streamCapture) processChunk(chunk []byte) {
 	sc.totalLen += len(chunk)
 
@@ -118,15 +130,18 @@ func (sc *streamCapture) processChunk(chunk []byte) {
 		}
 		data = data[idx+1:]
 
-		if !bytes.HasPrefix(lineBytes, sseDataPrefix) {
+		dBytes := lineBytes
+		if bytes.HasPrefix(lineBytes, sseDataPrefix) {
+			dBytes = lineBytes[len(sseDataPrefix):]
+			// The space after "data:" is optional per the SSE spec; a single leading
+			// space is stripped. The big-3 APIs send "data: ", but OpenAI-compatible
+			// proxies and local servers (e.g. via custom upstreams) may omit it.
+			if len(dBytes) > 0 && dBytes[0] == ' ' {
+				dBytes = dBytes[1:]
+			}
+		} else if !isNDJSONLine(dBytes) {
+			// SSE control lines (event:, id:, retry:, ":") carry no event payload.
 			continue
-		}
-		dBytes := lineBytes[len(sseDataPrefix):]
-		// The space after "data:" is optional per the SSE spec; a single leading
-		// space is stripped. The big-3 APIs send "data: ", but OpenAI-compatible
-		// proxies and local servers (e.g. via custom upstreams) may omit it.
-		if len(dBytes) > 0 && dBytes[0] == ' ' {
-			dBytes = dBytes[1:]
 		}
 		if bytes.Equal(dBytes, sseDone) {
 			continue

@@ -198,7 +198,8 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			}
 			i = ni
 			f, err := strconv.ParseFloat(v, 64)
-			if err != nil || f <= 0 || f > 1 {
+			// Range test as a positive check so "NaN" is rejected too.
+			if err != nil || !(f > 0 && f <= 1) {
 				return nil, actionNone, fmt.Errorf("--inject-min-score must be in (0,1]")
 			}
 			o.minScore = f

@@ -82,7 +82,7 @@ _msc() {
         '--mitm[Intercept HTTPS via a local CA + CONNECT proxy]'
         '--mitm-host[Scope MITM to a host (implies --mitm)]:host:'
         '--inject-budget[Max tokens to inject per request]:budget:'
-        '--inject-min-score[Min cosine to inject a memory (0-1)]:score:'
+        '--inject-min-score[Min cosine to inject a memory (greater than 0, at most 1)]:score:'
         '--recall-mode[MuninnDB recall mode]:mode:(semantic recent balanced deep)'
         '--ground-url[Answer-grounding rerank via an OpenAI-compatible URL]:url:'
         '--ground-cmd[Answer-grounding rerank via a CLI agent]:cmd:'
@@ -129,7 +129,7 @@ complete -c msc -l no-redact -d "Disable secret redaction of captured content"
 complete -c msc -l mitm -d "Intercept HTTPS via a local CA + CONNECT proxy"
 complete -c msc -l mitm-host -r -d "Scope MITM to a host (implies --mitm)"
 complete -c msc -l inject-budget -r -d "Max tokens to inject per request"
-complete -c msc -l inject-min-score -r -d "Min cosine to inject a memory (0-1)"
+complete -c msc -l inject-min-score -r -d "Min cosine to inject a memory (greater than 0, at most 1)"
 complete -c msc -l recall-mode -r -a "semantic recent balanced deep" -d "MuninnDB recall mode"
 complete -c msc -l ground-url -r -d "Answer-grounding rerank via an OpenAI-compatible URL"
 complete -c msc -l ground-cmd -r -d "Answer-grounding rerank via a CLI agent"

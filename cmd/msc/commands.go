@@ -99,8 +99,14 @@ func cmdCA(o *opts) int {
 	fmt.Printf("SHA-256:             %s\n", fingerprint)
 	fmt.Println("\nmsc trusts this CA in agents it launches with --mitm automatically.")
 	fmt.Println("To trust it elsewhere (browser, system store, or a custom HTTPS client):")
-	fmt.Printf("  export NODE_EXTRA_CA_CERTS=%s   # Node\n", certPath)
-	fmt.Printf("  export SSL_CERT_FILE=%s         # OpenSSL/Python/Go/curl\n", certPath)
+	fmt.Printf("  export NODE_EXTRA_CA_CERTS=%s   # Node (adds to the default roots)\n", certPath)
+	// SSL_CERT_FILE/REQUESTS_CA_BUNDLE/CURL_CA_BUNDLE REPLACE the root store,
+	// so they need the system roots plus this CA (the bundle msc builds at
+	// launch under --mitm). Pointing them at the CA alone breaks every other
+	// TLS connection from that shell.
+	fmt.Printf("  # OpenSSL/Python/Go/curl/Deno: SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE and\n")
+	fmt.Printf("  # DENO_CERT replace the default roots, so they need a bundle of the system roots plus\n")
+	fmt.Printf("  # this CA. msc builds that at %s when it launches an agent with --mitm.\n", agents.CABundlePath(certPath))
 	return 0
 }
 
@@ -276,7 +282,7 @@ Flags:
   -f, --force            Launch even if MuninnDB is unreachable (captures may be lost)
       --no-inject        Disable memory injection (enabled by default)
       --inject-budget N  Max tokens to inject per request (default: 2048)
-      --inject-min-score F  Min cosine score to inject a memory, 0-1 (default: 0.6)
+      --inject-min-score F  Min cosine score to inject a memory, in (0,1] (default: 0.6)
       --recall-mode MODE    MuninnDB recall mode: semantic|recent|balanced|deep (default: semantic)
       --no-auto-calibrate   Disable self-tuning of the injection threshold (keep min-score fixed)
       --ground-url URL      Opt-in answer-grounding rerank via an OpenAI-compatible model;

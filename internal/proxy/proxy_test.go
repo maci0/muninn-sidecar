@@ -1472,6 +1472,65 @@ func TestStreamCaptureNoSpaceAfterDataColon(t *testing.T) {
 	}
 }
 
+func TestStreamCaptureNDJSON(t *testing.T) {
+	// An ndjson stream carries bare JSON events with no "data:" prefix. The
+	// proxy routes application/x-ndjson to streamCapture, so the deltas must
+	// accumulate the same way SSE ones do.
+	sc := &streamCapture{
+		ReadCloser: io.NopCloser(strings.NewReader("")),
+		ctx:        &captureCtx{start: time.Now()},
+		statusCode: 200,
+	}
+	chunk := []byte(strings.Join([]string{
+		`{"choices":[{"delta":{"content":"nd-"}}]}`,
+		`{"choices":[{"delta":{"content":"json"}}]}`,
+		``,
+	}, "\n"))
+	sc.processChunk(chunk)
+
+	respBody := sc.buildRespBody()
+	var doc map[string]any
+	if err := json.Unmarshal(respBody, &doc); err != nil {
+		t.Fatalf("invalid synthetic response: %v", err)
+	}
+	content, ok := doc["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("expected content from ndjson deltas, got %s", respBody)
+	}
+	block, _ := content[0].(map[string]any)
+	if block["text"] != "nd-json" {
+		t.Errorf("expected accumulated text 'nd-json', got %v", block["text"])
+	}
+}
+
+func TestStreamCaptureIgnoresSSEControlLines(t *testing.T) {
+	// SSE control lines and comments carry no event payload and must not
+	// override the accumulated answer.
+	sc := &streamCapture{
+		ReadCloser: io.NopCloser(strings.NewReader("")),
+		ctx:        &captureCtx{start: time.Now()},
+		statusCode: 200,
+	}
+	chunk := []byte(strings.Join([]string{
+		`: keep-alive`,
+		`event: message`,
+		`id: 7`,
+		`retry: 1000`,
+		`data: {"choices":[{"delta":{"content":"answer"}}]}`,
+		``,
+	}, "\n"))
+	sc.processChunk(chunk)
+
+	var doc map[string]any
+	if err := json.Unmarshal(sc.buildRespBody(), &doc); err != nil {
+		t.Fatalf("invalid synthetic response: %v", err)
+	}
+	block, _ := doc["content"].([]any)[0].(map[string]any)
+	if block["text"] != "answer" {
+		t.Errorf("expected text 'answer', got %v", block["text"])
+	}
+}
+
 func TestStreamCapturePreservesUsage(t *testing.T) {
 	// Verify that usage metadata from SSE events is preserved in the
 	// synthetic response body and correctly extracted into token counts.
