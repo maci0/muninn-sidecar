@@ -513,11 +513,7 @@ func silenceStdout(t *testing.T, fn func()) {
 	fn()
 }
 
-func TestSplitQueryQAAndMultiRecall(t *testing.T) {
-	subs := splitQueryQA("Did Alice and Bob meet in Paris?")
-	if subs[0] != "Did Alice and Bob meet in Paris?" || len(subs) < 2 {
-		t.Errorf("splitQueryQA: %v", subs)
-	}
+func TestMultiRecall(t *testing.T) {
 	muninn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		inner, _ := json.Marshal(map[string]any{"memories": []map[string]any{{"content": "fact A", "vector_score": 0.9}}})
 		json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"content": []map[string]any{{"type": "text", "text": string(inner)}}}})
@@ -600,15 +596,6 @@ func captureStderr(t *testing.T, fn func()) string {
 	fn()
 	w.Close()
 	return <-done
-}
-
-func FuzzSplitQueryQA(f *testing.F) {
-	f.Add("Did Alice and Bob meet in Paris?")
-	f.Fuzz(func(t *testing.T, q string) {
-		if s := splitQueryQA(q); len(s) == 0 || s[0] != q {
-			t.Fatalf("bad split: %v", s)
-		}
-	})
 }
 
 // A report edited on Windows (or checked out with core.autocrlf) has CRLF

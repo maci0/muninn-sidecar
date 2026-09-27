@@ -115,6 +115,7 @@ internal/
     eval_window.go        Session-window decay study (decayFactor/decayFloor)
   grounding/grounding.go  Answer-grounding rerank (OpenAI-compatible model / CLI judge)
   mcpclient/client.go     Shared JSON-RPC 2.0 client for MuninnDB
+  querysplit/querysplit.go  Entity-span sub-queries for multi-recall (bench + qa harnesses)
   mitm/
     ca.go                 Local CA: generate/persist + mint cached per-host leaf certs
     host.go               Host normalization & SAN selection (DNS vs IP)

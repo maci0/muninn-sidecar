@@ -191,7 +191,7 @@ func TestGeneratorNamespaceBounds(t *testing.T) {
 	if err == nil {
 		t.Fatal("genAgentMem should reject n past the coinName namespace even with 0 absent probes")
 	}
-	if !contains(err.Error(), "seeded items would collide") || contains(err.Error(), "absent probes") {
+	if !strings.Contains(err.Error(), "seeded items would collide") || strings.Contains(err.Error(), "absent probes") {
 		t.Errorf("nAbsent=0 overflow error should blame seeded items: %v", err)
 	}
 	// With absent probes overflowing past an in-range n, keep the wrap wording.
@@ -199,7 +199,7 @@ func TestGeneratorNamespaceBounds(t *testing.T) {
 	if err == nil {
 		t.Fatal("genAgentMem should reject absent probes past the namespace")
 	}
-	if !contains(err.Error(), "absent probes would wrap onto seeded items") {
+	if !strings.Contains(err.Error(), "absent probes would wrap onto seeded items") {
 		t.Errorf("absent overflow error should blame absent probes: %v", err)
 	}
 }
@@ -346,22 +346,13 @@ func TestWriteQA(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path)
 	s := string(data)
-	if !contains(s, "q1") || !contains(s, "a1") || contains(s, "q2") || contains(s, "q3") {
+	if !strings.Contains(s, "q1") || !strings.Contains(s, "a1") || strings.Contains(s, "q2") || strings.Contains(s, "q3") {
 		t.Errorf("writeQA content: %s", s)
 	}
 	// No answer-carrying probes → error, never a silently empty file.
 	if _, err := writeQA(path, []probe{{Query: "q", Present: true}}); err == nil {
 		t.Error("writeQA should reject probes without answers")
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 func TestAnalyzeAndGate(t *testing.T) {
@@ -521,54 +512,4 @@ func FuzzGenInts(f *testing.F) {
 		}
 		_ = coinName(n)
 	})
-}
-
-func TestSplitQuery(t *testing.T) {
-	subs := splitQuery("Were Scott Derrickson and Ed Wood here?")
-	if subs[0] != "Were Scott Derrickson and Ed Wood here?" {
-		t.Errorf("first sub must be full query, got %q", subs[0])
-	}
-	joined := ""
-	for _, s := range subs {
-		joined += "|" + s
-	}
-	if !contains(joined, "Scott Derrickson") || !contains(joined, "Ed Wood") {
-		t.Errorf("expected entity spans, got %v", subs)
-	}
-}
-
-func FuzzSplitQuery(f *testing.F) {
-	f.Add("Were Scott Derrickson and Ed Wood here?")
-	f.Add("")
-	f.Fuzz(func(t *testing.T, q string) {
-		subs := splitQuery(q)
-		if len(subs) == 0 || subs[0] != q {
-			t.Fatalf("splitQuery must return full query first, got %v", subs)
-		}
-	})
-}
-
-// TestSplitQueryNonASCIIUppercase pins that entity extraction sees uppercase
-// letters outside A-Z. A German sentence-initial noun, a Cyrillic proper noun,
-// and a Greek one all carry no ASCII uppercase, so the previous 'A'..'Z' range
-// test returned the full query alone and multi-hop recall silently degraded to
-// a single recall.
-func TestSplitQueryNonASCIIUppercase(t *testing.T) {
-	cases := []struct {
-		name  string
-		query string
-		want  string
-	}{
-		{"german noun", "Welche Migrationsstrategie gilt für Postgres?", "Migrationsstrategie"},
-		{"cyrillic", "Кто основал 北京?", "北京"},
-		{"greek", "Ποιος έγραψε τον Ωμηρικό;", "Ωμηρικό"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			joined := strings.Join(splitQuery(tc.query), "|")
-			if !strings.Contains(joined, tc.want) {
-				t.Errorf("entity span %q not extracted from %q: %v", tc.want, tc.query, splitQuery(tc.query))
-			}
-		})
-	}
 }

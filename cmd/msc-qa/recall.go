@@ -5,43 +5,12 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
+	"github.com/maci0/muninn-sidecar/internal/querysplit"
 )
 
 // --- recall (mirrors the proxy's gated selection: cosine >= minScore) ---
-
-// splitQueryQA decomposes a query into sub-queries (full + capitalized entity
-// spans) for transparent multi-recall — no LLM call.
-func splitQueryQA(q string) []string {
-	subs := []string{q}
-	seen := map[string]bool{q: true}
-	var cur []string
-	flush := func() {
-		if len(cur) > 0 {
-			s := strings.Trim(strings.Join(cur, " "), "?.,")
-			if len(s) >= 3 && !seen[s] {
-				seen[s] = true
-				subs = append(subs, s)
-			}
-			cur = nil
-		}
-	}
-	for _, w := range strings.Fields(q) {
-		// unicode.IsUpper, not an 'A'..'Z' range test: a German noun, a Turkish
-		// or Cyrillic proper noun, and any CJK entity carry no ASCII uppercase,
-		// so the range test found no sub-queries for those questions.
-		r := []rune(w)
-		if len(r) > 0 && unicode.IsUpper(r[0]) {
-			cur = append(cur, w)
-		} else {
-			flush()
-		}
-	}
-	flush()
-	return subs
-}
 
 // cand is a gated recall candidate with the metadata the production injection
 // format carries (concept + effective cosine), so the harness can reproduce the
@@ -77,7 +46,7 @@ func recallStructured(ctx context.Context, mcp *mcpclient.Client, vault, query s
 		// carry the high score, or a downstream gate would wrongly reject it.
 		seen := map[string]int{}
 		var parts []cand
-		for _, sub := range splitQueryQA(query) {
+		for _, sub := range querysplit.Split(query) {
 			for _, c := range recallStructured(ctx, mcp, vault, sub, minScore, false) {
 				if c.Content == "" {
 					continue

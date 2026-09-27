@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/maci0/muninn-sidecar/internal/mcpclient"
+	"github.com/maci0/muninn-sidecar/internal/querysplit"
 )
 
 // --- seeding ---
@@ -70,41 +70,6 @@ func recallMems(ctx context.Context, c *mcpclient.Client, vault, query string, l
 	return parseRecall(resp)
 }
 
-// splitQuery decomposes a query into sub-queries for multi-recall: the full
-// query plus each capitalized entity span (a no-LLM proxy for the "hops" a
-// multi-hop question references). Deduped, full query first.
-func splitQuery(q string) []string {
-	subs := []string{q}
-	seen := map[string]bool{q: true}
-	words := strings.Fields(q)
-	var cur []string
-	flush := func() {
-		if len(cur) > 0 {
-			s := strings.Trim(strings.Join(cur, " "), "?.,")
-			if len(s) >= 3 && !seen[s] {
-				seen[s] = true
-				subs = append(subs, s)
-			}
-			cur = nil
-		}
-	}
-	for _, w := range words {
-		// unicode.IsUpper, not an 'A'..'Z' range test: a German noun ("Migrations-
-		// strategie"), a Turkish or Cyrillic proper noun, and any CJK entity carry
-		// no ASCII uppercase at all, so the range test silently extracted no
-		// sub-queries for those queries and multi-hop recall collapsed to a single
-		// recall of the whole question.
-		r := []rune(w)
-		if len(r) > 0 && unicode.IsUpper(r[0]) {
-			cur = append(cur, w)
-		} else {
-			flush()
-		}
-	}
-	flush()
-	return subs
-}
-
 // recallMerged does a single recall, or (multi) splits the query, recalls each
 // sub-query, and merges by best vector_score per concept — a transparent,
 // no-LLM way to surface both hops of a multi-hop question.
@@ -112,7 +77,7 @@ func recallMerged(ctx context.Context, c *mcpclient.Client, vault, query string,
 	if !multi {
 		return recallMems(ctx, c, vault, query, limit, mode)
 	}
-	return recallSubqueries(ctx, c, vault, splitQuery(query), limit, mode), nil
+	return recallSubqueries(ctx, c, vault, querysplit.Split(query), limit, mode), nil
 }
 
 // recallSubqueries recalls each sub-query and merges by best vector_score per
