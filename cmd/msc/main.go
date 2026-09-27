@@ -178,7 +178,7 @@ func run() int {
 	// Reject an undialable endpoint before anything else happens, so a typo in
 	// --mcp-url or MUNINN_MCP_URL names itself instead of surfacing as a
 	// transport error from the health check (or worse, silent capture loss).
-	if err := config.ValidateMCPURL(mcpURL); err != nil {
+	if err := config.ValidateURL("MuninnDB URL", mcpURL); err != nil {
 		logerr("%v", err)
 		return exitUsage
 	}
@@ -192,6 +192,23 @@ func run() int {
 				"mcp_url", mcpURL)
 		}
 	}
+
+	// One line naming the effective configuration, so a captured session log
+	// answers "which endpoint, vault, and gate did this run use?" without a
+	// separate --dry-run. The token is reported as set/unset, never by value.
+	// The injection numbers come from the same helpers the dry-run preview uses,
+	// so the two cannot report different values.
+	slog.Debug("resolved config",
+		"mcp_url", mcpURL,
+		"vault", vault,
+		"token", token != "",
+		"inject", !o.noInject,
+		"inject_budget", dryRunBudget(o),
+		"inject_min_score", dryRunMinScore(o),
+		"recall_mode", dryRunRecallMode(o),
+		"auto_calibrate", !o.noAutoCalibrate,
+		"redact", !o.noRedact,
+		"mitm", o.mitm)
 
 	sessionStats := &stats.Stats{}
 	muninn := store.New(mcpURL, token, vault, sessionStats)

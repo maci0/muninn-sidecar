@@ -58,24 +58,27 @@ func IsOpenAIHost(host string) bool {
 	return h == "api.openai.com" || strings.HasSuffix(h, ".openai.com")
 }
 
-// ValidateMCPURL rejects an endpoint msc could never dial (a missing scheme, a
+// ValidateURL rejects an endpoint msc could never dial (a missing scheme, a
 // non-HTTP scheme, or no host), so a typo fails at startup with a clear message
-// instead of surfacing later as a confusing transport error from the health
-// check. An empty raw is accepted: it means "no endpoint configured", which the
-// caller handles with its own error.
-func ValidateMCPURL(raw string) error {
+// naming the option instead of surfacing later as a confusing transport error
+// from the health check or the first request. An empty raw is accepted: it means
+// "no endpoint configured", which the caller handles with its own error.
+//
+// option names the setting in the message ("MuninnDB URL", "--ground-url") so
+// the user knows which value to fix.
+func ValidateURL(option, raw string) error {
 	if raw == "" {
 		return nil
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("invalid MuninnDB URL %q: %w", raw, err)
+		return fmt.Errorf("invalid %s %q: %w", option, raw, err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("invalid MuninnDB URL %q: scheme must be http or https", raw)
+		return fmt.Errorf("invalid %s %q: scheme must be http or https", option, raw)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("invalid MuninnDB URL %q: missing host", raw)
+		return fmt.Errorf("invalid %s %q: missing host", option, raw)
 	}
 	return nil
 }

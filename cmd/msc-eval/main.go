@@ -64,8 +64,15 @@ func run() error {
 	if *compare && (*studyN <= 0 || *studyFolds < 2 || *studyFolds > *studyN) {
 		return fmt.Errorf("-study-n must be > 0 and 2 <= -study-folds <= -study-n")
 	}
+	// 0 keeps the per-scenario threshold; anything else overrides it and is
+	// compared against an embedding cosine in [0,1]. Out-of-range or NaN values
+	// would inject everything or nothing and silently misreport the scenario
+	// score, so reject them. Positive range check, so NaN is caught too.
+	if *minScore != 0 && !(*minScore > 0 && *minScore <= 1) {
+		return fmt.Errorf("invalid -min-score %v: must be 0 (per-scenario default) or in (0,1]", *minScore)
+	}
 	if *live {
-		if err := config.ValidateMCPURL(*mcpURL); err != nil {
+		if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
 			return err
 		}
 		return runLive(*liveFile, *mcpURL, resolveToken(*token), *vault, *minScore, *budget, *settle, *timeout, *asJSON)

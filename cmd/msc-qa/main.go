@@ -96,7 +96,7 @@ func run() error {
 		squadFile   = flag.String("squad-file", filepath.Join(os.TempDir(), "squad-dev.json"), "dataset JSON path (SQuAD or HotpotQA official format)")
 		dataset     = flag.String("dataset", "squad", "dataset format: squad | hotpot | generic")
 		vault       = flag.String("vault", "msc-squad", "vault to recall from (must be seeded, e.g. by msc-bench)")
-		mcpURL      = flag.String("mcp-url", envOr("MUNINN_MCP_URL", "http://127.0.0.1:8750/mcp"), "MuninnDB MCP endpoint")
+		mcpURL      = flag.String("mcp-url", config.MCPURL(""), "MuninnDB MCP endpoint")
 		token       = flag.String("token", "", "MuninnDB bearer token (default ~/.muninn/mcp.token)")
 		modelURL    = flag.String("model-url", "", "OpenAI-compatible base URL (e.g. http://localhost:1234/v1); empty = build-only, no scoring")
 		modelKey    = flag.String("model-key", "", "model API key (default $OPENAI_API_KEY)")
@@ -118,7 +118,7 @@ func run() error {
 		answerHintF = flag.String("answer-hint", "", "constrain answers to a fixed label set (e.g. \"SUPPORTS, REFUTES\") for classification regimes like FEVER; empty = extractive span")
 	)
 	flag.Parse()
-	if err := config.ValidateMCPURL(*mcpURL); err != nil {
+	if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
 		return err
 	}
 	switch *dataset {
@@ -128,6 +128,18 @@ func run() error {
 	}
 	if *n <= 0 {
 		return fmt.Errorf("invalid -n %d: must be positive", *n)
+	}
+	for opt, raw := range map[string]string{"-model-url": *modelURL, "-ground-url": *groundURL} {
+		if err := config.ValidateURL(opt, raw); err != nil {
+			return err
+		}
+	}
+	// The gate is compared against an embedding cosine in [0,1]. A value
+	// outside that range, or NaN, injects everything or nothing and the scores
+	// below describe a run nobody asked for. Written as a positive range check
+	// so NaN is rejected too.
+	if !(*minScore > 0 && *minScore <= 1) {
+		return fmt.Errorf("invalid -min-score %v: must be in (0,1]", *minScore)
 	}
 	if *modelKey == "" {
 		*modelKey = os.Getenv("OPENAI_API_KEY")
@@ -983,7 +995,5 @@ func loadDataset(dataset, path string, n int, seed int64) ([]qaItem, error) {
 	}
 	return qs, nil
 }
-
-func envOr(key, def string) string { return config.EnvOr(key, def) }
 
 func resolveToken(flagVal string) string { return config.Token(flagVal) }

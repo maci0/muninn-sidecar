@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -35,7 +36,7 @@ func TestMCPURLPrecedence(t *testing.T) {
 	}
 }
 
-func TestValidateMCPURL(t *testing.T) {
+func TestValidateURL(t *testing.T) {
 	valid := []string{
 		"",
 		"http://127.0.0.1:8750/mcp",
@@ -43,8 +44,8 @@ func TestValidateMCPURL(t *testing.T) {
 		"https://muninn.example.com:8443/mcp",
 	}
 	for _, raw := range valid {
-		if err := ValidateMCPURL(raw); err != nil {
-			t.Errorf("ValidateMCPURL(%q) = %v, want nil", raw, err)
+		if err := ValidateURL("MuninnDB URL", raw); err != nil {
+			t.Errorf("ValidateURL(%q) = %v, want nil", raw, err)
 		}
 	}
 	invalid := []string{
@@ -56,8 +57,12 @@ func TestValidateMCPURL(t *testing.T) {
 		"http://[::1/mcp",      // malformed
 	}
 	for _, raw := range invalid {
-		if err := ValidateMCPURL(raw); err == nil {
-			t.Errorf("ValidateMCPURL(%q) = nil, want an error", raw)
+		err := ValidateURL("MuninnDB URL", raw)
+		if err == nil {
+			t.Errorf("ValidateURL(%q) = nil, want an error", raw)
+		}
+		if !strings.Contains(err.Error(), "MuninnDB URL") {
+			t.Errorf("ValidateURL(%q) error must name the option, got %v", raw, err)
 		}
 	}
 }

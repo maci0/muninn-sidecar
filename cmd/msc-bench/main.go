@@ -47,7 +47,7 @@ func main() {
 
 func run() error {
 	var (
-		mcpURL     = flag.String("mcp-url", envOr("MUNINN_MCP_URL", "http://127.0.0.1:8750/mcp"), "MuninnDB MCP endpoint")
+		mcpURL     = flag.String("mcp-url", config.MCPURL(""), "MuninnDB MCP endpoint")
 		token      = flag.String("token", "", "bearer token (default ~/.muninn/mcp.token)")
 		vault      = flag.String("vault", "msc-bench", "vault to seed/probe (dedicated; not 'default')")
 		corpus     = flag.String("corpus", "homogeneous", "corpus generator: homogeneous | diverse | facts | squad | hotpot | agentmem")
@@ -85,7 +85,7 @@ func run() error {
 		asJSON     = flag.Bool("json", false, "emit machine-readable JSON")
 	)
 	flag.Parse()
-	if err := config.ValidateMCPURL(*mcpURL); err != nil {
+	if err := config.ValidateURL("MuninnDB URL", *mcpURL); err != nil {
 		return err
 	}
 	switch *corpus {
@@ -97,6 +97,11 @@ func run() error {
 	case "", "semantic", "recent", "balanced", "deep":
 	default:
 		return fmt.Errorf("invalid -mode %q: must be one of semantic, recent, balanced, deep (or empty for server default)", *mode)
+	}
+	for opt, raw := range map[string]string{"-ground-url": *groundURL, "-rewrite-url": *rewriteURL} {
+		if err := config.ValidateURL(opt, raw); err != nil {
+			return err
+		}
 	}
 	if !*seed && !*doProbe {
 		*doProbe = true
@@ -864,7 +869,5 @@ func safeDiv(a, b float64) float64 {
 	}
 	return a / b
 }
-
-func envOr(key, def string) string { return config.EnvOr(key, def) }
 
 func resolveToken(flagVal string) string { return config.Token(flagVal) }

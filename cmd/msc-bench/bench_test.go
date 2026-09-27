@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/maci0/muninn-sidecar/internal/config"
 )
 
 func TestPureHelpers(t *testing.T) {
@@ -32,8 +34,8 @@ func TestPureHelpers(t *testing.T) {
 
 func TestEnvAndToken(t *testing.T) {
 	t.Setenv("MUNINN_MCP_URL", "http://x/mcp")
-	if envOr("MUNINN_MCP_URL", "d") != "http://x/mcp" || envOr("NOPE_VAR", "d") != "d" {
-		t.Error("envOr")
+	if config.MCPURL("") != "http://x/mcp" {
+		t.Error("MUNINN_MCP_URL not honored")
 	}
 	if resolveToken("explicit") != "explicit" {
 		t.Error("resolveToken flag precedence")

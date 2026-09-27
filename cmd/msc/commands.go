@@ -291,6 +291,8 @@ Flags:
       --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
       --ground-topk K       Candidates to ground per recall (default: 3)
       --ground-timeout D    In-flight grounding-call timeout (default: 10s); fails open to the gate
+                            (--ground-model, --ground-topk, --ground-timeout need --ground-url
+                            or --ground-cmd; without one they would be silently ignored)
       --no-redact        Disable secret redaction of captured content (full-fidelity; trusted envs only)
       --mitm             Intercept HTTPS via a local CA + CONNECT proxy instead of a
                          base-URL override (for agents that ignore *_BASE_URL); the

@@ -266,6 +266,12 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 			case "--ground-cmd":
 				o.groundCmd = v
 			case "--ground-url":
+				// Reject an endpoint the grounder could never dial here, so the
+				// typo names itself instead of silently degrading every inject to
+				// the cosine gate once requests are in flight.
+				if uerr := config.ValidateURL(key, v); uerr != nil {
+					return nil, actionNone, uerr
+				}
 				o.groundURL = v
 			case "--ground-model":
 				o.groundModel = v
@@ -279,6 +285,25 @@ func parseFlags(args []string, o *opts) (remaining []string, action parseAction,
 
 	if i < len(args) {
 		remaining = append(remaining, args[i:]...)
+	}
+
+	// The grounding knobs are only read when a grounder backend is selected
+	// (--ground-url or --ground-cmd). Accepting one on its own would leave the
+	// grounder disabled with the setting silently dropped, so name the missing
+	// backend instead.
+	if o.groundURL == "" && o.groundCmd == "" {
+		for _, set := range []struct {
+			key   string
+			given bool
+		}{
+			{"--ground-model", o.groundModel != ""},
+			{"--ground-topk", o.groundTopK > 0},
+			{"--ground-timeout", o.groundTimeout > 0},
+		} {
+			if set.given {
+				return nil, actionNone, fmt.Errorf("%s requires --ground-url or --ground-cmd", set.key)
+			}
+		}
 	}
 
 	return remaining, action, nil

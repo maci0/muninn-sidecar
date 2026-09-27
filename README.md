@@ -281,6 +281,8 @@ To inspect the resolved configuration without launching anything, run `msc --dry
     --ground-model NAME   Grounding model for --ground-url (default: qwen2.5:7b-instruct)
     --ground-topk K       Candidates to ground per recall (default: 3)
     --ground-timeout D    In-flight grounding-call timeout (default: 10s); a slow judge fails open to the cosine gate
+                          (--ground-model, --ground-topk, --ground-timeout require --ground-url
+                          or --ground-cmd; without a backend they are rejected)
     --mitm            Intercept HTTPS via a local CA + CONNECT proxy instead of a base-URL
                       override (for agents that ignore *_BASE_URL); the child is told to
                       trust msc's CA via NODE_EXTRA_CA_CERTS / SSL_CERT_FILE

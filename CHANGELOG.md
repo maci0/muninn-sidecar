@@ -15,6 +15,22 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
 
 ### Fixed
 
+- **Bad endpoint config fails at startup.** `--ground-url` (and the eval
+  binaries' `-ground-url`, `-model-url`, `-rewrite-url`) accepted any string, so
+  a typo failed per request as a transport error or silently left the grounder
+  off. All of them now go through one `config.ValidateURL` check, the same
+  fail-fast gate `-mcp-url` already had. `--ground-model`, `--ground-topk`, and
+  `--ground-timeout` are also rejected without a `--ground-url`/`--ground-cmd`
+  backend instead of being silently dropped, and `msc-qa`/`msc-eval` reject a
+  `-min-score` outside (0,1] (NaN included), which would otherwise inject
+  everything or nothing and misreport the run.
+- **The MuninnDB default endpoint had three definitions.** `msc-bench` and
+  `msc-qa` each carried their own copy of `http://127.0.0.1:8750/mcp` while
+  `msc-eval` resolved it through `config`; the dev binaries now take the shared
+  default, so one edit covers all of them.
+- **`--debug` logs the effective configuration.** A captured session log now
+  names the endpoint, vault, injection budget/gate/recall mode, redaction, and
+  MITM state. The bearer token is reported as set/unset, never by value.
 - **Builds are reproducible.** `make build` passed no `-trimpath`, so the
   checkout path was embedded in every binary, and the stamped build date came
   from the wall clock, so no two builds of one commit matched. Builds now use

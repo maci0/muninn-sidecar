@@ -28,9 +28,6 @@ func TestSmallHelpers(t *testing.T) {
 	if safe(1, 0) != 0 || safe(2, 4) != 0.5 {
 		t.Errorf("safe")
 	}
-	if envOr("DEFINITELY_UNSET_X", "d") != "d" {
-		t.Errorf("envOr")
-	}
 	if resolveToken("flagtok") != "flagtok" {
 		t.Errorf("resolveToken")
 	}

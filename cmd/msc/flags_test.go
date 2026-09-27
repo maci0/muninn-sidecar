@@ -43,6 +43,39 @@ func TestParseFlags(t *testing.T) {
 		}
 	})
 
+	t.Run("grounding knobs need a backend", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"--ground-model", "m", "claude"},
+			{"--ground-topk", "4", "claude"},
+			{"--ground-timeout", "8s", "claude"},
+		} {
+			o := &opts{}
+			_, _, err := parseFlags(args, o)
+			if err == nil || !strings.Contains(err.Error(), "--ground-url or --ground-cmd") {
+				t.Errorf("parseFlags(%v) = %v, want a missing-backend error", args, err)
+			}
+		}
+		// With a CLI backend the same flags parse, and a bare run (no grounding
+		// flags at all) stays valid.
+		o := &opts{}
+		if _, _, err := parseFlags([]string{"--ground-cmd", "claude -p", "--ground-model", "m", "claude"}, o); err != nil {
+			t.Errorf("--ground-cmd backend: %v", err)
+		}
+		if _, _, err := parseFlags([]string{"claude"}, &opts{}); err != nil {
+			t.Errorf("plain run: %v", err)
+		}
+	})
+
+	t.Run("ground-url must be dialable", func(t *testing.T) {
+		for _, raw := range []string{"localhost:1234/v1", "htp://localhost/v1", "http://"} {
+			o := &opts{}
+			_, _, err := parseFlags([]string{"--ground-url", raw, "claude"}, o)
+			if err == nil || !strings.Contains(err.Error(), "--ground-url") {
+				t.Errorf("parseFlags(--ground-url %q) = %v, want a URL error", raw, err)
+			}
+		}
+	})
+
 	t.Run("mitm flag", func(t *testing.T) {
 		o := &opts{}
 		rem, _, err := parseFlags([]string{"--mitm", "claude"}, o)
