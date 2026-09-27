@@ -244,7 +244,7 @@ func (c *Client) CallWithID(ctx context.Context, id int64, toolName string, args
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: request failed: %w", toolName, c.url, err)
+		return nil, fmt.Errorf("%s %s: request failed: %w", toolName, redact.URL(c.url), err)
 	}
 	defer resp.Body.Close()
 
@@ -253,10 +253,10 @@ func (c *Client) CallWithID(ctx context.Context, id int64, toolName string, args
 	// that fails downstream with a misleading parse error.
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: read response: %w", toolName, c.url, err)
+		return nil, fmt.Errorf("%s %s: read response: %w", toolName, redact.URL(c.url), err)
 	}
 	if int64(len(respBody)) > maxResponseSize {
-		return nil, fmt.Errorf("%s %s: MCP response exceeds %d-byte limit", toolName, c.url, maxResponseSize)
+		return nil, fmt.Errorf("%s %s: MCP response exceeds %d-byte limit", toolName, redact.URL(c.url), maxResponseSize)
 	}
 
 	return classifyResponse(resp.StatusCode, respBody)

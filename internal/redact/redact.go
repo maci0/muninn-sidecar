@@ -411,15 +411,7 @@ func Secrets(s string) string {
 	// colon tail (email:password combos, URL-embedded credentials) is secret
 	// material and is redacted along with the email.
 	if emailRule.matches(s) && emailPattern.MatchString(s) {
-		s = emailPattern.ReplaceAllStringFunc(s, func(m string) string {
-			if i := strings.IndexByte(m, ':'); i >= 0 {
-				tail := m[i+1:]
-				if strings.Contains(tail, "/") && !strings.Contains(tail, "@") {
-					return m // user@host:path remote, not an email
-				}
-			}
-			return Marker
-		})
+		s = redactEmails(s)
 	}
 	// Sensitive key=value assignments: redact the value, keep the key for context.
 	// A value already reduced to the marker (plus stray trailing bytes a quoted
@@ -436,4 +428,42 @@ func Secrets(s string) string {
 	// Home directory last, on the text every pass above has already finished
 	// with, so it sees the exact bytes that would otherwise be stored.
 	return redactHome(s)
+}
+
+// redactEmails replaces every emailPattern match with Marker, except scp-style
+// remotes (user@host:path), which address a machine rather than a person.
+//
+// A match that starts immediately after a colon is never a remote: it is the
+// userinfo of a URL credential (scheme://user:password@host:port/path), where
+// the grammar reads the password as the local part and the host as the domain.
+// Redacting such a match removes the host while leaving the password in place,
+// and its own colon tail is the port, so the remote exemption (which fires on
+// any tail with a '/' and no '@') would keep the whole credential verbatim. So
+// the ':' check comes first, and the credential is redacted as a unit.
+func redactEmails(s string) string {
+	matches := emailPattern.FindAllStringIndex(s, -1)
+	if matches == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		hit := s[m[0]:m[1]]
+		exempt := false
+		if m[0] == 0 || s[m[0]-1] != ':' {
+			if i := strings.IndexByte(hit, ':'); i >= 0 {
+				tail := hit[i+1:]
+				exempt = strings.Contains(tail, "/") && !strings.Contains(tail, "@")
+			}
+		}
+		b.WriteString(s[last:m[0]])
+		if exempt {
+			b.WriteString(hit) // user@host:path remote, not an email
+		} else {
+			b.WriteString(Marker)
+		}
+		last = m[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }

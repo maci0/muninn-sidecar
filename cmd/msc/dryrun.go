@@ -27,7 +27,16 @@ func printDryRun(o *opts, cmd string, agent agents.Agent, upstream, mcpURL, vaul
 	envMap := agent.EnvOverrides("http://127.0.0.1:<port>", upstream)
 	var args []string
 	if o.mitm {
-		envMap = agent.MITMOverrides("http://127.0.0.1:<port>", upstream, caCertPath, agents.CABundlePath(caCertPath))
+		// A combined system-roots+CA bundle only exists where msc can find a
+		// system bundle to combine with. Where none exists (Windows keeps its
+		// roots in the OS store), ExecMITM passes an empty bundle path and the
+		// trust-store-replacing variables stay unset, so the preview must not
+		// list them.
+		bundlePath := ""
+		if agents.HasSystemCABundle() {
+			bundlePath = agents.CABundlePath(caCertPath)
+		}
+		envMap = agent.MITMOverrides("http://127.0.0.1:<port>", upstream, caCertPath, bundlePath)
 	} else {
 		for _, pa := range agent.ProxyArgs {
 			args = append(args, strings.ReplaceAll(pa, "{proxy}", "http://127.0.0.1:<port>"))
