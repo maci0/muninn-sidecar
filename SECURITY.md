@@ -27,7 +27,10 @@ warrant care:
   By default `--mitm` TLS-terminates every CONNECT host the agent opens (the
   agents that need MITM often talk to a backend that isn't their nominal API
   host); use `--mitm-host` to scope interception to the upstream plus listed
-  hosts, blind-tunneling everything else untouched.
+  hosts, blind-tunneling everything else untouched. `msc ca` prints the CA
+  certificate (never the key) and instructions for trusting it in a browser or
+  system store — importing it there is your own decision and widens the CA's
+  reach well past the child msc launches.
 - **Captured content & secrets.** Exchanges are stored in MuninnDB. msc redacts
   well-known credential formats and personal data (emails, payment-card numbers,
   SSNs) before storage and before injecting recalled
@@ -38,10 +41,19 @@ warrant care:
   `~/.muninn/mcp.token` (msc warns on overly-permissive perms or plaintext HTTP to
   a non-loopback endpoint). The proxy listens on loopback (`127.0.0.1`).
 - **The loopback listener is unauthenticated.** Any process running as the same
-  user can connect to the proxy port; msc does not check client identity. Under
-  `--mitm` that client can also open a CONNECT tunnel to any host and have the
-  decrypted traffic captured into your vault. Only run msc on a machine you
-  trust, and scope MITM with `--mitm-host` where you can.
+  user can connect to the proxy port; msc does not check client identity. That
+  includes `GET /__msc/health`, which answers any caller with the agent name,
+  upstream, uptime, and capture counters. Under `--mitm` that client can also
+  open a CONNECT tunnel to any host and have the decrypted traffic captured into
+  your vault. Only run msc on a machine you trust, and scope MITM with
+  `--mitm-host` where you can.
+- **The grounding judge is a third party you choose.** With `--ground-url`,
+  msc sends the recall query and the candidate memory passages of each turn to
+  that endpoint, with `OPENAI_API_KEY` when set; with `--ground-cmd` it pipes
+  the same text to a local CLI judge on stdin. Both are off by default, and msc
+  warns when the endpoint is plaintext HTTP to a non-loopback host, or is not
+  `api.openai.com`. Redaction runs on the prompt, but the passages are still
+  your content leaving the machine.
 - **Vault content reaches the agent's system prompt.** Memories recalled from
   MuninnDB are injected as system-level context, so anything written into a
   vault by any client or session can steer a later agent turn. Recall is gated
