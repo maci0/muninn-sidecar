@@ -8,15 +8,14 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
+	"github.com/maci0/muninn-sidecar/internal/clirun"
 	"github.com/maci0/muninn-sidecar/internal/redact"
-	"github.com/maci0/muninn-sidecar/internal/tailbuf"
 )
 
 // rewriter turns one (possibly underspecified or multi-hop) query into a small
@@ -171,26 +170,20 @@ type cliRewriter struct {
 func (r *cliRewriter) label() string { return "cli:" + r.name }
 
 func (r *cliRewriter) Rewrite(ctx context.Context, query string, max int) []string {
-	cctx, cancel := context.WithTimeout(ctx, r.timeout)
-	defer cancel()
-	cmd := exec.CommandContext(cctx, r.argv[0], r.argv[1:]...)
-	// The prompt carries the user's question; deliver it on stdin, never argv,
-	// where /proc/<pid>/cmdline would expose it to every user on the host for
-	// the duration of the call. Same reasoning as the CLI grounder in
-	// internal/grounding.
-	cmd.Stdin = strings.NewReader(rewritePrompt(query, max))
-	// Nothing bounds what a CLI agent prints, and the sub-queries come last, so
-	// capture into a capped tail buffer (as the grounding judge does) rather than
-	// growing a bytes.Buffer with the run.
-	stdout := tailbuf.New(maxRewriteResponse)
-	cmd.Stdout = stdout
-	if err := cmd.Run(); err != nil && stdout.Len() == 0 {
+	// clirun caps the captured output (a rewriter agent is chatty and nothing
+	// bounds how much it prints) and signals the agent's whole process group on
+	// timeout, so helpers it spawned do not outlive the call. The prompt travels
+	// on stdin, never argv, where /proc/<pid>/cmdline would expose it to every
+	// user on the host for the duration of the call. Same reasoning as the CLI
+	// grounder in internal/grounding.
+	out, err := clirun.Run(ctx, r.argv, rewritePrompt(query, max), r.timeout)
+	if err != nil && out == "" {
 		return failOpen(err.Error(), query)
 	}
 	// Pass the whole output to parseSubqueries (it splits internally) rather than a
 	// line scanner: bufio.Scanner's 64 KiB line cap silently stops on a long line
 	// and drops every subquery after it.
-	return parseSubqueries(query, stdout.String(), max)
+	return parseSubqueries(query, out, max)
 }
 
 func buildRewriter(cmd, url, model, key string, timeout time.Duration) rewriter {

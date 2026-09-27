@@ -54,6 +54,13 @@ type Client struct {
 // New creates a Client with the given endpoint, auth token, and HTTP timeout.
 // Trailing slashes are stripped from url to prevent double-slash issues.
 // TLS 1.3 is enforced for HTTPS connections to match the proxy's upstream policy.
+//
+// The client owns a private Transport, so a caller that builds one per call
+// (rather than holding one for the session) must Close it: a fully-read
+// response returns its connection to that transport's idle pool, where it sits
+// with its read/write goroutines until the process exits. Long-lived holders
+// (the store's writer, the injector's enricher) keep theirs for the session and
+// close it at shutdown.
 func New(rawURL, token string, timeout time.Duration) *Client {
 	return &Client{
 		url:   strings.TrimRight(rawURL, "/"),
@@ -69,11 +76,27 @@ func New(rawURL, token string, timeout time.Duration) *Client {
 	}
 }
 
+// Close releases the client's idle connections and their goroutines. It is safe
+// to call on a client that never made a request, and safe to call more than
+// once. In-flight requests are not interrupted; they finish and their
+// connections close with them.
+func (c *Client) Close() {
+	if t, ok := c.httpClient.Transport.(*http.Transport); ok {
+		t.CloseIdleConnections()
+	}
+}
+
 // HealthCheckAt pings the MuninnDB health endpoint at mcpURL. Returns nil if
 // reachable, or an error describing the failure. Uses a short (3s) timeout so
 // it does not delay startup noticeably. Can be called without creating a Client.
+//
+// The one-shot client is closed before returning: the health body is drained,
+// so without that the connection would go back to an idle pool nobody can ever
+// reach and linger for the life of the process.
 func HealthCheckAt(mcpURL, token string) error {
-	return New(mcpURL, token, 3*time.Second).HealthCheck()
+	c := New(mcpURL, token, 3*time.Second)
+	defer c.Close()
+	return c.HealthCheck()
 }
 
 // HealthCheck pings the MuninnDB health endpoint for this client's configured

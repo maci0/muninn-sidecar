@@ -231,8 +231,11 @@ func run() int {
 	}
 	// Ensure the background worker is always stopped on exit, even for
 	// early returns (dry-run, health check failure). The store's drainOnce
-	// makes the second call from the normal shutdown path a no-op.
+	// makes the second call from the normal shutdown path a no-op. Close
+	// releases its MCP connection pool; the injector created below gets its
+	// own Close on the same path.
 	defer muninn.Drain()
+	defer muninn.Close()
 
 	// Health check: verify MuninnDB is reachable before launching the agent.
 	// The whole point of msc is to capture traffic — silently dropping captures
@@ -328,6 +331,10 @@ func run() int {
 			GroundTopK:    o.groundTopK,
 			Stats:         sessionStats,
 		})
+		// Registered before the proxy exists so every return past this point —
+		// a failed Start, a health-check failure, the normal shutdown — releases
+		// the injector's connection pool.
+		defer injector.Close()
 	}
 
 	// Start proxy on random port.
@@ -371,6 +378,10 @@ func run() int {
 	// captures so nothing is lost, then exit with the child's code.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// Stop delivering once the shutdown path is entered: the runtime's signal
+	// handler and the channel's single slot would otherwise outlive the select
+	// below and keep a handler installed for the rest of the process.
+	defer signal.Stop(sigCh)
 
 	// Launch the agent in a goroutine so we can select on both the agent
 	// exiting and a signal arriving.

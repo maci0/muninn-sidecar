@@ -221,6 +221,11 @@ func (s *MuninnStore) HealthCheck() error {
 	return s.mcp.HealthCheck()
 }
 
+// Close releases the store's MCP connection pool. Call it after Drain, once the
+// worker has flushed everything, so the idle connections to MuninnDB and their
+// goroutines do not outlive the session that opened them.
+func (s *MuninnStore) Close() { s.mcp.Close() }
+
 // worker runs in a dedicated goroutine, collecting exchanges into batches of
 // up to 10 and flushing every 2 seconds. This amortizes MCP call overhead
 // while keeping latency bounded. It exits when the queue channel is closed

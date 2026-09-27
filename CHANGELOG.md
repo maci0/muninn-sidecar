@@ -105,6 +105,20 @@ follows [Keep a Changelog](https://keepachangelog.com); versions follow SemVer.
   directory whose index had just been copied. The job now pins `VERSION`,
   `COMMIT` and `SOURCE_DATE_EPOCH`, so a hash mismatch means a leaked path or
   timestamp and nothing else.
+- **CLI-agent backends no longer leak output buffers and orphan grandchildren.**
+  The grounding judge capped its child's stdout and killed the child's process
+  group on timeout; the query rewriter (`msc-bench`) and the answer client
+  (`msc-qa`) did neither, so a runaway agent grew the parent heap without
+  limit and a timeout left the agent's own helpers running. All three now share
+  one runner (`internal/clirun`) that caps the captured output and signals the
+  whole process group.
+- **Short-lived MCP clients no longer strand their connections.** Every
+  `mcpclient.New` owns a private `http.Transport`, and a fully-read response
+  returns its connection to that transport's idle pool. Callers that build a
+  client per call (`msc status`, the startup health check) dropped it with the
+  socket still parked, so the connection and its read/write goroutines lived
+  until the process exited. `Client.Close` releases them, and the store,
+  injector, and one-shot callers now call it.
 - **Builds are reproducible.** `make build` passed no `-trimpath`, so the
   checkout path was embedded in every binary, and the stamped build date came
   from the wall clock, so no two builds of one commit matched. Builds now use

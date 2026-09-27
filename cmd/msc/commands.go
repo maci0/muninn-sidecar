@@ -22,8 +22,11 @@ import (
 // health. Best-effort: a non-nil error means the stats are simply unavailable
 // (older server, missing tool) and the caller should omit them, not fail.
 func vaultStats(mcpURL, token, vault string) (total int, health string, err error) {
-	body, err := mcpclient.New(mcpURL, token, 3*time.Second).
-		Call(context.Background(), "muninn_status", map[string]any{"vault": vault})
+	// One-shot client: the response is read in full, so the connection would
+	// otherwise idle on a transport nothing can close for the rest of the run.
+	c := mcpclient.New(mcpURL, token, 3*time.Second)
+	defer c.Close()
+	body, err := c.Call(context.Background(), "muninn_status", map[string]any{"vault": vault})
 	if err != nil {
 		return 0, "", err
 	}

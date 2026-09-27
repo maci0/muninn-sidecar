@@ -465,6 +465,11 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int) {
 	return enriched, tokens
 }
 
+// Close releases the injector's MCP connection pool. Call it when the proxy
+// that owns the injector stops serving, so the idle connections to MuninnDB and
+// their goroutines do not outlive the session that opened them.
+func (inj *Injector) Close() { inj.mcp.Close() }
+
 // currentMinScore returns the live injection threshold under the lock (it may be
 // retuned by online calibration between turns).
 func (inj *Injector) currentMinScore() float64 {

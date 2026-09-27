@@ -21,14 +21,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/maci0/muninn-sidecar/internal/clirun"
 	"github.com/maci0/muninn-sidecar/internal/redact"
-	"github.com/maci0/muninn-sidecar/internal/tailbuf"
 )
 
 // maxGroundResponse caps the grading model's response body. Verdicts are a few
@@ -261,23 +260,16 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	if len(passages) == 0 {
 		return nil
 	}
-	cctx, cancel := context.WithTimeout(ctx, g.timeout)
-	defer cancel()
-	cmd := exec.CommandContext(cctx, g.argv[0], g.argv[1:]...)
-	isolateProcessGroup(cmd)
 	// The prompt carries the user's query and recalled memory text; deliver it
 	// on stdin (CLI judges read it there), never argv, where /proc/<pid>/cmdline
 	// would expose it to every user on the host for the duration of the call.
-	cmd.Stdin = strings.NewReader(Prompt(query, passages))
-	// Judge agents are chatty (reasoning traces, banners) and nothing bounds how
-	// much they print, so capture into a capped buffer: a runaway judge would
-	// otherwise grow the sidecar's heap unbounded on the request path. Verdict
-	// lines come last, so a truncated buffer keeps its tail, where they are.
-	stdout := tailbuf.New(maxGroundResponse)
-	cmd.Stdout = stdout
-	if err := cmd.Run(); err != nil && stdout.Len() == 0 {
+	// clirun caps the captured output (a judge is chatty and nothing bounds how
+	// much it prints) and signals the judge's whole process group on timeout, so
+	// helpers it spawned do not outlive the call.
+	out, err := clirun.Run(ctx, g.argv, Prompt(query, passages), g.timeout)
+	if err != nil && out == "" {
 		// Fail-open with a trace: a misconfigured argv or a judge that timed out
-		// (cctx deadline) otherwise degrades to the gate with no signal why.
+		// (the call's deadline) otherwise degrades to the gate with no signal why.
 		slog.Debug("grounding: CLI judge failed with no output, failing open", "judge", g.Label(), "err", err)
 		return allTrue(len(passages))
 	}
@@ -285,8 +277,13 @@ func (g *cliGrounder) Relevant(ctx context.Context, query string, passages []str
 	// ParseMask (it scans globally) rather than a line scanner: bufio.Scanner has a
 	// 64 KiB line cap that, on a long reasoning line, silently stops and drops every
 	// verdict after it — turning the grounding step into a silent no-op.
-	return ParseMask(stdout.String(), len(passages))
+	return ParseMask(out, len(passages))
 }
+
+// tailBuffer and the process-group isolation live in internal/clirun, shared
+// with the other CLI-agent backends (the query rewriter in cmd/msc-bench, the
+// answer client in cmd/msc-qa) so all three get the same output cap and the same
+// group-kill on timeout.
 
 // New builds the grounder selected by its arguments, or nil if none is set. A
 // CLI command takes precedence over an HTTP URL when both are given.
