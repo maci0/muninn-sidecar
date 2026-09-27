@@ -205,7 +205,10 @@ func parseRecallResponse(body []byte) ([]memory, error) {
 	}
 
 	// The recall payload is JSON text inside a content block; the first text
-	// block that parses wins.
+	// block that parses wins. A server may prepend a human-readable summary
+	// block, so a block that does not parse is skipped rather than fatal: one
+	// unparsable block would otherwise abandon the memories in the next one.
+	var firstErr error
 	for _, content := range rpcResp.Result.Content {
 		if content.Type != "text" {
 			continue
@@ -220,7 +223,10 @@ func parseRecallResponse(body []byte) ([]memory, error) {
 			// Try parsing as a direct array.
 			var direct []memory
 			if err2 := json.Unmarshal([]byte(content.Text), &direct); err2 != nil {
-				return nil, fmt.Errorf("parse recall result (struct: %v, array: %w)", err, err2)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("parse recall result (struct: %v, array: %w)", err, err2)
+				}
+				continue
 			}
 			return direct, nil
 		}
@@ -228,8 +234,14 @@ func parseRecallResponse(body []byte) ([]memory, error) {
 		if len(recallResult.Memories) > 0 {
 			return recallResult.Memories, nil
 		}
-		return recallResult.Results, nil
+		if len(recallResult.Results) > 0 {
+			return recallResult.Results, nil
+		}
 	}
 
+	// Every text block was unparsable: a corrupt reply, not an empty result.
+	if firstErr != nil {
+		return nil, firstErr
+	}
 	return nil, nil
 }

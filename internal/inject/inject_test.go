@@ -1874,3 +1874,51 @@ func TestParseGuide(t *testing.T) {
 		}
 	})
 }
+
+// TestParseRecallResponseSkipsNonJSONBlocks pins the "first text block that
+// parses wins" contract against a server that prefixes a human-readable
+// summary. Reading the first block unconditionally would fail the whole
+// recall, leaving injection off for that vault entirely.
+func TestParseRecallResponseSkipsNonJSONBlocks(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{
+		"memories": []map[string]any{
+			{"id": "a", "concept": "db", "content": "uses Postgres", "score": 0.81},
+		},
+	})
+	resp, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "Recalled 1 memory from vault sidecar."},
+				{"type": "image", "data": "ignored"},
+				{"type": "text", "text": string(payload)},
+			},
+		},
+		"id": 1,
+	})
+	mems, err := parseRecallResponse(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mems) != 1 || mems[0].ID != "a" {
+		t.Fatalf("expected the payload from the second text block, got %+v", mems)
+	}
+}
+
+// TestParseRecallResponseAllBlocksUnparsable keeps a genuinely corrupt reply
+// an error: skipping unparsable blocks must not turn garbage into an empty
+// recall that silently injects nothing.
+func TestParseRecallResponseAllBlocksUnparsable(t *testing.T) {
+	resp, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "not json at all"},
+			},
+		},
+		"id": 1,
+	})
+	if _, err := parseRecallResponse(resp); err == nil {
+		t.Error("expected an error when no text block parses")
+	}
+}

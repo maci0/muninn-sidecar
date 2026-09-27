@@ -552,3 +552,52 @@ func FuzzBuildMITMEnv(f *testing.F) {
 		}
 	})
 }
+
+// TestResolveQwenAdoptsOpenAIFamilySentinel pins the direction that stays
+// shared: qwen reads OPENAI_BASE_URL to pick a custom upstream (the flag
+// msc injects only overrides that choice for the child), so when a parent msc
+// codex has replaced the var with its proxy address, qwen must take codex's
+// sentinel rather than chain onto the parent proxy.
+func TestResolveQwenAdoptsOpenAIFamilySentinel(t *testing.T) {
+	clearOpenAIFamilyEnv(t)
+	t.Setenv("OPENAI_BASE_URL", "http://127.0.0.1:41000") // parent msc proxy
+	t.Setenv(Registry["codex"].sentinelKey(), "https://api.openai.com")
+
+	if got := Registry["qwen"].Resolve(); got != "https://api.openai.com" {
+		t.Errorf("qwen under msc codex must use codex's sentinel, got %q", got)
+	}
+}
+
+// TestEnvOverridesLeavesArgsRoutedEnvKeyAlone is the other direction: msc qwen
+// must not poison OPENAI_BASE_URL for a nested msc codex/opencode/aider, which
+// does read it and would otherwise resolve DashScope as its upstream.
+func TestEnvOverridesLeavesArgsRoutedEnvKeyAlone(t *testing.T) {
+	overrides := Registry["qwen"].EnvOverrides("http://127.0.0.1:41000", Registry["qwen"].DefaultURL)
+	if _, ok := overrides["OPENAI_BASE_URL"]; ok {
+		t.Error("qwen must not set OPENAI_BASE_URL; it does not read that var")
+	}
+	if got := overrides[Registry["qwen"].sentinelKey()]; got != Registry["qwen"].DefaultURL {
+		t.Errorf("qwen sentinel = %q, want its own upstream", got)
+	}
+
+	// A sibling that does read the var still gets it.
+	codex := Registry["codex"].EnvOverrides("http://127.0.0.1:41000", "https://api.openai.com")
+	if got := codex["OPENAI_BASE_URL"]; got != "http://127.0.0.1:41000" {
+		t.Errorf("codex OPENAI_BASE_URL = %q, want the proxy URL", got)
+	}
+}
+
+// TestBaseURLSourceReportsTheFlagForArgsRouted keeps `msc list` and `--help`
+// honest: qwen's base URL comes from the injected flag, not the env var that
+// happens to share its name.
+func TestBaseURLSourceReportsTheFlagForArgsRouted(t *testing.T) {
+	if got := Registry["qwen"].BaseURLSource(); got != "--openai-base-url flag" {
+		t.Errorf("qwen base URL source = %q", got)
+	}
+	if got := Registry["codex"].BaseURLSource(); got != "OPENAI_BASE_URL" {
+		t.Errorf("codex base URL source = %q", got)
+	}
+	if got := Registry["agy"].BaseURLSource(); !strings.HasPrefix(got, "CODE_ASSIST_ENDPOINT (also: GOOGLE_GEMINI_BASE_URL") {
+		t.Errorf("agy base URL source = %q", got)
+	}
+}

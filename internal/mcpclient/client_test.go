@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -156,4 +157,45 @@ func TestHealthCheck(t *testing.T) {
 			t.Error("expected error on unreachable")
 		}
 	})
+}
+
+// TestCallToolError pins the MCP tool-level failure: an HTTP 200 carrying
+// result.isError means the tool refused, so the batch did not land. Reading it
+// as success reports the captures flushed while the memories are lost.
+func TestCallToolError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"vault sidecar not found"}]}}`))
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL, "", 5*time.Second).Call(context.Background(), "muninn_remember_batch", map[string]any{})
+	if err == nil {
+		t.Fatal("expected an error for result.isError")
+	}
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("expected *RPCError, got %T: %v", err, err)
+	}
+	if !strings.Contains(rpcErr.Message, "vault sidecar not found") {
+		t.Errorf("tool error text not surfaced: %q", rpcErr.Message)
+	}
+}
+
+// TestCallResultIsNotAnError guards the other side: a normal tool result must
+// keep passing through untouched.
+func TestCallResultIsNotAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`))
+	}))
+	defer srv.Close()
+
+	body, err := New(srv.URL, "", 5*time.Second).Call(context.Background(), "muninn_remember_batch", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"ok"`) {
+		t.Errorf("unexpected body: %s", body)
+	}
 }

@@ -118,6 +118,7 @@ func cmdList(o *opts) int {
 		type agentInfo struct {
 			Name         string   `json:"name"`
 			EnvKey       string   `json:"env_key"`
+			BaseURL      string   `json:"base_url_source"`
 			ExtraEnvKeys []string `json:"extra_env_keys,omitempty"`
 			DefaultURL   string   `json:"default_url"`
 		}
@@ -127,6 +128,7 @@ func cmdList(o *opts) int {
 			list = append(list, agentInfo{
 				Name:         n,
 				EnvKey:       a.EnvKey,
+				BaseURL:      a.BaseURLSource(),
 				ExtraEnvKeys: a.ExtraEnvKeys,
 				DefaultURL:   a.DefaultURL,
 			})
@@ -143,11 +145,7 @@ func cmdList(o *opts) int {
 	fmt.Println("Supported agents:")
 	for _, n := range names {
 		a := agents.Registry[n]
-		envKey := a.EnvKey
-		if len(a.ExtraEnvKeys) > 0 {
-			envKey += " (also: " + strings.Join(a.ExtraEnvKeys, ", ") + ")"
-		}
-		fmt.Printf("  %-12s  %s -> %s\n", n, envKey, a.DefaultURL)
+		fmt.Printf("  %-12s  %s -> %s\n", n, a.BaseURLSource(), a.DefaultURL)
 	}
 	return 0
 }
@@ -408,11 +406,7 @@ Agents:
 
 	for _, n := range names {
 		a := agents.Registry[n]
-		envKey := a.EnvKey
-		if len(a.ExtraEnvKeys) > 0 {
-			envKey += " (also: " + strings.Join(a.ExtraEnvKeys, ", ") + ")"
-		}
-		fmt.Fprintf(w, "  %-12s  %s -> %s\n", n, envKey, a.DefaultURL)
+		fmt.Fprintf(w, "  %-12s  %s -> %s\n", n, a.BaseURLSource(), a.DefaultURL)
 	}
 
 	fmt.Fprintf(w, `

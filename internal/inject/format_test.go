@@ -415,3 +415,51 @@ func TestWithinBudgetHugeBudget(t *testing.T) {
 		t.Fatalf("kept %d memories under a MaxInt budget, want all %d", len(kept), len(mems))
 	}
 }
+
+// TestFormatContextBlockClipsMultibyteToBudget pins the budget unit: the
+// estimator counts bytes, so an oversized CJK or emoji memory must be clipped
+// by bytes too. A rune-bounded clip leaves a multibyte memory whole and
+// overshoots the budget by its UTF-8 expansion factor, with nothing reporting
+// the overrun.
+func TestFormatContextBlockClipsMultibyteToBudget(t *testing.T) {
+	const budget = 2048
+	budgetBytes := budget * charPerToken
+
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"CJK", strings.Repeat("記憶", 3000)},
+		{"emoji", strings.Repeat("🙂", 3000)},
+		{"ascii", strings.Repeat("a", 30000)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mems := []memory{{ID: "1", Concept: "c", Content: tc.content, Score: 0.9}}
+			block, tokens, _ := formatContextBlock(mems, budget)
+			if tokens > budget {
+				t.Errorf("token estimate %d exceeds budget %d", tokens, budget)
+			}
+			if len(block) > budgetBytes {
+				t.Errorf("block is %d bytes, budget is %d", len(block), budgetBytes)
+			}
+		})
+	}
+}
+
+// TestFormatContextBlockClipsTagsOverBudget covers the clip accounting for
+// content that gains bytes when neutralized: a tag that survives the clip keeps
+// adding 3 bytes per tag, so the memory must be re-clipped until the emitted
+// entry actually fits.
+func TestFormatContextBlockClipsTagsOverBudget(t *testing.T) {
+	const budget = 256
+	budgetBytes := budget * charPerToken
+	var sb strings.Builder
+	for sb.Len() < budgetBytes*2 {
+		sb.WriteString("<note>padding text that is long enough to fill the budget</note> ")
+	}
+	mems := []memory{{ID: "1", Concept: "c", Content: sb.String(), Score: 0.9}}
+	block, _, _ := formatContextBlock(mems, budget)
+	if len(block) > budgetBytes {
+		t.Errorf("block is %d bytes, budget is %d", len(block), budgetBytes)
+	}
+}

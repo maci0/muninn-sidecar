@@ -57,8 +57,9 @@ func init() {
 // AltDefaultCond/AltDefaultURL select the correct upstream automatically.
 type Agent struct {
 	Command        string   // binary to exec (resolved via PATH)
-	EnvKey         string   // primary env var to override with the proxy URL
+	EnvKey         string   // primary env var to override with the proxy URL. For an ArgsRouted agent it is a detection hint only and is never written to the child env.
 	ExtraEnvKeys   []string // additional env vars to also set to the proxy URL
+	ArgsRouted     bool     // the agent reads its base URL from ProxyArgs, not from EnvKey, so EnvKey must not be poisoned in the child env
 	DetectEnv      []string // env vars to check (in order) for the real upstream
 	DefaultURL     string   // fallback upstream when none of DetectEnv are set
 	AltDefaultCond string   // if this env var is set and no DetectEnv vars are set, use AltDefaultURL instead
@@ -171,6 +172,7 @@ var Registry = map[string]Agent{
 		ProxyArgs:    []string{"--auth-type", "openai", "--openai-base-url", proxyURLPlaceholder},
 		DetectEnv:    []string{"OPENAI_BASE_URL"},
 		DefaultURL:   "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+		ArgsRouted:   true,
 		CapturePaths: append(append([]string(nil), openAIV1BaseCapturePaths...), geminiCapturePaths...),
 	},
 	// agy (Google Antigravity CLI) — Code Assist / Gemini family. WARNING: agy
@@ -257,10 +259,40 @@ func sentinelForEnv(k string) string {
 // EnvOverrides is the child-environment override set for the plain
 // base-URL-override path, shared by BuildEnv and `msc --dry-run` so the preview
 // matches what the child actually receives.
+// BaseURLSource names where the agent reads its base URL from, as shown by
+// `msc list` and `--help`: the env var msc overrides, or the flag it injects.
+// For an ArgsRouted agent the flag is derived from ProxyArgs (the arguments
+// whose value is the proxy URL) so it cannot drift from what the agent is
+// actually launched with.
+func (a Agent) BaseURLSource() string {
+	if a.ArgsRouted {
+		var flags []string
+		for i, arg := range a.ProxyArgs {
+			if i+1 < len(a.ProxyArgs) && a.ProxyArgs[i+1] == proxyURLPlaceholder {
+				flags = append(flags, arg)
+			}
+		}
+		if len(flags) == 0 {
+			return a.EnvKey
+		}
+		return strings.Join(flags, " ") + " flag"
+	}
+	if len(a.ExtraEnvKeys) > 0 {
+		return a.EnvKey + " (also: " + strings.Join(a.ExtraEnvKeys, ", ") + ")"
+	}
+	return a.EnvKey
+}
+
 func (a Agent) EnvOverrides(proxyURL, upstream string) map[string]string {
 	replace := map[string]string{
-		a.EnvKey:        proxyURL,
 		a.sentinelKey(): upstream,
+	}
+	// An ArgsRouted agent takes its base URL from ProxyArgs, so the proxy
+	// address never has to travel in an env var. Writing its EnvKey anyway
+	// points a var msc does not need at the proxy and, worse, poisons it for
+	// a nested msc of a sibling agent that does read it.
+	if !a.ArgsRouted {
+		replace[a.EnvKey] = proxyURL
 	}
 	for _, k := range a.ExtraEnvKeys {
 		replace[k] = proxyURL

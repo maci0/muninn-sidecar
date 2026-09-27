@@ -213,5 +213,32 @@ func classifyResponse(status int, body []byte) ([]byte, error) {
 		return nil, &RPCError{Code: rpcResp.Error.Code, Message: rpcResp.Error.Message}
 	}
 
+	// The MCP tool-level failure is the other in-band signal: HTTP 200 with
+	// {"result":{"isError":true,"content":[{"type":"text","text":"vault x not found"}]}}
+	// and no JSON-RPC error object. It means the tool refused, so the batch
+	// did not land; reading it as success loses the memories silently and
+	// reports them flushed.
+	var toolResp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(body, &toolResp) == nil && toolResp.Result.IsError {
+		var texts []string
+		for _, c := range toolResp.Result.Content {
+			if c.Text != "" {
+				texts = append(texts, c.Text)
+			}
+		}
+		msg := strings.Join(texts, "; ")
+		if msg == "" {
+			msg = "tool reported an error without a message"
+		}
+		return nil, &RPCError{Message: msg}
+	}
+
 	return body, nil
 }

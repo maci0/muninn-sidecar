@@ -344,7 +344,7 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 	negCached := sameIntent && windowEmpty && inj.lastWasEmpty
 	inj.mu.Unlock()
 
-	minScore := inj.currentMinScore() // may have been retuned by auto-calibration
+	minScore := inj.currentMinScore()
 
 	var merged []memory
 	switch {
@@ -383,7 +383,11 @@ func (inj *Injector) Enrich(ctx context.Context, body []byte) ([]byte, int, erro
 		slog.Debug("inject: recall returned", "count", len(memories))
 
 		inj.observeCalibration(memories) // self-tune the gate to this vault's scores
-		merged = selectForInjection(inj.mergeMemories(memories), minScore)
+		// Read the gate after the calibration, not before the recall: the
+		// sample that just retuned it is the one being gated, and gating it
+		// with the pre-retune value would discard the very memories the new
+		// threshold was just lowered to accept.
+		merged = selectForInjection(inj.mergeMemories(memories), inj.currentMinScore())
 		// Optional answer-grounding rerank: drop gated candidates the judge says
 		// don't answer the query (the cross-encoder precision step, §B4). Only on
 		// fresh recalls; groundMemories also evicts rejections from the session

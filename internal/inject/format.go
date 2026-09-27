@@ -10,6 +10,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/maci0/muninn-sidecar/internal/apiformat"
 	"github.com/maci0/muninn-sidecar/internal/redact"
@@ -55,6 +56,40 @@ func contextOverheadBytes() int {
 // reaches the agent.
 const minOversizedMemoryBytes = 200
 
+// truncateToBytes clips s to at most maxBytes bytes and appends an ellipsis
+// when it clipped, breaking at a word boundary when one lies in the final 20%
+// of the clip. The budget is accounted in bytes (see entryBytes), so clipping by
+// rune count — apiformat.TruncateText — would let a CJK or emoji memory overshoot
+// it by its UTF-8 expansion factor, silently. A cut that lands mid-sequence
+// backs off to the preceding rune boundary, so the result never decodes to a
+// replacement character.
+func truncateToBytes(s string, maxBytes int) string {
+	const ellipsis = "…"
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	limit := maxBytes - len(ellipsis)
+	if limit < 0 {
+		limit = 0
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	cut := s[:limit]
+	win := breakWindowStart(len(cut))
+	if i := strings.LastIndexAny(cut[win:], " \n"); i >= 0 {
+		cut = cut[:win+i]
+	}
+	return cut + ellipsis
+}
+
+// breakWindowStart is the first byte offset of the final 20% of an n-byte
+// clip, the window truncateToBytes searches for a word boundary in.
+func breakWindowStart(n int) int { return n - n/5 }
+
 // withinBudget returns the longest score-ordered prefix of memories whose
 // combined context-block size fits the token budget. The first memory is always
 // included even if it alone exceeds the budget, matching formatContextBlock's
@@ -92,7 +127,21 @@ func withinBudget(memories []memory, budget int) []memory {
 			if room < minOversizedMemoryBytes {
 				room = minOversizedMemoryBytes
 			}
-			m.Content = apiformat.TruncateText(m.Content, room)
+			// room is bytes, so re-clip until the *neutralized* content fits:
+			// a tag surviving the clip keeps adding bytes per tag, and each
+			// pass shortens the content, so this converges.
+			for {
+				m.Content = truncateToBytes(m.Content, room)
+				entry := neutralizedLen(m.Concept) + neutralizedLen(m.Content) + 23
+				if totalBytes+entry <= budgetBytes {
+					break
+				}
+				room -= (totalBytes + entry) - budgetBytes
+				if room < 1 {
+					m.Content = ""
+					break
+				}
+			}
 			kept = append(kept, m)
 			slog.Debug("inject: first memory exceeds the inject budget, truncating its content",
 				"id", m.ID, "budget", budget, "kept_bytes", len(m.Content))
