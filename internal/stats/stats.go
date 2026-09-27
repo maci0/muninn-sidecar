@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+
+	"github.com/maci0/muninn-sidecar/internal/strhash"
 )
 
 // Stats tracks session-level counters for proxy and store activity.
@@ -51,7 +53,7 @@ type Stats struct {
 	BudgetTruncated atomic.Int64 // gated memories dropped because they exceeded the injection token budget
 	Upgraded        atomic.Int64 // protocol-upgrade (e.g. WebSocket) streams spliced through MITM; a codex Responses stream is still decoded and captured on the tap
 
-	models sync.Map // model name → *atomic.Int64
+	models sync.Map // model hash → *modelEntry
 
 	// modelNames counts the distinct names currently in models, so RecordModel
 	// can stop growing the map at maxTrackedModels without a second lookup.
@@ -146,13 +148,24 @@ func (s *Stats) Snapshot() Snapshot {
 // "other".
 const maxTrackedModels = 16
 
-// maxModelNameLen caps one model name's length, counted in bytes. A name is
-// client-supplied text copied verbatim from the request body, so without this a
-// single multi-megabyte "model" string is retained for the session and printed
-// into the summary. clipBytes keeps the cut on a character boundary, because the
-// name is a map key and lands in the summary, where a split character would
-// leave invalid UTF-8 in both.
+// maxModelNameLen caps the model name as it is retained and printed, counted
+// in bytes. A name is client-supplied text copied verbatim from the request
+// body, so without this a single multi-megabyte "model" string is held for the
+// session and printed into the summary. clipBytes keeps the cut on a character
+// boundary, because the clipped name lands in the summary, where a split
+// character would leave invalid UTF-8 in it.
+//
+// The cap is a display cap, not an identity. Clipping before the map insert made
+// the truncated string the key, so two distinct long names sharing their first
+// 64 bytes counted as one model and the summary printed a name that was neither.
+// The key is a hash of the full name and only the stored name is clipped.
 const maxModelNameLen = 64
+
+// modelEntry is one tracked model: the name as it is reported, and its count.
+type modelEntry struct {
+	name  string
+	count atomic.Int64
+}
 
 // RecordModel increments the usage count for a model. Names past
 // maxTrackedModels are counted in ModelsDropped rather than tracked
@@ -161,28 +174,28 @@ func (s *Stats) RecordModel(model string) {
 	if model == "" {
 		return
 	}
-	model = clipBytes(model, maxModelNameLen)
-	if v, loaded := s.models.Load(model); loaded {
-		v.(*atomic.Int64).Add(1)
+	key := strhash.FNV1a(model)
+	if v, loaded := s.models.Load(key); loaded {
+		v.(*modelEntry).count.Add(1)
 		return
 	}
 	if s.modelNames.Load() >= maxTrackedModels {
 		s.modelsDropped.Add(1)
 		return
 	}
-	v, loaded := s.models.LoadOrStore(model, &atomic.Int64{})
+	v, loaded := s.models.LoadOrStore(key, &modelEntry{name: clipBytes(model, maxModelNameLen)})
 	if !loaded {
 		s.modelNames.Add(1)
 	}
-	v.(*atomic.Int64).Add(1)
+	v.(*modelEntry).count.Add(1)
 }
 
 // clipBytes truncates s to at most max bytes without splitting a multi-byte
 // character. A byte count alone would leave a replacement character at the end
-// of a long non-ASCII model name, and that broken string is what gets retained
-// as the map key and printed in the session summary — the one place a name is
-// shown to a human. The same guard the SSE text accumulator and the context
-// budget packer apply to their own byte caps.
+// of a long non-ASCII model name, and that broken string is what the session
+// summary prints — the one place a name is shown to a human. The same guard the
+// SSE text accumulator and the context budget packer apply to their own byte
+// caps.
 func clipBytes(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -209,9 +222,10 @@ func (s *Stats) ModelsDropped() int64 { return s.modelsDropped.Load() }
 func (s *Stats) Models() []ModelCount {
 	var out []ModelCount
 	s.models.Range(func(key, value any) bool {
+		entry := value.(*modelEntry)
 		out = append(out, ModelCount{
-			Name:  key.(string),
-			Count: value.(*atomic.Int64).Load(),
+			Name:  entry.name,
+			Count: entry.count.Load(),
 		})
 		return true
 	})

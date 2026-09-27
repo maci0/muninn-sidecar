@@ -311,6 +311,38 @@ func TestDedupKeyIsContentAddressed(t *testing.T) {
 	}
 }
 
+// A memory's concept and content are captured conversation text, and NUL is a
+// legal character in it. With a NUL separator rather than a length prefix, the
+// NUL inside one field framed exactly like the separator between two, so these
+// two distinct memories hashed to one dedup_key and the second write was
+// discarded as a duplicate of the first.
+func TestDedupKeyFieldsCannotShiftAcrossSeparators(t *testing.T) {
+	shifted := DedupKey("v", "a\x00b", "c")
+	straight := DedupKey("v", "a", "b\x00c")
+	if shifted == straight {
+		t.Fatalf("a NUL inside the concept framed like a field separator: both memories got dedup key %s", shifted)
+	}
+	if shifted == DedupKey("v", "a\x00bc", "") {
+		t.Fatal("a concept ending in NUL collided with the same NUL used as a separator")
+	}
+	if straight == DedupKey("v", "a\x00", "bc") {
+		t.Fatal("a concept ending in NUL collided with a NUL-prefixed content field")
+	}
+}
+
+// A percent-encoded separator in the MCP path is part of the path, not a
+// separator. Rewriting the decoded Path alone re-encoded it as a real "/", and
+// the health check went to a path the server never serves.
+func TestHealthURLFromKeepsEncodedSeparatorsEncoded(t *testing.T) {
+	got, err := healthURLFrom("http://127.0.0.1:8750/rpc%2Fv1")
+	if err != nil {
+		t.Fatalf("healthURLFrom: %v", err)
+	}
+	if want := "http://127.0.0.1:8750/rpc%2Fv1/health"; got != want {
+		t.Errorf("healthURLFrom = %q, want %q", got, want)
+	}
+}
+
 // A server that quotes the memory it refused would otherwise hand the captured
 // conversation straight back to the caller's log line, past the redaction the
 // write path applies. Both error shapes (JSON-RPC error object and tool-level

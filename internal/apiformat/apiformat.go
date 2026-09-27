@@ -48,6 +48,12 @@ const (
 	GlobalGuideClose    = "</global-guide>"
 )
 
+// maxToolArgRunes caps the tool argument previewed beside a tool name in a
+// one-line tool summary. Counted in runes, like every other cap here: the
+// argument is user- and tool-supplied text, and a byte count would cut a
+// multi-byte argument mid-character in the middle of a summary line.
+const maxToolArgRunes = 100
+
 // ContextNotice opens the body of every retrieved-context block. The block
 // carries text that originated outside this process — memories recalled from a
 // shared vault, written by whichever client (or captured web page, or pasted
@@ -438,7 +444,7 @@ func toolUseSummary(blocks []any) string {
 		summary := "[" + name
 		if input, ok := b["input"].(map[string]any); ok {
 			if arg := toolInputKey(input); arg != "" {
-				summary += " " + TruncateText(arg, 100)
+				summary += " " + TruncateText(arg, maxToolArgRunes)
 			}
 		}
 		summary += "]"

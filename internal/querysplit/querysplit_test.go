@@ -54,6 +54,35 @@ func TestSplitTrimsCJTTrailingPunctuation(t *testing.T) {
 	}
 }
 
+// The floor separating a name from a stray initial is a count of characters,
+// and a byte count is the wrong unit in both directions: a two-character name
+// of plain ASCII is two bytes and was dropped, while a one-character capital
+// outside the Basic Multilingual Plane is four bytes and was admitted. Both
+// answers are wrong; only the character count gets both right.
+func TestSplitEntityFloorCountsCharactersNotBytes(t *testing.T) {
+	// U+10400 DESERET CAPITAL LETTER LONG I: one character, four bytes, an
+	// initial. The byte floor cleared it as an entity.
+	subs := Split("\U00010400 and Ok and Alan")
+	if len(subs) != 3 || subs[1] != "Ok" || subs[2] != "Alan" {
+		t.Errorf("Split = %q, want the one-character capital dropped and both names kept", subs)
+	}
+	// A single Latin capital is an initial too, and a longer name is unaffected.
+	subs = Split("J Smith met Alan Turing")
+	if len(subs) != 3 || subs[1] != "J Smith" || subs[2] != "Alan Turing" {
+		t.Errorf("Split = %q, want both multi-character entities kept", subs)
+	}
+}
+
+// A sub-query is a recall key, and the concept index it is matched against is
+// lowercased. Deduplicating on the span as written recalled one entity twice
+// over a difference in case no one typed.
+func TestSplitDedupesEntityCaseInsensitively(t *testing.T) {
+	subs := Split("Paris and Paris")
+	if len(subs) != 2 || subs[1] != "Paris" {
+		t.Errorf("Split = %q, want the two spellings of one entity collapsed to one recall", subs)
+	}
+}
+
 func FuzzSplit(f *testing.F) {
 	f.Add("Were Scott Derrickson and Ed Wood here?")
 	f.Add("")

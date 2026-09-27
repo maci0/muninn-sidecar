@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -36,13 +37,23 @@ var requestID atomic.Int64
 // of adding a second one. The concept alone is not enough: a re-asked question
 // with a different answer is a new memory. SHA-256 keeps collisions out of
 // reach for content-length memory.
+//
+// Each field is length-prefixed rather than separated by a NUL byte. The three
+// fields are captured conversation text, and a NUL is a legal character in it,
+// so a separator alone is ambiguous: the concept "a\x00b" with content "c" and
+// the concept "a" with content "b\x00c" framed to the same bytes and hashed to
+// one dedup_key, and the second memory was dropped as a duplicate of the first.
+// A big-endian length in front of every field makes the framing unambiguous for
+// any input. This changes the key for every memory, so a store seeded before
+// the change reads every pre-existing memory as new.
 func DedupKey(vault, concept, content string) string {
 	h := sha256.New()
-	io.WriteString(h, vault)
-	h.Write([]byte{0})
-	io.WriteString(h, concept)
-	h.Write([]byte{0})
-	io.WriteString(h, content)
+	for _, field := range [3]string{vault, concept, content} {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(field)))
+		h.Write(length[:])
+		io.WriteString(h, field)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -144,12 +155,23 @@ func (c *Client) HealthCheck() error {
 
 // healthURLFrom derives the health endpoint URL by appending /health to the MCP
 // path (e.g. http://127.0.0.1:8750/mcp → http://127.0.0.1:8750/mcp/health).
+//
+// The append happens on the escaped path, with RawPath set alongside Path, so a
+// percent-encoded separator in the MCP path survives. Assigning to Path alone
+// would drop RawPath's claim to be an encoding of Path, and String() re-encodes
+// from the decoded form: an MCP URL ending in "/rpc%2Fv1" became "/rpc/v1/health",
+// a health request to a path the server never serves.
 func healthURLFrom(mcpURL string) (string, error) {
 	u, err := url.Parse(mcpURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid MCP URL: %w", err)
 	}
-	u.Path = strings.TrimSuffix(u.Path, "/") + "/health"
+	escaped := strings.TrimSuffix(u.EscapedPath(), "/") + "/health"
+	path, err := url.PathUnescape(escaped)
+	if err != nil {
+		return "", fmt.Errorf("invalid MCP URL path: %w", err)
+	}
+	u.Path, u.RawPath = path, escaped
 	return u.String(), nil
 }
 
@@ -442,5 +464,5 @@ func bodySummary(body []byte) string {
 		}
 		cut = cut[:len(cut)-1]
 	}
-	return scrubServerText(string(cut)) + "..."
+	return scrubServerText(string(cut)) + "…"
 }

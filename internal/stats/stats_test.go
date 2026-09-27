@@ -224,10 +224,10 @@ func TestRecordModelCapKeepsNonASCIIWhole(t *testing.T) {
 }
 
 // A byte-count cap alone would leave a broken UTF-8 sequence at the end of a
-// long non-ASCII model name, and that broken string is both the map key and
-// what the session summary prints — a replacement character on the one line an
-// operator reads to identify the model in use. The clip must back off to a rune
-// boundary, at the cost of being a few bytes under the cap.
+// long non-ASCII model name, and that broken string is what the session summary
+// prints — a replacement character on the one line an operator reads to identify
+// the model in use. The clip must back off to a rune boundary, at the cost of
+// being a few bytes under the cap.
 func TestRecordModelTruncatesOnRuneBoundary(t *testing.T) {
 	s := &Stats{}
 	// Every rune is 3 bytes, so the cap lands mid-rune for any length here.
@@ -254,6 +254,34 @@ func TestRecordModelTruncatesOnRuneBoundary(t *testing.T) {
 	}
 	if !strings.Contains(s.Summary(), got) {
 		t.Errorf("summary %q does not carry the clipped name %q", s.Summary(), got)
+	}
+}
+
+// The display cap is not an identity. Clipping before the map insert made the
+// truncated name the key, so two distinct long names sharing their first
+// maxModelNameLen bytes counted as one model: the second call incremented the
+// first's count, and one of the two names the client actually used never got a
+// slot of its own.
+func TestRecordModelKeepsDistinctLongNamesApart(t *testing.T) {
+	s := &Stats{}
+	shared := strings.Repeat("m", maxModelNameLen)
+	s.RecordModel(shared + "aaaa")
+	s.RecordModel(shared + "bbbb")
+
+	models := s.Models()
+	if len(models) != 2 {
+		t.Fatalf("tracked %d models, want 2: names sharing their first %d bytes collapsed", len(models), maxModelNameLen)
+	}
+	for _, m := range models {
+		if m.Count != 1 {
+			t.Errorf("model %q counted %d requests, want 1", m.Name, m.Count)
+		}
+		if len(m.Name) > maxModelNameLen {
+			t.Errorf("retained name %q is over the %d-byte display cap", m.Name, maxModelNameLen)
+		}
+		if m.Name != shared {
+			t.Errorf("retained name %q, want the %d-byte prefix %q", m.Name, maxModelNameLen, shared)
+		}
 	}
 }
 
