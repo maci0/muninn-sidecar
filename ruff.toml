@@ -1,4 +1,6 @@
-# Linter + formatter config for the one Python helper in scripts/.
+# Linter + formatter config for the Python sources (the one helper in
+# scripts/ today; `make lint-non-go` runs ruff over the whole tree, so a
+# Python file added elsewhere is covered by this file, not just by habit).
 # The Go tree is covered by gofmt/go vet/staticcheck (see ci.yml); this file
 # keeps the same posture for the Python side: correctness rules on, style
 # opinions off, and every ignore below carrying the reason it exists.
@@ -43,6 +45,12 @@ select = [
     "FBT",  # boolean trap (positional bools)
     "Q",    # quote consistency beyond the formatter's style
     "EXE",  # shebang and executable-bit agreement
+    "N",    # pep8-naming: class/function/variable naming conventions
+    "PGH",  # pygrep-hooks: blanket `# noqa` and `# type: ignore` (PGH003/004)
+    "RSE",  # unnecessary raise / raise-from (never reached, or bare `raise`)
+    "PLW",  # pylint warnings (already-error checks kept out of `PL`)
+    "FLY",  # static string joins and splits
+    "ERA",  # commented-out code
 ]
 # `COM` is deliberately absent: COM812's missing trailing commas are the
 # formatter's call, and the two rules disagree on the same lines.

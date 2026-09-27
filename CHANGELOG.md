@@ -11,6 +11,26 @@ minor bump is safe.
 
 ## [Unreleased]
 
+### Changed
+
+- **ruff covers the whole tree, not just `scripts/`.** `make lint-non-go` and
+  `make fmt` passed `scripts/` as ruff's path, so a Python file added anywhere
+  else was formatted by nobody and linted by nobody while `ruff.toml` sat at the
+  root applying to it. Both now run ruff over `.`, which resolves to the same
+  single file today and picks up the next one wherever it lands.
+- **Five more ruff rule groups are on.** `N` (naming), `PGH` (blanket `# noqa`
+  and `# type: ignore`), `RSE` (unnecessary `raise`), `PLW` (pylint warnings) and
+  `ERA` (commented-out code) were never selected, so a suppression that silences
+  a whole line or a whole file, and a block of code left commented out, passed
+  silently. The tree passes all five today.
+- **A staticcheck on the wrong version now fails `make lint-go` instead of
+  warning.** `make tools` is a separate command, so the copy on PATH can be
+  older than the pin while still satisfying the presence gate, and a different
+  staticcheck is a different rule set: a green `make check` was not the green CI
+  gets. The version is read out of the binary's own build info, nothing is
+  fetched, and the check runs after the lint so a mismatch fails the target
+  without hiding what the linter found on the way there.
+
 ### Fixed
 
 - **A panic in a turn no longer takes the session down.** The request pipeline

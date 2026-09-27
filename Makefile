@@ -362,8 +362,8 @@ lint-non-go:
 	$(SHELLCHECK) $$(git ls-files '*.sh')
 	@command -v $(call exe,$(RUFF)) >/dev/null 2>&1 || { \
 	  echo "ruff is required (CI runs it): uv tool install ruff" >&2; exit 1; }
-	$(RUFF) check scripts/
-	$(RUFF) format --check scripts/
+	$(RUFF) check .
+	$(RUFF) format --check .
 	@command -v $(call exe,$(YAMLLINT)) >/dev/null 2>&1 || { \
 	  echo "yamllint is required (CI runs it): uv tool install yamllint" >&2; exit 1; }
 	$(YAMLLINT) .
@@ -402,18 +402,19 @@ vet:
 # here too: skipping it silently reports green and turns into a red CI run.
 # The optional non-Go linters stay out of this target, which is the pair CI runs.
 # Presence is not the whole problem, though: `make tools` is a separate command,
-# so the copy on PATH can be older than the pin and still satisfy the gate. The
-# version check that follows reads it out of the binary's own build info, so
-# nothing is fetched to answer it. It warns rather than exits non-zero: the
-# stale copy usually still runs, and failing the target over it would bury
-# whatever the linter actually found.
+# so the copy on PATH can be older than the pin and still satisfy the gate, and
+# a different staticcheck means a different rule set, so a green `make check`
+# here is not the green CI gets. The version check reads the pin's own version
+# out of the binary's build info, so nothing is fetched to answer it, and it
+# runs after the lint: a mismatch fails the target without hiding what the
+# linter found on the way there.
 lint-go: vet
 	@command -v staticcheck >/dev/null 2>&1 || { \
 	  echo "staticcheck is required (CI runs it): go install $(STATICCHECK_PKG)" >&2; exit 1; }
+	staticcheck ./...
 	@go version -m "$$(command -v staticcheck)" | \
 	  awk '$$1=="mod" && $$3=="$(STATICCHECK_VERSION)" {found=1} END{exit !found}' || \
-	  echo "warning: staticcheck on PATH is not the pinned $(STATICCHECK_VERSION) CI uses; run 'make tools-staticcheck'" >&2
-	staticcheck ./...
+	  { echo "staticcheck on PATH is not the pinned $(STATICCHECK_VERSION) CI runs; run 'make tools-staticcheck'" >&2; exit 1; }
 
 # Scan reachable code against the Go vulnerability DB (CI runs this too).
 vuln:
@@ -426,7 +427,7 @@ vuln:
 
 fmt:
 	gofmt -l -w .
-	@if command -v ruff >/dev/null 2>&1; then ruff format scripts/; else echo "ruff not installed, skipping"; fi
+	@if command -v ruff >/dev/null 2>&1; then ruff format .; else echo "ruff not installed, skipping"; fi
 
 # A file gofmt cannot parse makes `gofmt -l` exit non-zero with no stdout, so a
 # bare `unformatted="$(gofmt -l .)"` would find nothing and report the tree

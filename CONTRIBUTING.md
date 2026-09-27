@@ -23,8 +23,9 @@ quality bar so a change lands cleanly.
   of whatever `@latest` names that day. Override with `make tools
   STATICCHECK_VERSION=v0.6.0` to try another; `make tools-staticcheck` and
   `make tools-govulncheck` install just one of them, which is what each CI job
-  does. `make lint` and `make vuln` warn when the copy on PATH is not the
-  pinned one.
+  does. `make lint` fails when the copy of staticcheck on PATH is not the pinned
+  one, after running it, so a different rule set cannot pass as the pinned one;
+  `make vuln` still warns rather than fails.
 - **shellcheck, ruff and yamllint**, for `make check`. `make lint` refuses to run
   without them, for the same reason staticcheck is required: a linter that
   skips silently reports green and turns into a red CI run. `uv tool install
@@ -141,7 +142,8 @@ supply-chain property. `make vuln` (and CI) then mainly guards stdlib CVEs.
 - **`-race` clean.** Shared state uses `sync`/`sync/atomic`; the store worker is
   single-goroutine by design.
 - **gofmt + `go vet` + staticcheck clean.** No new warnings. The non-Go files
-  are held to the same bar: `ruff` (`ruff.toml`) for `scripts/*.py`, `shellcheck`
+  are held to the same bar: `ruff` (`ruff.toml`) for every tracked `*.py`,
+  `shellcheck`
   for every tracked `*.sh`, `yamllint` (`.yamllint.yml`) for the workflow YAML.
   All of them are required, locally and in CI, and CI runs `make lint-ci` with
   the two Python linters pinned in the Makefile, so a different local ruff
